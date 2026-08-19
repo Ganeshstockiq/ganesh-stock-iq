@@ -215,6 +215,15 @@ main{flex:1;}
 .batchlist{display:flex;flex-direction:column;}
 .batchrow{display:flex;gap:8px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed #ecdfbe;flex-wrap:wrap;}
 .mfd-row{display:flex;gap:6px;align-items:center;flex:1;min-width:150px;}
+.mfd-input-wrap{position:relative;display:flex;align-items:center;flex:1;}
+.mfd-text{width:100%;padding-right:34px;}
+.mfd-text.mfd-error-state{border-color:var(--red);background:var(--red-bg);}
+.mfd-cal-btn{position:absolute;right:2px;background:none;border:none;cursor:pointer;font-size:14px;padding:4px 6px;opacity:.6;}
+.mfd-cal-btn:hover{opacity:1;}
+.mfd-picker-hidden{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:0;top:0;}
+.mfd-error{font-family:var(--mono);font-size:10.5px;color:var(--red);margin:2px 0 0;}
+.mfd-copyall-btn{white-space:nowrap;font-family:var(--mono);font-size:10px;font-weight:700;padding:5px 8px;border-radius:6px;border:1px solid var(--wheat-dim);background:var(--amber-bg);color:var(--wheat-dim);cursor:pointer;}
+.mfd-copyall-btn:hover{background:var(--wheat);color:#fff;}
 .mfd-row label{font-family:var(--mono);font-size:9px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
 .uom-fixed{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--ink-soft);padding:9px 10px;background:#f2e8d0;border-radius:7px;flex:none;}
 .uom-warn{font-family:var(--mono);font-size:10px;color:var(--orange);background:var(--amber-bg);border-radius:7px;padding:6px 9px;margin-top:6px;line-height:1.5;}
@@ -448,6 +457,65 @@ const clampSubmitDate = (dateStr) => {
   return dateStr;
 };
 
+// Lets an MFD date be TYPED fast (any of "1-8-26", "01.08.2026", "1,8.26",
+// "010826") instead of always clicking through a calendar — but a wrong
+// MFD silently accepted would corrupt every ageing calculation downstream,
+// so this NEVER guesses when genuinely unsure. It only returns a date when
+// there's exactly one sane reading of what was typed; anything truly
+// ambiguous returns null so the caller can reject it and ask for another
+// try, rather than silently picking a possibly-wrong interpretation.
+function buildDatePartsIfValid_(dStr, mStr, yStr){
+  const d = parseInt(dStr,10), m = parseInt(mStr,10);
+  let y = parseInt(yStr,10);
+  if(isNaN(d)||isNaN(m)||isNaN(y)) return null;
+  if(yStr.length<=2) y += (y<=49 ? 2000 : 1900); // 2-digit year: assume 21st century for anything plausible as a recent MFD
+  if(m<1||m>12 || d<1||d>31) return null;
+  const dt = new Date(y, m-1, d);
+  if(dt.getFullYear()!==y || dt.getMonth()!==m-1 || dt.getDate()!==d) return null; // catches Feb 30, etc.
+  return {y, m, d, iso: `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`};
+}
+function parseFlexibleDate(raw){
+  const s = String(raw||'').trim();
+  if(!s) return null;
+  // Any separator (dash, dot, slash, comma, space) between D, M, and Y —
+  // this is the common case and almost never ambiguous.
+  const sep = s.match(/^(\d{1,2})[\s.,/-]+(\d{1,2})[\s.,/-]+(\d{2}|\d{4})$/);
+  if(sep){
+    const built = buildDatePartsIfValid_(sep[1], sep[2], sep[3]);
+    return built ? built.iso : null;
+  }
+  // No separator at all, but a fixed, unambiguous length: DDMMYYYY or DDMMYY.
+  if(/^\d{8}$/.test(s)){
+    const built = buildDatePartsIfValid_(s.slice(0,2), s.slice(2,4), s.slice(4,8));
+    return built ? built.iso : null;
+  }
+  if(/^\d{6}$/.test(s)){
+    const built = buildDatePartsIfValid_(s.slice(0,2), s.slice(2,4), s.slice(4,6));
+    return built ? built.iso : null;
+  }
+  // A short unseparated run (e.g. "1826") is genuinely ambiguous on its own
+  // — could split as 1/8/26 or 18/2/6, both calendar-valid. Try every
+  // sane split, but only trust one if it's the ONLY candidate landing in a
+  // plausible MFD window (the last 6 years) — an FMCG batch dated 2006
+  // being entered in 2026 is not a real possibility, so that candidate is
+  // discarded rather than left to cause a genuine tie.
+  if(/^\d{3,5}$/.test(s)){
+    const today = new Date();
+    const minYear = today.getFullYear() - 6;
+    const candidates = [];
+    for(let dLen=1; dLen<=2; dLen++){
+      for(let mLen=1; mLen<=2; mLen++){
+        if(dLen+mLen >= s.length) continue;
+        const built = buildDatePartsIfValid_(s.slice(0,dLen), s.slice(dLen,dLen+mLen), s.slice(dLen+mLen));
+        if(built && built.y>=minYear && built.y<=today.getFullYear()) candidates.push(built.iso);
+      }
+    }
+    const unique = [...new Set(candidates)];
+    return unique.length===1 ? unique[0] : null; // 0 or 2+ plausible readings — refuse to guess
+  }
+  return null;
+}
+
 const state = {
   role: null,            // 'cnf' | 'admin' | 'mis'
   cnfUser: null,          // logged-in cnf record
@@ -482,6 +550,9 @@ const state = {
   notifMenuOpen: false,
   adminProductFilter: 'all', // 'all' | 'uncategorized'
   selectedProductCodes: [], // Admin → Product Master bulk-category-assign selection
+  loadingProgress: 0, // animated % shown by LoadingScreen() during initial load / login
+  loadingMessage: '', // rotating status text shown alongside loadingProgress
+  loadingActive: false, // gates LoadingScreen() in render(), alongside !state.loaded
   syncingNow: false, // drives the Topbar sync button's "Syncing…" state
   newVersionAvailable: false, // set by checkForNewVersion() after login
   movementFilters: null, // {cnf:'ALL', fromDate, toDate} — initialized lazily so todayISO() is available
@@ -623,7 +694,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-19.10';
+const APP_VERSION = '2026-08-19.13';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -712,11 +783,15 @@ async function loadAll(){
 
   const cachedMasters = lsGet('masters');
   if(cachedMasters){
-    // FAST PATH — render immediately from the local copy, no network wait.
+    // FAST PATH — the cached copy is already good enough to work from, so
+    // the only real wait left is restoring who's logged in (which itself
+    // does a live sync) — animate that instead of a static "Loading…".
     state.masters = normalizeMasters(cachedMasters);
     state.submissions = normalizeSubmissionList(lsGet('submissions') || []);
     state.loaded = true;
+    startFakeProgress(['Restoring your session…','Syncing latest stock…','Loading dashboard…']);
     await tryRestoreSession();
+    finishFakeProgress('Ready');
     render();
     flushPendingQueue();
     if(apiUrl) maybeBackgroundSyncMasters(); // silent, throttled, never blocks the UI
@@ -726,6 +801,7 @@ async function loadAll(){
 
   // COLD START — nothing cached yet on this device, so a real fetch is
   // unavoidable exactly once.
+  startFakeProgress(['Connecting to Google Sheet…','Loading CNF list…','Loading product catalog…','Almost ready…']);
   if(apiUrl){
     try{
       const boot = await apiGet('bootstrap');
@@ -755,6 +831,7 @@ async function loadAll(){
   }
   await tryRestoreSession();
   state.loaded = true;
+  finishFakeProgress('Ready');
   render();
   flushPendingQueue();
   if(state.role) checkForNewVersion();
@@ -851,16 +928,25 @@ function downloadSubmissionBackup(sub){
   exportGenericCsv(`UNSYNCED-${sub.id}-${sub.date}.csv`, headers, rows);
 }
 
+// Shared across every CNF/MIS export: does this line's ageing status mean
+// a fresh order should be placed? Matches the same bucket MIS Overview
+// already highlights as "Ageing / Critical Lines" — Ageing, Critical, Near
+// Expiry, and Expired all mean "don't wait, reorder."
+const REORDER_STATUSES = ['ageing','critical','expiring','expired'];
+function reorderSuggested(cls){ return REORDER_STATUSES.includes(cls) ? 'Yes' : 'No'; }
+
 // The full, detailed per-line report for one submission — every product,
 // its ageing status, self-life, remaining shelf life, and safety-stock
 // standing. Used both for the auto-download right after every Final Submit
 // and for the manual "Export" buttons on CNF Reports/History.
 function buildDetailedReportRows(sub){
-  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Variance Reason'];
+  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Reorder Suggested','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
   const rows = sub.items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
-    const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:''};
-    return [it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.varianceReason||''];
+    const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
+    const bagEquiv = p && p.bagToKg ? (it.kgQty/p.bagToKg).toFixed(2) : '';
+    const pcEquiv = p && p.pcToKg ? (it.kgQty/p.pcToKg).toFixed(1) : '';
+    return [it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), bagEquiv, pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
@@ -918,6 +1004,13 @@ async function flushPendingQueue(){
   return {synced: queue.length-remaining.length, stillPending: remaining.length};
 }
 if(typeof window!=='undefined' && window.addEventListener) window.addEventListener('online', flushPendingQueue);
+// Belt-and-braces on top of the 'online' event: rural/mobile connections
+// often go weak-but-technically-connected rather than cleanly offline, so
+// a request can keep failing without the browser ever firing 'online' to
+// re-trigger a retry. This periodic check means nothing pending ever waits
+// longer than a minute for the next attempt, network permitting — cheap,
+// safe no-op when the queue is empty.
+if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{ if(state.loaded) flushPendingQueue(); }, 60000);
 
 // Full submission history for one CNF (History screen) or all CNFs
 // (Admin Audit Log) — fetched on demand since bootstrap only carries
@@ -1236,7 +1329,7 @@ function allCurrentStockRows(cnfFilterList){
 /* ---------------- Render root ---------------- */
 function render(){
   const app = document.getElementById('app');
-  if(!state.loaded){ app.innerHTML = `<div style="padding:60px;text-align:center;color:var(--muted-text);font-family:var(--mono)">Loading stock system…</div>`; return; }
+  if(!state.loaded || state.loadingActive){ app.innerHTML = LoadingScreen(); return; }
   // A browser tab left open across midnight never finds out the calendar
   // day changed on its own — state.submitDate was set once (at login) and
   // nothing re-checks it against the real clock. A plain range-clamp isn't
@@ -1314,6 +1407,52 @@ function PasswordField(id, opts){
 
 function Mark(){
   return `<svg viewBox="0 0 26 26" fill="none"><path d="M13 2 L23 8 V18 L13 24 L3 18 V8 Z" stroke="#cc8f3f" stroke-width="1.6"/><path d="M13 2 V24 M3 8 L23 18 M23 8 L3 18" stroke="#8a6a3d" stroke-width="1"/><circle cx="13" cy="13" r="3.2" fill="#cc8f3f"/></svg>`;
+}
+
+// A believable, animated "percentage" for any wait that doesn't have real
+// granular progress to report (a network fetch is just one opaque promise —
+// it doesn't tell us "40% done"). This is the same honest trick used by
+// most apps: ease toward ~92% on a decelerating curve so it never looks
+// finished before the real work is, cycling through a few named steps so
+// it reads as "doing something specific," not just a spinner. The moment
+// the real operation resolves, finishFakeProgress() snaps it to 100% and
+// the screen changes — so the number is never a lie about whether
+// something's actually happening, only about exactly how far along.
+let __progressTimer = null;
+function startFakeProgress(messages){
+  state.loadingActive = true;
+  state.loadingProgress = 2;
+  state.loadingMessage = messages[0];
+  let msgIdx = 0;
+  if(__progressTimer) clearInterval(__progressTimer);
+  __progressTimer = setInterval(()=>{
+    const ceiling = 92;
+    state.loadingProgress = Math.min(ceiling, state.loadingProgress + (ceiling - state.loadingProgress) * 0.09 + 0.3);
+    const newMsgIdx = Math.min(messages.length-1, Math.floor((state.loadingProgress/ceiling) * messages.length));
+    if(newMsgIdx !== msgIdx){ msgIdx = newMsgIdx; state.loadingMessage = messages[msgIdx]; }
+    render();
+  }, 280);
+}
+function finishFakeProgress(finalMessage){
+  if(__progressTimer){ clearInterval(__progressTimer); __progressTimer = null; }
+  state.loadingProgress = 100;
+  if(finalMessage) state.loadingMessage = finalMessage;
+  state.loadingActive = false;
+}
+
+function LoadingScreen(){
+  const pct = Math.round(state.loadingProgress||0);
+  return `<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--silo-dark);gap:22px;padding:20px;text-align:center;">
+    <div style="width:52px;height:52px;animation:gsi-pulse 1.6s ease-in-out infinite;">${Mark()}</div>
+    <div style="font-family:var(--serif);font-size:19px;color:var(--wheat-light);">Ganesh&nbsp;Stock&nbsp;IQ</div>
+    <div style="width:240px;">
+      <div style="width:100%;height:7px;background:var(--panel-2);border-radius:6px;overflow:hidden;border:1px solid var(--line);">
+        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--wheat-dim),var(--wheat-light));border-radius:6px;transition:width .28s ease;"></div>
+      </div>
+      <div style="margin-top:10px;font-family:var(--mono);font-size:11.5px;color:var(--wheat-dim);letter-spacing:.3px;">${state.loadingMessage||'Loading…'} · <b style="color:var(--wheat-light);">${pct}%</b></div>
+    </div>
+  </div>
+  <style>@keyframes gsi-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.6;transform:scale(.92);}}</style>`;
 }
 
 function Topbar(){
@@ -1851,6 +1990,12 @@ function SapProductRow(sapRow){
   </div>`;
 }
 
+function ddmmyyyy(iso){
+  if(!iso) return '';
+  const [y,m,d] = iso.split('-');
+  return `${d}-${m}-${y}`;
+}
+
 function BatchRow(p,b,i,total){
   const uom = b.uom || p.defaultUOM || 'KG';
   const noConversion = (uom==='BAG' && !p.bagToKg) || (uom==='PC' && !p.pcToKg);
@@ -1858,10 +2003,17 @@ function BatchRow(p,b,i,total){
   <div class="batchrow" data-batchrow="${p.code}:${i}">
     <div class="mfd-row">
       <label>MFD${total>1?(' #'+(i+1)):''}</label>
-      <input type="date" class="mfd" data-mfdcode="${p.code}" data-batch="${i}" value="${b.mfd||''}">
+      <div class="mfd-input-wrap">
+        <input type="text" class="mfd-text" data-mfdcode="${p.code}" data-batch="${i}" value="${ddmmyyyy(b.mfd)}" placeholder="DD-MM-YYYY" inputmode="numeric" autocomplete="off">
+        <button type="button" class="mfd-cal-btn" data-mfdcal="${p.code}:${i}" title="Pick from calendar instead">📅</button>
+        <input type="date" class="mfd-picker-hidden" data-mfdpicker="${p.code}:${i}" value="${b.mfd||''}" tabindex="-1">
+      </div>
+      ${i===0 && total>1 ? `<button type="button" class="mfd-copyall-btn" data-copymfd="${p.code}" title="Fill every batch below with this same date — then just fix the few that differ">Same date for all ${total}</button>` : ''}
     </div>
+    <div class="mfd-error" data-mfderror="${p.code}:${i}" style="display:none;"></div>
     <div class="pinputs">
       <input type="number" min="0" class="qty" data-qtycode="${p.code}" data-batch="${i}" placeholder="0" value="${b.qty!==undefined?b.qty:''}">
+
       <select class="uom" data-uomcode="${p.code}" data-batch="${i}">
         ${['KG','PC','BAG'].map(u=>`<option value="${u}" ${uom===u?'selected':''}>${u}</option>`).join('')}
       </select>
@@ -3125,10 +3277,12 @@ function MisExport(){
 
 /* ---------------- CSV export ---------------- */
 function toCsv(rows){
-  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Safety Stock (kg)','Safety Status','Submission ID'];
+  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','BAG Equiv','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Reorder Suggested','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
   const lines = [headers.join(',')];
   rows.forEach(r=>{
-    const line = [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, `"${r.product.name}"`, r.product.category, r.item.qty, r.item.uom, r.item.kgQty.toFixed(2), r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, r.product.safetyStockKg, r.safetyStatus, r.sub.id];
+    const bagEquiv = r.product.bagToKg ? (r.item.kgQty/r.product.bagToKg).toFixed(2) : '';
+    const pcEquiv = r.product.pcToKg ? (r.item.kgQty/r.product.pcToKg).toFixed(1) : '';
+    const line = [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, `"${r.product.name}"`, r.product.category, r.item.qty, r.item.uom, r.item.kgQty.toFixed(2), bagEquiv, pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
     lines.push(line.join(','));
   });
   return lines.join('\n');
@@ -3219,7 +3373,10 @@ function bindGlobal(){
     const pw = document.getElementById('loginPw').value;
     const rememberEl = document.getElementById('loginRemember');
     const remember = rememberEl ? rememberEl.checked : false;
+    if(!userId || !pw){ showToast('Enter your User ID and Password'); return; }
+    startFakeProgress(['Checking your details…','Loading your data…','Almost there…']);
     const ok = await tryLogin(userId, pw, remember);
+    finishFakeProgress(ok ? 'Welcome!' : null);
     render();
     if(ok) checkForNewVersion();
   };
@@ -3864,14 +4021,14 @@ function bindGlobal(){
   const btnExportStockTable = document.getElementById('btnExportStockTable');
   if(btnExportStockTable) btnExportStockTable.onclick = ()=>{
     const rows = filteredRows();
-    exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Safety'],
-      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,r.safetyStatus==='ok'?'OK':'Below']));
+    exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Reorder Suggested','Safety','Approved Order','Pending Order'],
+      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?(r.item.kgQty/r.product.bagToKg).toFixed(2):'',r.product.pcToKg?(r.item.kgQty/r.product.pcToKg).toFixed(1):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,reorderSuggested(r.ageStatus.cls),r.safetyStatus==='ok'?'OK':'Below',r.item.approvedOrder??'',r.item.pendingOrder??'']));
   };
   const btnExportFifo = document.getElementById('btnExportFifo');
   if(btnExportFifo) btnExportFifo.onclick = ()=>{
     const rows = filteredRows().filter(r=>r.item.mfd).sort((a,b)=> new Date(a.item.mfd) - new Date(b.item.mfd));
-    exportGenericCsv('fifo-monitor.csv', ['#','CNF Code','CNF Name','Product Code','Product Name','MFD','Age (d)','Self-Life','Remaining','Qty (kg)','Status'],
-      rows.map((r,i)=>[i+1,r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.item.mfd,r.ageStatus.age,r.ageStatus.life,r.ageStatus.remaining,r.item.kgQty.toFixed(1),r.ageStatus.label]));
+    exportGenericCsv('fifo-monitor.csv', ['#','CNF Code','CNF Name','Product Code','Product Name','MFD','Age (d)','Self-Life','Remaining','Qty (kg)','BAG Equiv','PC Equiv','Status'],
+      rows.map((r,i)=>[i+1,r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.item.mfd,r.ageStatus.age,r.ageStatus.life,r.ageStatus.remaining,r.item.kgQty.toFixed(1),r.product.bagToKg?(r.item.kgQty/r.product.bagToKg).toFixed(2):'',r.product.pcToKg?(r.item.kgQty/r.product.pcToKg).toFixed(1):'',r.ageStatus.label]));
   };
   const btnExportAgeing = document.getElementById('btnExportAgeing');
   if(btnExportAgeing) btnExportAgeing.onclick = ()=>{
@@ -3995,12 +4152,31 @@ function ensureBatch(code, idx){
   return state.draftItems[code][idx];
 }
 
+// Debounced auto-save — every quantity, MFD, or UOM change now persists to
+// this device automatically, not just on an explicit "Save Draft" click.
+// This is the actual fix for a real risk: entered data only ever lived in
+// memory until someone remembered to tap Save Draft — a crashed tab, an
+// accidental back-navigation, or a phone that killed the browser to save
+// memory would silently lose everything typed since the last manual save.
+// Debounced (not on every keystroke) so rapid typing doesn't hammer
+// localStorage; 800ms after the last change is plenty fast to survive
+// anything short of the exact instant of a crash.
+let __autoSaveDraftTimer = null;
+function autoSaveDraft(){
+  if(!state.cnfUser) return;
+  if(__autoSaveDraftTimer) clearTimeout(__autoSaveDraftTimer);
+  __autoSaveDraftTimer = setTimeout(()=>{
+    saveDraft(state.cnfUser.code, {date: state.submitDate, items: state.draftItems, sapUpload: state.sapUpload, varianceReasons: state.varianceReasons});
+  }, 800);
+}
+
 function bindRowInputs(){
   document.querySelectorAll('[data-qtycode]').forEach(inp=>inp.oninput=()=>{
     const code = inp.dataset.qtycode, idx = Number(inp.dataset.batch);
     const b = ensureBatch(code, idx);
     b.qty = inp.value;
     updateRowMeta(code);
+    autoSaveDraft();
   });
   document.querySelectorAll('[data-uomcode]').forEach(sel=>sel.onchange=()=>{
     const code = sel.dataset.uomcode, idx = Number(sel.dataset.batch);
@@ -4008,11 +4184,57 @@ function bindRowInputs(){
     b.uom = sel.value;
     updateRowMeta(code);
     updateUomWarning(code, idx, sel.value);
+    autoSaveDraft();
   });
-  document.querySelectorAll('[data-mfdcode]').forEach(inp=>inp.onchange=()=>{
+  // MFD as a typed text field — fast entry with flexible formats
+  // ("1-8-26", "01.08.2026", "1,8.26", "010826"), but never silently
+  // accepts a guess it isn't sure about (see parseFlexibleDate). An
+  // invalid/ambiguous entry shows a clear inline error and leaves the
+  // stored MFD blank rather than risk a wrong date corrupting ageing
+  // calculations downstream.
+  document.querySelectorAll('[data-mfdcode]').forEach(inp=>inp.onblur=()=>{
     const code = inp.dataset.mfdcode, idx = Number(inp.dataset.batch);
+    const errEl = document.querySelector(`[data-mfderror="${code}:${idx}"]`);
+    const raw = inp.value.trim();
     const b = ensureBatch(code, idx);
-    b.mfd = inp.value;
+    if(!raw){
+      b.mfd = '';
+      inp.classList.remove('mfd-error-state');
+      if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
+      autoSaveDraft();
+      return;
+    }
+    const parsed = parseFlexibleDate(raw);
+    if(parsed){
+      b.mfd = parsed;
+      inp.value = ddmmyyyy(parsed);
+      inp.classList.remove('mfd-error-state');
+      if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
+      const picker = document.querySelector(`[data-mfdpicker="${code}:${idx}"]`);
+      if(picker) picker.value = parsed;
+      autoSaveDraft();
+    } else {
+      b.mfd = ''; // never keep a half-guessed date silently — force a clear correction
+      inp.classList.add('mfd-error-state');
+      if(errEl){ errEl.style.display='block'; errEl.textContent = `⚠ "${raw}" not understood — try DD-MM-YYYY (e.g. 01-08-2026), or tap 📅.`; }
+    }
+  });
+  document.querySelectorAll('[data-mfdcal]').forEach(btn=>btn.onclick=()=>{
+    const [code, idxStr] = btn.dataset.mfdcal.split(':');
+    const picker = document.querySelector(`[data-mfdpicker="${code}:${idxStr}"]`);
+    if(picker && picker.showPicker) { try{ picker.showPicker(); }catch(e){ picker.focus(); picker.click(); } }
+    else if(picker){ picker.focus(); picker.click(); }
+  });
+  document.querySelectorAll('[data-mfdpicker]').forEach(picker=>picker.onchange=()=>{
+    const [code, idxStr] = picker.dataset.mfdpicker.split(':');
+    const idx = Number(idxStr);
+    const b = ensureBatch(code, idx);
+    b.mfd = picker.value;
+    const textInp = document.querySelector(`[data-mfdcode="${code}"][data-batch="${idx}"]`);
+    if(textInp){ textInp.value = ddmmyyyy(picker.value); textInp.classList.remove('mfd-error-state'); }
+    const errEl = document.querySelector(`[data-mfderror="${code}:${idx}"]`);
+    if(errEl){ errEl.style.display='none'; errEl.textContent=''; }
+    autoSaveDraft();
   });
   document.querySelectorAll('[data-addbatch]').forEach(btn=>btn.onclick=()=>{
     const code = btn.dataset.addbatch;
@@ -4022,6 +4244,7 @@ function bindRowInputs(){
     }
     state.draftItems[code].push({qty:'', uom:p.defaultUOM, mfd:''});
     rerenderOneRow(code);
+    autoSaveDraft();
   });
   document.querySelectorAll('[data-removebatch]').forEach(btn=>btn.onclick=()=>{
     const [code, idxStr] = btn.dataset.removebatch.split(':');
@@ -4029,10 +4252,29 @@ function bindRowInputs(){
     if(state.draftItems[code] && state.draftItems[code].length>1){
       state.draftItems[code].splice(idx,1);
       rerenderOneRow(code);
+      autoSaveDraft();
     }
+  });
+  // "Same date for all N" — for a product with many MFD batches (e.g. 50kg+
+  // stock split across a dozen dated lots), typing the identical date into
+  // every single batch one at a time was the actual reported time sink.
+  // One tap fills every batch with batch #1's date; anything genuinely
+  // different just gets corrected on that one row afterward, instead of
+  // typed from scratch N times.
+  document.querySelectorAll('[data-copymfd]').forEach(btn=>btn.onclick=()=>{
+    const code = btn.dataset.copymfd;
+    const batches = state.draftItems[code];
+    if(!batches || !batches.length) return;
+    const firstMfd = batches[0].mfd;
+    if(!firstMfd){ showToast('Enter the first MFD date, then tap this to copy it to the rest.'); return; }
+    batches.forEach(b=>{ b.mfd = firstMfd; });
+    rerenderOneRow(code);
+    autoSaveDraft();
+    showToast(`Copied ${firstMfd} to all ${batches.length} batches — adjust any that are actually different.`);
   });
   document.querySelectorAll('[data-reasoncode]').forEach(inp=>inp.oninput=()=>{
     state.varianceReasons[inp.dataset.reasoncode] = inp.value;
+    autoSaveDraft();
   });
 }
 
