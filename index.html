@@ -621,7 +621,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-19.1';
+const APP_VERSION = '2026-08-19.4';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -733,6 +733,14 @@ async function loadAll(){
       lsSet('submissions', state.submissions);
       lsSet('masterSyncedAt', Date.now());
     }catch(e){
+      // A URL being configured is NOT the same as the fetch having actually
+      // succeeded — this was a real, misleading bug: on failure, this used
+      // to silently fall back to fake demo data (3 seed CNFs) while the
+      // header kept claiming "● LIVE — synced to your Google Sheet", because
+      // backendConnected was only ever set from "is a URL present", never
+      // from "did the last real fetch work." Someone could stare at a
+      // "LIVE" label backed entirely by demo data with no way to tell.
+      state.backendConnected = false;
       state.backendError = String((e&&e.message)||e);
       state.masters = normalizeMasters((await legacyWindowStorageMasters()) || seedMasters());
       state.submissions = [];
@@ -1161,9 +1169,25 @@ async function handleSapUpload(file){
 // submissions data enters state (server fetch, cache, merge) runs through
 // this, so the bug class can't resurface even if some other path someday
 // sends a number again.
+//
+// cleanDateField guards against the SAME class of Sheets auto-conversion —
+// a date-shaped cell becomes an actual Date object server-side, and if a
+// backend that predates the fix (or hasn't been redeployed yet) sends its
+// full toString() ("Tue Aug 18 2026 00:00:00 GMT+0530 (India Standard
+// Time)") instead of a clean "2026-08-18", this actually parses and
+// re-formats it correctly — not just a blind slice(), which would have
+// chopped that string into the wrong thing ("Tue Aug 18"). A no-op on an
+// already-clean date string.
+function cleanDateField(raw){
+  const s = String(raw||'');
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10); // already clean (or ISO-with-time) — just trim
+  const parsed = new Date(s);
+  return isNaN(parsed.getTime()) ? s : localDateISO(parsed); // recovers from a verbose Date.toString() dump
+}
 function normalizeSubmissionList(list){
   return (list||[]).map(s=>Object.assign({}, s, {
     cnfCode: String(s.cnfCode),
+    date: cleanDateField(s.date),
     items: (s.items||[]).map(it=>Object.assign({}, it, {code: String(it.code)}))
   }));
 }
@@ -1215,6 +1239,7 @@ function render(){
     ${Topbar()}
     ${DemoBanner()}
     ${NewVersionBanner()}
+    ${BackendErrorBanner()}
     <main>
       ${!loggedIn ? UnifiedLoginScreen() : state.role==='cnf' ? CnfPanel() : state.role==='admin' ? AdminPanel() : MisPanel()}
     </main>
@@ -1233,6 +1258,22 @@ function NewVersionBanner(){
   if(!state.newVersionAvailable) return '';
   return `<div style="background:#1f3d2e;border-bottom:1px solid #2f6b4a;color:#c9f0d8;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
     🆕 A newer version of the app is ready. <button id="btnReloadNewVersion" style="background:#2f6b4a;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;margin-left:6px;">Reload Now</button>
+  </div>`;
+}
+
+// A URL being configured is not the same as data actually having synced —
+// this is the persistent, unmissable version of that distinction. A fleeting
+// toast (or a status line buried inside Admin → API Connection, which
+// nobody but Admin ever visits) let this go unnoticed for a long time: the
+// header could say "● LIVE" while every screen was quietly running on
+// fallback demo data because the real fetch had failed. Whenever there's a
+// genuine backend error, everyone — CNF, Admin, MIS — sees this, with the
+// actual technical reason, not just "something's wrong."
+function BackendErrorBanner(){
+  if(!state.backendError || !(state.cnfUser || state.adminUser || state.misUser)) return '';
+  return `<div style="background:#3a1f19;border-bottom:1px solid #6b3a2f;color:#f0c9c0;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
+    ⚠ Backend connection failed — showing local/demo data, not live Sheet data. <span style="opacity:.85;">${state.backendError}</span>
+    ${state.role==='admin' ? ' · <span class="linklike" data-adminnav="api" style="cursor:pointer;">Check API Connection →</span>' : ''}
   </div>`;
 }
 
@@ -2622,7 +2663,7 @@ function MisPanel(){
     <div class="consolebody">
       <button class="navtoggle" id="btnNavToggle">☰ Menu</button>
       <div class="ch-title">Back Office — ${nav.find(n=>n[0]===state.misScreen)[1]}</div>
-      <div class="ch-sub">REAL-TIME CNF-WISE STOCK · AGEING · FIFO · click any card, bar or row for detail</div>
+      <div class="ch-sub">REAL-TIME CNF-WISE STOCK · AGEING · FIFO · click any card, bar or row for detail ${state.backendConnected?'<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>':'<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>'}</div>
       ${ActiveFilterBanner()}
       ${state.misScreen==='movement' ? '' : MisFilters()}
       ${state.misScreen==='overview' ? MisOverview() : state.misScreen==='stock' ? MisStockTable() : state.misScreen==='fifo' ? MisFifo() : state.misScreen==='ageing' ? MisAgeing() : state.misScreen==='safety' ? MisSafety() : state.misScreen==='movement' ? MisMovement() : MisExport()}
@@ -3377,8 +3418,8 @@ function bindGlobal(){
   const btnTopbarSync = document.getElementById('btnTopbarSync');
   if(btnTopbarSync) btnTopbarSync.onclick = async ()=>{
     state.syncingNow = true; render();
-    try{ await forceSyncMasters(); showToast('✓ Synced — showing the latest data'); }
-    catch(e){ showToast('Sync failed — check connection'); }
+    try{ await forceSyncMasters(); state.backendError = null; showToast('✓ Synced — showing the latest data'); }
+    catch(e){ state.backendError = String((e&&e.message)||e); showToast('⚠ Sync failed — see the error banner for why'); }
     state.syncingNow = false; render();
     checkForNewVersion(); // the sync button doubles as "check for a code update too"
   };
