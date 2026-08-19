@@ -622,7 +622,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-19.5';
+const APP_VERSION = '2026-08-19.6';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -3343,6 +3343,23 @@ function bindGlobal(){
     const btnConfirmFinal = document.getElementById('btnConfirmFinal');
     if(btnConfirmFinal) btnConfirmFinal.onclick = ()=>{
       if(state.submitDate > todayISO() || state.submitDate < yesterdayISO()){ showToast('Stock date must be today or yesterday — you can only submit current physical stock.'); state.submitDate = clampSubmitDate(state.submitDate); render(); return; }
+      // Catches the gap the range check above can't: a SAP upload started
+      // BEFORE midnight, worked on past it, and finished after — by
+      // submit time, the stale date still happens to equal the (now new)
+      // "yesterday", so the range check above sees nothing wrong. This is
+      // the actual fix — if the date was never a deliberate choice AND the
+      // real calendar day has moved on since it was set, this is stale,
+      // not intentional, no matter how it looks against the range. Forces
+      // a clean restart for the real current date rather than silently
+      // accepting data that's quietly a day old.
+      if(!state.submitDateManuallySet && state.submitDate !== todayISO()){
+        state.cnfModal = null;
+        showToast(`⚠ It's now ${todayISO()} — this entry was started for ${state.submitDate}. Please re-upload the SAP file for today's current stock.`);
+        clearForNewDate();
+        state.submitDate = todayISO();
+        render();
+        return;
+      }
       const unresolved = state.sapUpload ? state.sapUpload.rows.filter(r=>hasUnresolvedVariance(r.code)) : [];
       if(unresolved.length){ showToast(`${unresolved.length} item(s) still need a difference reason`); return; }
       const missing = missingRequiredCodes();
