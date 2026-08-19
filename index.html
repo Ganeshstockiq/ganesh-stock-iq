@@ -454,6 +454,7 @@ const state = {
   cnfScreen: 'dashboard', // dashboard | submit | history
   submitCat: null,        // resolved dynamically once SAP data is loaded
   submitDate: todayISO(),
+  submitDateManuallySet: false, // did the CNF actively pick a date this session? distinguishes "genuinely chose yesterday to catch up" from "tab was just left open across midnight" — see render()'s staleness check
   submitSearch: '',
   draftItems: {},         // productCode -> {qty,uom,mfd}
   sapUpload: null,        // {fileName, uploadedAt, rows:[{code,name,uom,currentStockKg}]} — mandatory SAP dump for this stock date
@@ -621,7 +622,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-19.4';
+const APP_VERSION = '2026-08-19.5';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1234,6 +1235,23 @@ function allCurrentStockRows(cnfFilterList){
 function render(){
   const app = document.getElementById('app');
   if(!state.loaded){ app.innerHTML = `<div style="padding:60px;text-align:center;color:var(--muted-text);font-family:var(--mono)">Loading stock system…</div>`; return; }
+  // A browser tab left open across midnight never finds out the calendar
+  // day changed on its own — state.submitDate was set once (at login) and
+  // nothing re-checks it against the real clock. A plain range-clamp isn't
+  // enough here: "yesterday" is a genuinely valid, intentional choice (for
+  // catching up a missed day), so a stale value that happens to now equal
+  // "yesterday" looks indistinguishable from someone deliberately picking
+  // it — it would silently stay wrong. This tracks whether the CNF actually
+  // touched the date picker THIS session; if not, and nothing is in
+  // progress yet (no SAP file, no draft entries), it's forced back to the
+  // real today on every render. An explicit choice is always respected. If
+  // someone genuinely IS mid-entry when the day rolls over, the Final
+  // Submit guard (checked fresh at that moment) still catches and blocks a
+  // now-stale date — a clear stop, not a silent reassignment of data they
+  // were actively working with.
+  if(state.cnfUser && !state.submitDateManuallySet && !state.sapUpload && Object.keys(state.draftItems||{}).length===0){
+    state.submitDate = todayISO();
+  }
   const loggedIn = !!(state.cnfUser || state.adminUser || state.misUser);
   app.innerHTML = `
     ${Topbar()}
@@ -1425,7 +1443,7 @@ function clearRememberedSession(){ try{ localStorage.removeItem('gsi:session'); 
 function getRememberedSession(){ try{ const v = localStorage.getItem('gsi:session'); return v ? JSON.parse(v) : null; }catch(e){ return null; } }
 
 async function restoreCnfSession(cnf){
-  state.role = 'cnf'; state.cnfUser = cnf; state.cnfScreen = 'dashboard'; state.submitDate = todayISO();
+  state.role = 'cnf'; state.cnfUser = cnf; state.cnfScreen = 'dashboard'; state.submitDate = todayISO(); state.submitDateManuallySet = false;
   const draft = await loadDraft(cnf.code);
   const draftMatchesToday = draft && draft.date===state.submitDate;
   state.draftItems = draftMatchesToday ? draft.items : {};
@@ -3267,13 +3285,14 @@ function bindGlobal(){
     const mon = Number(el.dataset.mon);
     const d = new Date(state.submitDate); d.setMonth(mon);
     state.submitDate = clampSubmitDate(localDateISO(d));
+    state.submitDateManuallySet = true;
     clearForNewDate();
     render();
   });
   const dateSel = document.getElementById('dateSel');
-  if(dateSel) dateSel.onchange = ()=>{ state.submitDate = clampSubmitDate(dateSel.value); clearForNewDate(); render(); };
+  if(dateSel) dateSel.onchange = ()=>{ state.submitDate = clampSubmitDate(dateSel.value); state.submitDateManuallySet = true; clearForNewDate(); render(); };
   const yearSel = document.getElementById('yearSel');
-  if(yearSel) yearSel.onchange = ()=>{ const d=new Date(state.submitDate); d.setFullYear(Number(yearSel.value)); state.submitDate=clampSubmitDate(localDateISO(d)); clearForNewDate(); render(); };
+  if(yearSel) yearSel.onchange = ()=>{ const d=new Date(state.submitDate); d.setFullYear(Number(yearSel.value)); state.submitDate=clampSubmitDate(localDateISO(d)); state.submitDateManuallySet = true; clearForNewDate(); render(); };
 
   // SAP Current Stock upload gate
   const btnChooseSapFile = document.getElementById('btnChooseSapFile');
