@@ -204,6 +204,7 @@ main{flex:1;}
 .prow .pinfo{min-width:0;}
 .prow .pname{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .cat-pill{display:inline-block;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.3px;color:var(--wheat-dim);background:var(--amber-bg);border-radius:20px;padding:2px 8px;margin-left:6px;vertical-align:middle;white-space:nowrap;}
+.uom-equiv{color:var(--ink-soft);font-weight:400;}
 .prow .pmeta{font-family:var(--mono);font-size:10px;color:var(--ink-soft);margin-top:1px;}
 .prow .pmeta2{font-family:var(--mono);font-size:9.5px;color:var(--wheat-dim);margin-top:2px;}
 .prow .pinputs{display:flex;align-items:center;gap:6px;flex:none;}
@@ -420,6 +421,19 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
 const CATS = ["ATTA","MAIDA","SOOJI","SATTU","BESAN","DALIA","SPICES","SNACKS","INSTANT","MILLET","PAPAD","OTHERS"]; // seed default only — live list is state.masters.categories
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const todayISO = () => new Date().toISOString().slice(0,10);
+// Stock submission date is deliberately restricted to "current stock" only —
+// today, or yesterday's closing if catching up a day late. Never further
+// back (this isn't a historical-entry tool) and never forward (nothing
+// physical has happened on a day that hasn't arrived yet). MFD dates are a
+// completely separate concept and are NOT subject to this — a batch's
+// Manufacturing Date is often, correctly, far in the past.
+const yesterdayISO = () => { const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); };
+const clampSubmitDate = (dateStr) => {
+  const today = todayISO(), yesterday = yesterdayISO();
+  if(dateStr > today) return today;
+  if(dateStr < yesterday) return yesterday;
+  return dateStr;
+};
 
 const state = {
   role: null,            // 'cnf' | 'admin' | 'mis'
@@ -594,7 +608,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-18.1';
+const APP_VERSION = '2026-08-18.2';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1567,7 +1581,7 @@ function CnfSubmit(){
     <div class="month-pills" id="monthPills">
       ${MONTHS.map((m,i)=>`<span class="month-pill ${i===monthIdx?'active':''}" data-mon="${i}">${m}</span>`).join('')}
     </div>
-    <input type="date" id="dateSel" value="${state.submitDate}" max="${todayISO()}" style="border:none;background:#f2e8d0;border-radius:6px;padding:6px 8px;font-family:var(--mono);font-size:12px;font-weight:600;">
+    <input type="date" id="dateSel" value="${state.submitDate}" min="${yesterdayISO()}" max="${todayISO()}" style="border:none;background:#f2e8d0;border-radius:6px;padding:6px 8px;font-family:var(--mono);font-size:12px;font-weight:600;">
   </div>
 
   <div class="sap-banner">
@@ -1619,7 +1633,7 @@ function SapUploadGate(){
     <div class="month-pills" id="monthPills">
       ${MONTHS.map((m,i)=>`<span class="month-pill ${i===Number(state.submitDate.slice(5,7))-1?'active':''}" data-mon="${i}">${m}</span>`).join('')}
     </div>
-    <input type="date" id="dateSel" value="${state.submitDate}" max="${todayISO()}" style="border:none;background:#f2e8d0;border-radius:6px;padding:6px 8px;font-family:var(--mono);font-size:12px;font-weight:600;">
+    <input type="date" id="dateSel" value="${state.submitDate}" min="${yesterdayISO()}" max="${todayISO()}" style="border:none;background:#f2e8d0;border-radius:6px;padding:6px 8px;font-family:var(--mono);font-size:12px;font-weight:600;">
   </div>
   <div class="sap-gate">
     <div class="sap-gate-icon">📤</div>
@@ -1703,6 +1717,17 @@ function hasUnresolvedVariance(code){
   return !withinTolerance(diff) && !(state.varianceReasons[code] && state.varianceReasons[code].trim());
 }
 
+// Convenience-only display: shows what a KG figure equals in BAG/PC too,
+// wherever a product's conversion factors are known. Never changes any
+// actual math — KG stays the number of record everywhere; this is purely
+// "so a CNF doesn't have to do the division in their head."
+function formatUomEquivalents(kg, product){
+  const parts = [];
+  if(product.bagToKg) parts.push(`${(kg/product.bagToKg).toFixed(2)} BAG`);
+  if(product.pcToKg) parts.push(`${(kg/product.pcToKg).toFixed(1)} PC`);
+  return parts.length ? ` <span class="uom-equiv">(≈ ${parts.join(' / ')})</span>` : '';
+}
+
 function SapProductRow(sapRow){
   const p = state.masters.products.find(pp=>pp.code===sapRow.code);
   if(!p) return '';
@@ -1717,7 +1742,7 @@ function SapProductRow(sapRow){
   <div class="prow ${filled?'filled':''} ${needsReason && !reasonFilled?'needs-reason':''}" data-prow="${p.code}">
     <div class="pinfo">
       <div class="pname">${p.name} <span class="cat-pill">${p.category}</span></div>
-      <div class="pmeta">${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>`:''}
+      <div class="pmeta">${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
         ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}
       </div>
       <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b></div>
@@ -1754,8 +1779,16 @@ function BatchRow(p,b,i,total){
 }
 
 function CnfHistory(){
-  const subs = state.submissions.filter(s=>s.cnfCode===state.cnfUser.code).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
-  return `<div class="section-title">Submission History <span class="num">${subs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">click Export on any date to download that day's full stock report</span></div>
+  // Always scoped to the current calendar month — this is a submission
+  // log for "what have I sent this month," not an ever-growing archive to
+  // scroll through. Export any older submission's date directly from its
+  // audit trail on request if ever needed (the full history is never
+  // deleted server-side, only this view is scoped).
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  const monthLabel = now.toLocaleDateString('en-IN', {month:'long', year:'numeric'});
+  const subs = state.submissions.filter(s=>s.cnfCode===state.cnfUser.code && s.date>=monthStart).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
+  return `<div class="section-title">Submission History <span class="num">${subs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">${monthLabel} · click Export on any date to download that day's full stock report</span></div>
   ${subs.map(s=>`
     <div class="hist-item">
       <div><div class="d">${s.date}</div><div class="m">${new Set(s.items.map(i=>i.code)).size} products · ${s.items.length} MFD batch lines · Submitted ${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})} · ID ${s.id}</div></div>
@@ -1763,7 +1796,7 @@ function CnfHistory(){
         <span class="badge ok">${s.status}</span>
         <button class="btn btn-ghost btn-sm" data-exportsub="${s.id}">⬇ Export</button>
       </div>
-    </div>`).join('') || '<div class="empty">No submissions yet.</div>'}
+    </div>`).join('') || `<div class="empty">No submissions yet in ${monthLabel}.</div>`}
   `;
 }
 
@@ -2558,10 +2591,40 @@ function MisPanel(){
       <button class="navtoggle" id="btnNavToggle">☰ Menu</button>
       <div class="ch-title">Back Office — ${nav.find(n=>n[0]===state.misScreen)[1]}</div>
       <div class="ch-sub">REAL-TIME CNF-WISE STOCK · AGEING · FIFO · click any card, bar or row for detail</div>
+      ${ActiveFilterBanner()}
       ${state.misScreen==='movement' ? '' : MisFilters()}
       ${state.misScreen==='overview' ? MisOverview() : state.misScreen==='stock' ? MisStockTable() : state.misScreen==='fifo' ? MisFifo() : state.misScreen==='ageing' ? MisAgeing() : state.misScreen==='safety' ? MisSafety() : state.misScreen==='movement' ? MisMovement() : MisExport()}
     </div>
   </div>${MisDetailModal()}${MisSubmissionDetailModal()}`;
+}
+
+// Impossible-to-miss banner whenever ANY filter is narrowing what's shown —
+// this is the actual fix for a real bug: clicking a CNF from the
+// notification bell silently narrowed the global filter to just that one
+// CNF, with nothing anywhere clearly showing that had happened. Someone
+// checking a different CNF's data afterward would see it "missing" with no
+// visible reason why. This makes the active filter state impossible to
+// overlook, on every MIS screen, regardless of how it got set.
+function ActiveFilterBanner(){
+  const f = state.misFilters;
+  const cnfFiltered = f.cnfs!=='ALL';
+  const catFiltered = f.category!=='ALL';
+  const statusFiltered = f.status!=='ALL';
+  if(!cnfFiltered && !catFiltered && !statusFiltered) return '';
+  const parts = [];
+  if(cnfFiltered){
+    const names = (Array.isArray(f.cnfs)?f.cnfs:[f.cnfs]).map(code=>{
+      const c = state.masters.cnfs.find(cc=>cc.code===code);
+      return c ? c.name : code;
+    });
+    parts.push(`CNF: ${names.join(', ')}`);
+  }
+  if(catFiltered) parts.push(`Category: ${f.category}`);
+  if(statusFiltered) parts.push(`Status: ${f.status}`);
+  return `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span>🔍 <b>Filtered</b> — ${parts.join(' · ')}. Other CNFs/products won't show until this is cleared.</span>
+    <button class="btn btn-dark btn-sm" id="btnClearMisFilters">Clear Filter</button>
+  </div>`;
 }
 
 function MisFilters(){
@@ -3006,6 +3069,11 @@ function bindGlobal(){
     state.notifMenuOpen = false;
     render();
   });
+  const btnClearMisFilters = document.getElementById('btnClearMisFilters');
+  if(btnClearMisFilters) btnClearMisFilters.onclick = ()=>{
+    state.misFilters = { cnfs:'ALL', category:'ALL', status:'ALL' };
+    render();
+  };
   const btnNotifMarkRead = document.getElementById('btnNotifMarkRead');
   if(btnNotifMarkRead) btnNotifMarkRead.onclick = (e)=>{
     e.stopPropagation();
@@ -3118,22 +3186,21 @@ function bindGlobal(){
   });
 
   // Submit screen interactions — stock is ALWAYS current/today's physical
-  // stock; a CNF must never be able to pick a future date here (nothing
-  // physical has happened yet on a day that hasn't arrived).
+  // stock, or yesterday's if catching up a day late; a CNF must never be
+  // able to pick a future date, or anything older than yesterday, here.
   const clearForNewDate = ()=>{ state.sapUpload=null; state.draftItems={}; state.varianceReasons={}; state.sapSearch=''; state.submitCat=null; state.sapMissingOnlyFilter=false; };
-  const clampToToday = (dateStr)=>{ const today = todayISO(); return dateStr > today ? today : dateStr; };
   const monthPills = document.getElementById('monthPills');
   if(monthPills) monthPills.querySelectorAll('.month-pill').forEach(el=>el.onclick=()=>{
     const mon = Number(el.dataset.mon);
     const d = new Date(state.submitDate); d.setMonth(mon);
-    state.submitDate = clampToToday(d.toISOString().slice(0,10));
+    state.submitDate = clampSubmitDate(d.toISOString().slice(0,10));
     clearForNewDate();
     render();
   });
   const dateSel = document.getElementById('dateSel');
-  if(dateSel) dateSel.onchange = ()=>{ state.submitDate = clampToToday(dateSel.value); clearForNewDate(); render(); };
+  if(dateSel) dateSel.onchange = ()=>{ state.submitDate = clampSubmitDate(dateSel.value); clearForNewDate(); render(); };
   const yearSel = document.getElementById('yearSel');
-  if(yearSel) yearSel.onchange = ()=>{ const d=new Date(state.submitDate); d.setFullYear(Number(yearSel.value)); state.submitDate=clampToToday(d.toISOString().slice(0,10)); clearForNewDate(); render(); };
+  if(yearSel) yearSel.onchange = ()=>{ const d=new Date(state.submitDate); d.setFullYear(Number(yearSel.value)); state.submitDate=clampSubmitDate(d.toISOString().slice(0,10)); clearForNewDate(); render(); };
 
   // SAP Current Stock upload gate
   const btnChooseSapFile = document.getElementById('btnChooseSapFile');
@@ -3183,7 +3250,7 @@ function bindGlobal(){
     document.getElementById('btnCancelFinal').onclick = ()=>{ state.cnfModal=null; render(); };
     const btnConfirmFinal = document.getElementById('btnConfirmFinal');
     if(btnConfirmFinal) btnConfirmFinal.onclick = ()=>{
-      if(state.submitDate > todayISO()){ showToast('Stock date cannot be in the future — you can only submit current physical stock.'); state.submitDate = todayISO(); render(); return; }
+      if(state.submitDate > todayISO() || state.submitDate < yesterdayISO()){ showToast('Stock date must be today or yesterday — you can only submit current physical stock.'); state.submitDate = clampSubmitDate(state.submitDate); render(); return; }
       const unresolved = state.sapUpload ? state.sapUpload.rows.filter(r=>hasUnresolvedVariance(r.code)) : [];
       if(unresolved.length){ showToast(`${unresolved.length} item(s) still need a difference reason`); return; }
       const missing = missingRequiredCodes();
@@ -3844,7 +3911,7 @@ function updateRowMeta(code){
 
   const meta = row.querySelector('.pmeta');
   if(meta){
-    meta.innerHTML = `${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>`:''}
+    meta.innerHTML = `${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
       ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}`;
   }
 
