@@ -420,14 +420,27 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
 
 const CATS = ["ATTA","MAIDA","SOOJI","SATTU","BESAN","DALIA","SPICES","SNACKS","INSTANT","MILLET","PAPAD","OTHERS"]; // seed default only — live list is state.masters.categories
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-const todayISO = () => new Date().toISOString().slice(0,10);
+// LOCAL calendar date, not UTC. .toISOString() always returns the UTC date —
+// for anyone in India (UTC+5:30), that's WRONG for roughly the first 5.5
+// hours of every day (12:00 AM–5:29 AM IST), where it would still show
+// YESTERDAY's date: e.g. 1:00 AM on the 19th IST is 7:30 PM UTC on the
+// 18th, so .toISOString() reports the 18th. That mismatch is exactly what
+// caused "today's" stock date, submit-date range, and auto-downloaded
+// filenames to show yesterday's date for early-morning submissions.
+function localDateISO(d){
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth()+1).padStart(2,'0');
+  const dd = String(d.getDate()).padStart(2,'0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+const todayISO = () => localDateISO(new Date());
 // Stock submission date is deliberately restricted to "current stock" only —
 // today, or yesterday's closing if catching up a day late. Never further
 // back (this isn't a historical-entry tool) and never forward (nothing
 // physical has happened on a day that hasn't arrived yet). MFD dates are a
 // completely separate concept and are NOT subject to this — a batch's
 // Manufacturing Date is often, correctly, far in the past.
-const yesterdayISO = () => { const d = new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); };
+const yesterdayISO = () => { const d = new Date(); d.setDate(d.getDate()-1); return localDateISO(d); };
 const clampSubmitDate = (dateStr) => {
   const today = todayISO(), yesterday = yesterdayISO();
   if(dateStr > today) return today;
@@ -569,7 +582,7 @@ function seedSubmissions(masters){
     return {
       id: 'SUB'+Math.random().toString(36).slice(2,9).toUpperCase(),
       cnfCode: cnf.code, cnfName: cnf.name,
-      date: submDate.toISOString().slice(0,10),
+      date: localDateISO(submDate),
       timestamp: submDate.toISOString(),
       items,
       productsUpdated: new Set(items.map(i=>i.code)).size,
@@ -608,7 +621,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-18.2';
+const APP_VERSION = '2026-08-19.1';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -699,7 +712,7 @@ async function loadAll(){
   if(cachedMasters){
     // FAST PATH — render immediately from the local copy, no network wait.
     state.masters = normalizeMasters(cachedMasters);
-    state.submissions = lsGet('submissions') || [];
+    state.submissions = normalizeSubmissionList(lsGet('submissions') || []);
     state.loaded = true;
     await tryRestoreSession();
     render();
@@ -715,7 +728,7 @@ async function loadAll(){
     try{
       const boot = await apiGet('bootstrap');
       state.masters = normalizeMasters(boot.masters);
-      state.submissions = boot.latestSubmissions || [];
+      state.submissions = normalizeSubmissionList(boot.latestSubmissions || []);
       lsSet('masters', state.masters);
       lsSet('submissions', state.submissions);
       lsSet('masterSyncedAt', Date.now());
@@ -772,7 +785,7 @@ async function forceSyncMasters(){
   if(!getApiUrl()) return;
   const boot = await apiGet('bootstrap');
   state.masters = normalizeMasters(boot.masters);
-  const serverList = boot.latestSubmissions || [];
+  const serverList = normalizeSubmissionList(boot.latestSubmissions || []);
   const serverIds = new Set(serverList.map(s=>s.id));
   const localOnly = state.submissions.filter(s=>!serverIds.has(s.id));
   state.submissions = serverList.concat(localOnly);
@@ -907,6 +920,8 @@ if(typeof window!=='undefined' && window.addEventListener) window.addEventListen
 // Anything known locally that the server response doesn't (yet) include
 // is kept, not discarded.
 function mergeSubmissionsForCnf(cnfCode, list){
+  cnfCode = String(cnfCode);
+  list = normalizeSubmissionList(list);
   const existingForCnf = state.submissions.filter(s=>s.cnfCode===cnfCode);
   const serverIds = new Set(list.map(s=>s.id));
   const keepLocalOnly = existingForCnf.filter(s=>!serverIds.has(s.id));
@@ -923,7 +938,7 @@ async function ensureAllHistory(){
   if(!getApiUrl()) return;
   try{
     const res = await apiGet('allSubmissions');
-    const serverList = res.submissions||[];
+    const serverList = normalizeSubmissionList(res.submissions||[]);
     const serverIds = new Set(serverList.map(s=>s.id));
     const localOnly = state.submissions.filter(s=>!serverIds.has(s.id));
     state.submissions = serverList.concat(localOnly);
@@ -1136,8 +1151,25 @@ async function handleSapUpload(file){
   await saveDraft(state.cnfUser.code, {date: state.submitDate, items:{}, sapUpload: state.sapUpload, varianceReasons:{}});
 }
 
+// Forces CNF/product codes to strings on any submission data entering the
+// app — this is the client-side half of a real bug fix: Google Sheets
+// silently converts a numeric-looking cell ("3100") into an actual number
+// on read, and every comparison in this app expects a string (masters.cnfs
+// codes are always strings). One raw number slipping through made a CNF's
+// entire submission invisible to every dashboard — no error, just silently
+// treated as belonging to a CNF that doesn't match anything. Every place
+// submissions data enters state (server fetch, cache, merge) runs through
+// this, so the bug class can't resurface even if some other path someday
+// sends a number again.
+function normalizeSubmissionList(list){
+  return (list||[]).map(s=>Object.assign({}, s, {
+    cnfCode: String(s.cnfCode),
+    items: (s.items||[]).map(it=>Object.assign({}, it, {code: String(it.code)}))
+  }));
+}
+
 function latestSubmissionFor(cnfCode){
-  const subs = state.submissions.filter(s=>s.cnfCode===cnfCode).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
+  const subs = state.submissions.filter(s=>String(s.cnfCode)===String(cnfCode)).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
   return subs[0] || null;
 }
 
@@ -1785,7 +1817,7 @@ function CnfHistory(){
   // audit trail on request if ever needed (the full history is never
   // deleted server-side, only this view is scoped).
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
+  const monthStart = localDateISO(new Date(now.getFullYear(), now.getMonth(), 1));
   const monthLabel = now.toLocaleDateString('en-IN', {month:'long', year:'numeric'});
   const subs = state.submissions.filter(s=>s.cnfCode===state.cnfUser.code && s.date>=monthStart).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
   return `<div class="section-title">Submission History <span class="num">${subs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">${monthLabel} · click Export on any date to download that day's full stock report</span></div>
@@ -2903,7 +2935,7 @@ function MisMovement(){
   if(!state.movementFilters){
     const today = new Date();
     const twoMonthsAgo = new Date(today.getFullYear(), today.getMonth()-2, 1);
-    state.movementFilters = { cnf:'ALL', fromDate: twoMonthsAgo.toISOString().slice(0,10), toDate: todayISO() };
+    state.movementFilters = { cnf:'ALL', fromDate: localDateISO(twoMonthsAgo), toDate: todayISO() };
   }
   const f = state.movementFilters;
   const filtered = state.submissions
@@ -2911,10 +2943,10 @@ function MisMovement(){
     .sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
 
   const toD = new Date(f.toDate);
-  const thisMonthStart = new Date(toD.getFullYear(), toD.getMonth(), 1).toISOString().slice(0,10);
+  const thisMonthStart = localDateISO(new Date(toD.getFullYear(), toD.getMonth(), 1));
   const thisMonthEnd = f.toDate;
-  const lastMonthStart = new Date(toD.getFullYear(), toD.getMonth()-1, 1).toISOString().slice(0,10);
-  const lastMonthEnd = new Date(toD.getFullYear(), toD.getMonth(), 0).toISOString().slice(0,10);
+  const lastMonthStart = localDateISO(new Date(toD.getFullYear(), toD.getMonth()-1, 1));
+  const lastMonthEnd = localDateISO(new Date(toD.getFullYear(), toD.getMonth(), 0));
 
   const cnfsToShow = f.cnf==='ALL' ? state.masters.cnfs.filter(c=>c.status==='Active') : state.masters.cnfs.filter(c=>c.code===f.cnf);
   const monthlyStats = cnfsToShow.map(c=>{
@@ -3193,14 +3225,14 @@ function bindGlobal(){
   if(monthPills) monthPills.querySelectorAll('.month-pill').forEach(el=>el.onclick=()=>{
     const mon = Number(el.dataset.mon);
     const d = new Date(state.submitDate); d.setMonth(mon);
-    state.submitDate = clampSubmitDate(d.toISOString().slice(0,10));
+    state.submitDate = clampSubmitDate(localDateISO(d));
     clearForNewDate();
     render();
   });
   const dateSel = document.getElementById('dateSel');
   if(dateSel) dateSel.onchange = ()=>{ state.submitDate = clampSubmitDate(dateSel.value); clearForNewDate(); render(); };
   const yearSel = document.getElementById('yearSel');
-  if(yearSel) yearSel.onchange = ()=>{ const d=new Date(state.submitDate); d.setFullYear(Number(yearSel.value)); state.submitDate=clampSubmitDate(d.toISOString().slice(0,10)); clearForNewDate(); render(); };
+  if(yearSel) yearSel.onchange = ()=>{ const d=new Date(state.submitDate); d.setFullYear(Number(yearSel.value)); state.submitDate=clampSubmitDate(localDateISO(d)); clearForNewDate(); render(); };
 
   // SAP Current Stock upload gate
   const btnChooseSapFile = document.getElementById('btnChooseSapFile');
