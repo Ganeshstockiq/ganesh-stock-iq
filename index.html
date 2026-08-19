@@ -481,6 +481,7 @@ const state = {
   themeMenuOpen: false,
   notifMenuOpen: false,
   adminProductFilter: 'all', // 'all' | 'uncategorized'
+  selectedProductCodes: [], // Admin → Product Master bulk-category-assign selection
   syncingNow: false, // drives the Topbar sync button's "Syncing…" state
   newVersionAvailable: false, // set by checkForNewVersion() after login
   movementFilters: null, // {cnf:'ALL', fromDate, toDate} — initialized lazily so todayISO() is available
@@ -622,7 +623,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-19.6';
+const APP_VERSION = '2026-08-19.10';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1135,6 +1136,7 @@ async function handleSapUpload(file){
   const wordMap = buildCategoryWordMap();
   const newProducts = [];
   rows.forEach(r=>{
+    if(isBogusProductRow(r.code, r.name)) return; // a stray header row, not a real material — never auto-create a product from it
     if(!state.masters.products.some(p=>p.code===r.code)){
       const inferredCategory = inferCategoryFromName(r.name, wordMap) || 'OTHERS';
       const np = { code:r.code, name:r.name, category:inferredCategory, defaultUOM:'KG', bagToKg:null, pcToKg:null, safetyStockKg:0, selfLifeOverride:null };
@@ -1729,7 +1731,7 @@ function SapUploadGate(){
   <div class="sap-gate">
     <div class="sap-gate-icon">📤</div>
     <div class="t1">Upload SAP Current Stock to continue</div>
-    <div class="t2">Required before stock entry for ${state.submitDate}. Upload the SAP current-stock dump for this CNF — the product list, quantities, and everything you enter is validated against it.</div>
+    <div class="t2">Upload the SAP current-stock dump for this CNF — the product list, quantities, and everything you enter is validated against it.</div>
     <input type="file" id="sapFileInput" accept=".xlsx,.xls" style="display:none;">
     <button class="btn btn-primary" id="btnChooseSapFile">Choose SAP Current Stock file (.xlsx)</button>
     <div id="sapUploadErr" style="color:var(--red);font-size:12.5px;margin-top:10px;min-height:16px;"></div>
@@ -2176,30 +2178,45 @@ function AdminProducts(){
   const uncategorized = state.masters.products.filter(p=>p.category==='OTHERS');
   const filterOn = state.adminProductFilter==='uncategorized';
   const visibleProducts = filterOn ? uncategorized : state.masters.products;
+  const selectedCount = state.selectedProductCodes.length;
   return `
   <div class="panel-card">
     <h4>Product Master
       <span class="small-btn-row">
         <button class="btn btn-ghost btn-sm" data-samplecsv="product">⬇ Sample CSV</button>
+        <button class="btn btn-ghost btn-sm" id="btnExportForCategoryEdit">⬇ Export for Bulk Category Edit</button>
         <button class="btn btn-ghost btn-sm" data-triggerimport="product">⬆ Import CSV</button>
         <button class="btn btn-primary btn-sm" data-openadd="product">+ Add Product</button>
       </span>
     </h4>
     <input type="file" id="importProductFile" accept=".csv,.xlsx,.xls" style="display:none;">
     <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 12px;">Bulk-loading 400+ SKUs, or uploading a <b>UOM Converter</b> (BAG/PC → kg factors)? Same file — .xlsx or .csv both work. A new code creates a product; a code that already exists (e.g. one auto-added from a CNF's SAP Current Stock upload) gets updated — only the columns you fill in change, everything else stays as-is. So a converter file with just <code>code, bagToKg, pcToKg</code> filled in and the rest blank works perfectly for patching conversion factors onto existing products. A category in the file that doesn't exist yet (e.g. "M.Besan") is created automatically — no need to add it first.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 16px;"><b>Two ways to bulk-set category:</b> (1) <b>Export for Bulk Category Edit</b> → edit the Category column in Excel/Sheets → <b>Import CSV</b> back — matching codes update in place. (2) Or right here: tick the checkbox on however many products, pick a category below, and apply — no file needed.</p>
     ${uncategorized.length ? `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
       <span>⚠ <b>${uncategorized.length} product${uncategorized.length!==1?'s':''}</b> landed in "Others" — no real category was matched (usually a SAP-auto-created item whose description didn't resemble anything already in your Product Master). Worth reviewing and assigning a real category.</span>
       <button class="btn btn-dark btn-sm" id="btnToggleUncategorized">${filterOn?'Show All Products':'Show Only Uncategorized'}</button>
     </div>` : ''}
+    ${selectedCount ? `<div class="cadence-banner ok" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span><b>${selectedCount} product${selectedCount!==1?'s':''} selected.</b> Assign category:</span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <select id="bulkCategorySelect" style="padding:6px 8px;border-radius:6px;border:1px solid var(--line);">
+          ${state.masters.categories.map(c=>`<option value="${c}">${c}</option>`).join('')}
+        </select>
+        <button class="btn btn-dark btn-sm" id="btnApplyBulkCategory">Apply to Selected</button>
+        <button class="btn btn-ghost btn-sm" id="btnClearProductSelection">Clear Selection</button>
+      </span>
+    </div>` : ''}
     <div class="tablewrap"><table class="dtable">
-      <thead><tr><th>Code</th><th>Name</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">Self-Life Override</th><th class="mono">Safety (kg)</th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="chkSelectAllProducts" ${visibleProducts.length && visibleProducts.every(p=>state.selectedProductCodes.includes(p.code))?'checked':''}></th><th>Code</th><th>Name</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">Self-Life Override</th><th class="mono">Safety (kg)</th><th></th></tr></thead>
       <tbody>
         ${visibleProducts.map(p=>`<tr ${p.category==='OTHERS'?'style="background:var(--amber-bg);"':''}>
+          <td><input type="checkbox" class="prod-select" data-prodcode="${p.code}" ${state.selectedProductCodes.includes(p.code)?'checked':''}></td>
           <td class="mono">${p.code}</td><td>${p.name}</td><td>${p.category==='OTHERS'?'<span class="badge low">OTHERS — uncategorized</span>':p.category}</td><td class="mono">${p.defaultUOM}</td>
           <td class="mono">${p.bagToKg??'—'}</td><td class="mono">${p.pcToKg??'—'}</td>
           <td class="mono">${p.selfLifeOverride? p.selfLifeOverride+'d' : `<span style="color:var(--ink-soft)">inherits ${state.masters.categorySelfLife[p.category]}d</span>`}</td>
           <td class="mono">${p.safetyStockKg}</td>
-        </tr>`).join('') || `<tr><td colspan="8" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
+          <td><span data-removeproduct="${p.code}" title="Remove this product" style="cursor:pointer;color:var(--red);font-weight:700;">✕</span></td>
+        </tr>`).join('') || `<tr><td colspan="10" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
       </tbody>
     </table></div>
   </div>`;
@@ -2464,6 +2481,14 @@ function isBogusCategoryName(name){
   return BOGUS_CATEGORY_NAMES.has(String(name||'').trim().toUpperCase());
 }
 
+// Same guard, for products: a header row leaking in as literal data (code
+// "code", name "name") — this is exactly the bug seen in the field, likely
+// from a header row surviving a copy/paste into row 2 of Product_Master.
+const BOGUS_PRODUCT_FIELD_VALUES = new Set(['CODE','PRODUCT CODE','PRODUCTCODE','NAME','PRODUCT NAME','PRODUCTNAME','MATERIAL','MATERIAL CODE','MATERIALCODE']);
+function isBogusProductRow(code, name){
+  return BOGUS_PRODUCT_FIELD_VALUES.has(String(code||'').trim().toUpperCase()) || BOGUS_PRODUCT_FIELD_VALUES.has(String(name||'').trim().toUpperCase());
+}
+
 function validateProductRows(objs){
   const valid = [], errors = [], warnings = [];
   const seenCodes = new Set();
@@ -2472,6 +2497,7 @@ function validateProductRows(objs){
     const rowNum = idx+2; // header is row 1
     const code = o.code;
     if(!code){ errors.push(`Row ${rowNum}: missing product code — skipped.`); return; }
+    if(isBogusProductRow(code, o.name)){ errors.push(`Row ${rowNum}: "${code}" / "${o.name}" looks like a stray header row, not a real product — skipped.`); return; }
     if(seenCodes.has(code)){ errors.push(`Row ${rowNum}: code "${code}" appears twice in this file — first occurrence used.`); return; }
     seenCodes.add(code);
 
@@ -3343,22 +3369,24 @@ function bindGlobal(){
     const btnConfirmFinal = document.getElementById('btnConfirmFinal');
     if(btnConfirmFinal) btnConfirmFinal.onclick = ()=>{
       if(state.submitDate > todayISO() || state.submitDate < yesterdayISO()){ showToast('Stock date must be today or yesterday — you can only submit current physical stock.'); state.submitDate = clampSubmitDate(state.submitDate); render(); return; }
-      // Catches the gap the range check above can't: a SAP upload started
-      // BEFORE midnight, worked on past it, and finished after — by
-      // submit time, the stale date still happens to equal the (now new)
-      // "yesterday", so the range check above sees nothing wrong. This is
-      // the actual fix — if the date was never a deliberate choice AND the
-      // real calendar day has moved on since it was set, this is stale,
-      // not intentional, no matter how it looks against the range. Forces
-      // a clean restart for the real current date rather than silently
-      // accepting data that's quietly a day old.
-      if(!state.submitDateManuallySet && state.submitDate !== todayISO()){
-        state.cnfModal = null;
-        showToast(`⚠ It's now ${todayISO()} — this entry was started for ${state.submitDate}. Please re-upload the SAP file for today's current stock.`);
-        clearForNewDate();
-        state.submitDate = todayISO();
-        render();
-        return;
+      // Any submission for a date that isn't literally today requires an
+      // explicit, in-the-moment acknowledgment — checked FRESH, right here,
+      // at the actual point of submission. This replaces relying on an
+      // internal flag for "did they touch the date picker earlier" (which
+      // can go stale across a session spanning midnight, or if a stale SAP
+      // upload sits open) with a real, unavoidable confirmation exactly
+      // when it matters — the moment of submission, not sometime earlier.
+      if(state.submitDate !== todayISO()){
+        const proceed = confirm(`⚠ You are submitting stock dated ${state.submitDate} — today is ${todayISO()}.\n\nOnly confirm this if you are deliberately submitting yesterday's closing stock.\n\nOK = Yes, submit for ${state.submitDate}\nCancel = No, switch to today (${todayISO()}) instead`);
+        if(!proceed){
+          state.cnfModal = null;
+          clearForNewDate();
+          state.submitDate = todayISO();
+          state.submitDateManuallySet = false;
+          showToast(`Reset to today (${todayISO()}) — please re-upload the SAP Current Stock file.`);
+          render();
+          return;
+        }
       }
       const unresolved = state.sapUpload ? state.sapUpload.rows.filter(r=>hasUnresolvedVariance(r.code)) : [];
       if(unresolved.length){ showToast(`${unresolved.length} item(s) still need a difference reason`); return; }
@@ -3443,6 +3471,48 @@ function bindGlobal(){
   if(btnToggleUncategorized) btnToggleUncategorized.onclick = ()=>{
     state.adminProductFilter = state.adminProductFilter==='uncategorized' ? 'all' : 'uncategorized';
     render();
+  };
+  // Product Master — bulk category assign, per-row delete, export for bulk edit
+  document.querySelectorAll('[data-prodcode]').forEach(el=>el.onchange=()=>{
+    const code = el.dataset.prodcode;
+    if(el.checked){ if(!state.selectedProductCodes.includes(code)) state.selectedProductCodes.push(code); }
+    else { state.selectedProductCodes = state.selectedProductCodes.filter(c=>c!==code); }
+    render();
+  });
+  const chkSelectAllProducts = document.getElementById('chkSelectAllProducts');
+  if(chkSelectAllProducts) chkSelectAllProducts.onchange = ()=>{
+    const filterOn = state.adminProductFilter==='uncategorized';
+    const visible = (filterOn ? state.masters.products.filter(p=>p.category==='OTHERS') : state.masters.products).map(p=>p.code);
+    if(chkSelectAllProducts.checked){ state.selectedProductCodes = Array.from(new Set([...state.selectedProductCodes, ...visible])); }
+    else { state.selectedProductCodes = state.selectedProductCodes.filter(c=>!visible.includes(c)); }
+    render();
+  };
+  const btnClearProductSelection = document.getElementById('btnClearProductSelection');
+  if(btnClearProductSelection) btnClearProductSelection.onclick = ()=>{ state.selectedProductCodes = []; render(); };
+  const btnApplyBulkCategory = document.getElementById('btnApplyBulkCategory');
+  if(btnApplyBulkCategory) btnApplyBulkCategory.onclick = async ()=>{
+    const cat = document.getElementById('bulkCategorySelect').value;
+    const n = state.selectedProductCodes.length;
+    state.masters.products.forEach(p=>{ if(state.selectedProductCodes.includes(p.code)) p.category = cat; });
+    state.selectedProductCodes = [];
+    await saveMasters();
+    render();
+    showToast(`${n} product${n!==1?'s':''} moved to ${cat}`);
+  };
+  document.querySelectorAll('[data-removeproduct]').forEach(el=>el.onclick=async ()=>{
+    const code = el.dataset.removeproduct;
+    const p = state.masters.products.find(pp=>pp.code===code);
+    if(!confirm(`Remove product "${p?p.name:code}" (${code}) from the Product Master? This does not delete any past submissions that reference it.`)) return;
+    state.masters.products = state.masters.products.filter(pp=>pp.code!==code);
+    state.selectedProductCodes = state.selectedProductCodes.filter(c=>c!==code);
+    await saveMasters();
+    render();
+    showToast('Product removed');
+  });
+  const btnExportForCategoryEdit = document.getElementById('btnExportForCategoryEdit');
+  if(btnExportForCategoryEdit) btnExportForCategoryEdit.onclick = ()=>{
+    exportGenericCsv('products-for-category-edit.csv', ['code','name','category','defaultUOM','bagToKg','pcToKg','safetyStockKg','selfLifeOverride'],
+      state.masters.products.map(p=>[p.code, p.name, p.category, p.defaultUOM, p.bagToKg??'', p.pcToKg??'', p.safetyStockKg, p.selfLifeOverride??'']));
   };
   const btnMisRefresh = document.getElementById('btnMisRefresh');
   if(btnMisRefresh) btnMisRefresh.onclick = async ()=>{
@@ -4056,6 +4126,13 @@ function renderRowsOnly(){
 }
 
 setTheme(getTheme());
+// A CNF opening this on a slow mobile connection could otherwise stare at
+// a genuinely blank white page for however long the first network fetch
+// takes — nothing was ever rendered before that fetch resolved. This
+// paints the "Loading stock system…" state immediately, synchronously,
+// before any async work starts, so there's always something on screen
+// within milliseconds — worst case a loading message, never true blankness.
+render();
 loadAll();
 </script>
 </body>
