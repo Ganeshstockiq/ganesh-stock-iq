@@ -110,6 +110,15 @@ input,select{font-family:var(--sans);}
 .notif-btn:hover{border-color:var(--wheat-light);transform:scale(1.06);}
 .notif-btn:active{transform:scale(.92);}
 .notif-badge{position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;font-family:var(--mono);font-size:9px;font-weight:700;min-width:16px;height:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;padding:0 3px;}
+.notify-on-badge{font-family:var(--mono);font-size:11px;font-weight:700;color:#2f8f52;background:var(--green-bg,#e7f5ec);border-radius:17px;padding:8px 12px;white-space:nowrap;}
+.notify-off-badge{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--ink-soft);background:var(--panel-2);border-radius:17px;padding:8px 12px;white-space:nowrap;opacity:.7;}
+.nav-badge{position:absolute;top:-6px;right:-6px;background:var(--red);color:#fff;font-family:var(--mono);font-size:9px;font-weight:700;min-width:15px;height:15px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;padding:0 3px;}
+.msg-card{background:#fff;border:1px solid #ecdfbe;border-left:3px solid var(--wheat);border-radius:11px;padding:12px 14px;margin-bottom:10px;}
+.msg-card-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px;}
+.msg-card-top b{font-family:var(--disp);font-size:14px;color:var(--ink);}
+.msg-card-time{font-family:var(--mono);font-size:10px;color:var(--ink-soft);white-space:nowrap;flex-shrink:0;}
+.msg-card-body{font-size:13px;color:var(--ink);line-height:1.6;}
+.msg-card-from{font-family:var(--mono);font-size:10px;color:var(--wheat-dim);margin-top:8px;}
 .notif-pop{position:absolute;right:0;top:44px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;width:280px;max-height:400px;overflow-y:auto;box-shadow:0 12px 30px rgba(0,0,0,.35);z-index:80;animation:modalPop .16s cubic-bezier(.2,.8,.3,1);}
 .notif-head{font-family:var(--disp);font-size:14px;font-weight:600;color:var(--surface-text);padding:2px 4px 8px;}
 .notif-grp{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:var(--wheat-dim);padding:8px 4px 4px;display:flex;justify-content:space-between;}
@@ -190,19 +199,59 @@ main{flex:1;}
 .month-pill{font-family:var(--mono);font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid #e6dabf;background:#fff;color:var(--ink-soft);white-space:nowrap;}
 .month-pill.active{background:var(--wheat);border-color:var(--wheat);color:var(--on-accent);font-weight:700;}
 
-.cat-tabs{display:flex;gap:6px;overflow-x:auto;padding:2px 0 12px;position:sticky;top:126px;background:var(--cream);z-index:30;}
-.cat-tab{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.4px;padding:8px 12px;border-radius:20px;border:1px solid #e2d3a9;background:#fff;color:var(--ink-soft);white-space:nowrap;}
+.cat-tabs{display:flex;gap:8px;overflow-x:auto;padding:2px 0 14px;position:sticky;top:126px;background:var(--cream);z-index:30;}
+.cat-tab{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.4px;padding:8px 12px;border-radius:20px;border:1px solid #e2d3a9;background:#fff;color:var(--ink-soft);white-space:nowrap;transition:transform .25s ease, box-shadow .25s ease;}
+.cat-tab-advanced{animation:gsi-cat-advance .9s ease;}
+@keyframes gsi-cat-advance{0%{transform:scale(1.12);box-shadow:0 0 0 4px var(--amber-bg);}60%{transform:scale(1.04);}100%{transform:scale(1);box-shadow:none;}}
 .cat-tab.active{background:var(--btn-strong-bg);border-color:var(--btn-strong-bg);color:var(--wheat-light);}
 .cat-tab.cat-zero{opacity:.55;}
 .cat-tab .cnt{opacity:.6;margin-left:4px;}
+
+/* Category tabs, v2 — each one is a tiny grain silo filling up as the CNF
+   enters batches, on-brand with the product's own "silo" identity rather
+   than a generic progress pill. */
+.cat-tab-v2{display:inline-flex;align-items:center;gap:8px;padding:7px 13px 7px 9px;border-radius:13px;border:1px solid #e2d3a9;background:#fff;cursor:pointer;white-space:nowrap;transition:transform .2s ease, box-shadow .2s ease, border-color .2s ease;}
+.cat-tab-v2:hover{transform:translateY(-1px);}
+.cat-tab-v2.active{border-color:var(--wheat);box-shadow:0 0 0 2px var(--amber-bg);}
+.cat-tab-v2.cat-tab-done{border-color:var(--green,#2f8f52);background:var(--green-bg,#e7f5ec);}
+.cat-tab-v2.cat-zero{opacity:.5;}
+.cat-tab-v2.cat-tab-advanced{animation:gsi-cat-advance .9s ease;}
+.cat-tab-gauge{width:7px;height:24px;border-radius:4px;background:#f0e6cc;overflow:hidden;display:flex;align-items:flex-end;flex-shrink:0;}
+.cat-tab-gauge-fill{width:100%;background:linear-gradient(180deg,var(--wheat-light),var(--wheat));border-radius:4px;transition:height .45s cubic-bezier(.34,1.3,.64,1);}
+.cat-tab-done .cat-tab-gauge-fill{background:linear-gradient(180deg,#6fbf87,#2f8f52);}
+.cat-tab-textwrap{display:flex;flex-direction:column;line-height:1.3;}
+.cat-tab-label{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.4px;color:var(--ink);}
+.cat-tab-cnt{font-family:var(--mono);font-size:8.5px;color:var(--ink-soft);opacity:.75;}
+.cat-tab-check{color:#2f8f52;font-weight:900;font-size:13px;}
+
+/* Overall progress — a real visual bar, not just a line of small text, so
+   "how far along am I" reads at a glance. */
+.overall-progress{margin:2px 0 12px;}
+.overall-progress-bar{height:7px;border-radius:5px;background:#f0e6cc;overflow:hidden;margin-bottom:6px;}
+.overall-progress-fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--wheat-dim),var(--wheat-light));transition:width .4s cubic-bezier(.34,1.3,.64,1);}
+.overall-progress-label{font-family:var(--mono);font-size:11px;color:var(--ink-soft);}
+
+/* Manual "Next Category" — a real, inviting call-to-action so moving on is
+   always the CNF's own deliberate tap, never something that happens to
+   them mid-entry. */
+.next-cat-cta{width:100%;margin-top:16px;padding:14px 18px;border-radius:14px;border:none;background:linear-gradient(135deg,var(--wheat-dim),var(--wheat));color:#fff;cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;gap:3px;transition:transform .15s ease, box-shadow .15s ease;box-shadow:0 4px 14px rgba(204,143,63,.28);text-align:left;}
+.next-cat-cta:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(204,143,63,.38);}
+.next-cat-cta:active{transform:translateY(0);}
+.next-cat-cta-label{font-family:var(--mono);font-size:10px;opacity:.9;letter-spacing:.2px;}
+.next-cat-cta-target{font-family:var(--serif);font-size:19px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.next-cat-cta-arrow{display:inline-block;transition:transform .2s ease;}
+.next-cat-cta:hover .next-cat-cta-arrow{transform:translateX(5px);}
+
 .chip.chip-warn{background:var(--red-bg);border-color:var(--red);color:var(--red);cursor:pointer;}
 
 .searchbar{display:flex;gap:8px;margin-bottom:10px;}
 .searchbar input{flex:1;padding:10px 12px;border-radius:9px;border:1px solid #e2d3a9;background:#fff;font-size:13px;}
 
-.prow{background:#fff;border:1px solid #ecdfbe;border-radius:11px;padding:10px 12px;margin-bottom:8px;display:flex;flex-direction:column;gap:2px;}
-.prow .pinfo{min-width:0;}
-.prow .pname{font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.prow{background:#fff;border:1px solid #ecdfbe;border-radius:11px;padding:0 12px 10px;margin-bottom:8px;display:flex;flex-direction:column;gap:2px;border-left:3px solid #ecdfbe;transition:border-color .15s ease;}
+.prow.filled{border-left-color:var(--wheat);background:#fffaf0;}
+.prow.needs-reason{border-left-color:var(--red);background:var(--red-bg);}
+.prow .pinfo{min-width:0;position:sticky;top:178px;background:inherit;z-index:8;padding:10px 0 6px;box-shadow:0 4px 6px -4px rgba(60,45,15,.1);}
+.prow .pname{font-size:13.5px;font-weight:600;color:var(--ink);}
 .cat-pill{display:inline-block;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.3px;color:var(--wheat-dim);background:var(--amber-bg);border-radius:20px;padding:2px 8px;margin-left:6px;vertical-align:middle;white-space:nowrap;}
 .uom-equiv{color:var(--ink-soft);font-weight:400;}
 .prow .pmeta{font-family:var(--mono);font-size:10px;color:var(--ink-soft);margin-top:1px;}
@@ -211,11 +260,12 @@ main{flex:1;}
 .prow input.qty{width:64px;padding:9px 6px;text-align:center;border-radius:7px;border:1px solid #ddceac;font-family:var(--mono);font-weight:700;font-size:14px;}
 .prow select.uom{padding:9px 4px;border-radius:7px;border:1px solid #ddceac;font-family:var(--mono);font-size:11px;background:#fbf6ea;}
 .prow input.mfd{width:112px;padding:8px 6px;border-radius:7px;border:1px solid #ddceac;font-family:var(--mono);font-size:11px;}
-.prow.filled{border-color:var(--wheat);background:#fffaf0;}
 .batchlist{display:flex;flex-direction:column;}
-.batchrow{display:flex;gap:8px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed #ecdfbe;flex-wrap:wrap;}
-.mfd-row{display:flex;gap:6px;align-items:center;flex:1;min-width:150px;}
-.mfd-input-wrap{position:relative;display:flex;align-items:center;flex:1;}
+.batchrow{display:flex;gap:8px;align-items:flex-start;margin-top:8px;padding-top:8px;border-top:1px dashed #ecdfbe;}
+.batch-badge{width:18px;height:18px;border-radius:50%;background:var(--wheat);color:#fff;font-family:var(--mono);font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:3px;}
+.batch-fields{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;}
+.mfd-row{display:flex;gap:6px;align-items:center;flex:1;min-width:150px;flex-wrap:wrap;}
+.mfd-input-wrap{position:relative;display:flex;align-items:center;flex:1;min-width:130px;}
 .mfd-text{width:100%;padding-right:34px;}
 .mfd-text.mfd-error-state{border-color:var(--red);background:var(--red-bg);}
 .mfd-cal-btn{position:absolute;right:2px;background:none;border:none;cursor:pointer;font-size:14px;padding:4px 6px;opacity:.6;}
@@ -227,19 +277,28 @@ main{flex:1;}
 .mfd-row label{font-family:var(--mono);font-size:9px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
 .uom-fixed{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--ink-soft);padding:9px 10px;background:#f2e8d0;border-radius:7px;flex:none;}
 .uom-warn{font-family:var(--mono);font-size:10px;color:var(--orange);background:var(--amber-bg);border-radius:7px;padding:6px 9px;margin-top:6px;line-height:1.5;}
-.prow.needs-reason{border-color:var(--red);background:var(--red-bg);}
-.reason-row{margin-top:8px;padding-top:8px;border-top:1px dashed #ecdfbe;}
+.reason-row{margin-top:8px;padding-top:10px;border-top:1px dashed #ecdfbe;}
 .reason-row label{display:block;font-family:var(--mono);font-size:9px;color:var(--red);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;font-weight:700;}
 .reason-row input{width:100%;padding:9px 10px;border-radius:7px;border:1px solid var(--red);background:#fff;font-size:13px;}
+.reason-row-optional label{color:var(--ink-soft);}
+.reason-row-optional input{border-color:var(--line);background:#faf7ef;}
 .sap-banner{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#fff;border:1px solid var(--wheat-dim);border-radius:11px;padding:10px 14px;margin-bottom:12px;}
 .sap-banner b{font-size:13px;color:var(--ink);}
 .sap-banner .sm{font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin-top:2px;}
 .sap-gate{max-width:460px;margin:30px auto;text-align:center;background:#fff;border:1px solid #e6dabf;border-radius:14px;padding:32px 26px;box-shadow:0 10px 30px rgba(60,45,15,.08);}
 .sap-gate-icon{font-size:36px;margin-bottom:10px;}
+.sap-gate-icon-spin{animation:gsi-grain-sway 1.8s ease-in-out infinite;display:inline-block;}
+@keyframes gsi-grain-sway{0%,100%{transform:rotate(-8deg) scale(1);}50%{transform:rotate(8deg) scale(1.08);}}
+.sap-loading-dots{display:flex;justify-content:center;gap:6px;margin:14px 0;}
+.sap-loading-dots span{width:7px;height:7px;border-radius:50%;background:var(--wheat);animation:gsi-dot-bounce 1.2s ease-in-out infinite;}
+.sap-loading-dots span:nth-child(2){animation-delay:.15s;}
+.sap-loading-dots span:nth-child(3){animation-delay:.3s;}
+@keyframes gsi-dot-bounce{0%,80%,100%{transform:translateY(0);opacity:.5;}40%{transform:translateY(-7px);opacity:1;}}
 .sap-gate .t1{font-family:var(--disp);font-size:18px;font-weight:600;margin-bottom:8px;}
 .sap-gate .t2{font-size:13px;color:var(--ink-soft);line-height:1.6;margin-bottom:20px;}
 .sap-gate-note{font-family:var(--mono);font-size:11px;color:var(--ink-soft);line-height:1.6;margin-top:16px;text-align:left;background:#f6efdb;border-radius:8px;padding:10px 12px;}
-.addbatch-btn{align-self:flex-start;background:none;border:none;color:var(--wheat-dim);font-family:var(--mono);font-size:11px;font-weight:700;padding:8px 0 1px;text-decoration:underline;text-underline-offset:2px;}
+.addbatch-btn{align-self:flex-start;background:#fff;border:1.5px dashed #ddceac;color:var(--wheat-dim);font-family:var(--mono);font-size:11px;font-weight:700;padding:8px 14px;border-radius:9px;margin-top:8px;cursor:pointer;transition:all .15s ease;}
+.addbatch-btn:hover{border-color:var(--wheat);background:var(--amber-bg);color:var(--wheat);}
 .addbatch-btn:hover{color:var(--wheat);}
 .rmbatch-btn{background:var(--red-bg);color:var(--red);border:none;border-radius:7px;width:32px;height:37px;font-size:13px;font-weight:700;flex:none;}
 
@@ -398,19 +457,21 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
   .kpi-row.four{grid-template-columns:repeat(2,1fr);}
 }
 /* CNF Panel on desktop/laptop — same workflow, wider layout so it isn't
-   just the phone column stretched out with empty space either side. */
+   just the phone column stretched out with empty space either side.
+   Deliberately still a SINGLE column, even on a big screen — a multi-column
+   grid let cards grow to different heights (a product with 2 MFD batches
+   vs. one with none), so the page scrolled unevenly and a product's name
+   could scroll out of view while its own input fields were still on
+   screen — the actual reported problem: no longer being sure which
+   product you were typing into. One column keeps the header for whatever
+   you're editing always directly above it. */
 @media(min-width:900px){
   .cnf-shell .cnf-body{max-width:1180px;}
   .cnf-shell .cnf-header-inner{max-width:1180px;margin:0 auto;}
-  #prodRows{display:grid;grid-template-columns:repeat(2,1fr);gap:10px 16px;align-items:start;}
-  #prodRows .prow{margin-bottom:0;}
-  #prodRows .empty{grid-column:1/-1;}
+  #prodRows{max-width:760px;}
   .kpi-row{grid-template-columns:repeat(4,1fr);}
   .sticky-submit .row{max-width:1180px;margin:0 auto;}
   .cat-tabs{position:sticky;flex-wrap:wrap;overflow-x:visible;}
-}
-@media(min-width:1300px){
-  #prodRows{grid-template-columns:repeat(3,1fr);}
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -521,6 +582,12 @@ const state = {
   cnfUser: null,          // logged-in cnf record
   cnfScreen: 'dashboard', // dashboard | submit | history
   submitCat: null,        // resolved dynamically once SAP data is loaded
+  categoryJustAdvanced: null, // category code — drives a brief highlight animation right after a manual "Next Category" tap
+  sapFileLoading: false, // drives the branded loading state on SapUploadGate while a SAP file is being parsed
+  messages: [], // Admin/MIS -> CNF broadcasts (rates, schemes) — loaded per-role on login
+  composerOpen: false, // Admin/MIS "Send Message" form visibility
+  composerTargetCnfs: [], // [] means "All CNFs" in the composer
+  notifyPermission: (typeof Notification!=='undefined') ? Notification.permission : 'unsupported', // desktop notification permission state
   submitDate: todayISO(),
   submitDateManuallySet: false, // did the CNF actively pick a date this session? distinguishes "genuinely chose yesterday to catch up" from "tab was just left open across midnight" — see render()'s staleness check
   submitSearch: '',
@@ -570,39 +637,49 @@ function seedMasters(){
     {code:'3500', name:'Patna', userId:'3500', password:'demo', status:'Inactive', location:'Bihar', submissionFrequencyDays:7},
   ];
   const P = (code,name,category,defUOM,bagKg,pcKg,safety,selfLifeOverride)=>({code,name,category,defaultUOM:defUOM,bagToKg:bagKg||null,pcToKg:pcKg||null,safetyStockKg:safety,selfLifeOverride:selfLifeOverride||null});
+  // Real product codes only — pulled from your actual SAP exports seen
+  // during setup, not invented placeholders. This demo/fallback list only
+  // ever shows up before your real 400-SKU Product Master has synced (a
+  // brand-new device, or local demo mode with no backend) — every one of
+  // these codes genuinely exists in your catalog, so nothing here reads as
+  // fake data mixed into real data. Categories with no confirmed real code
+  // on record (Snacks, Instant, Millet, Papad, plain Besan) are left with
+  // no seed products rather than invented ones — Admin's real Product
+  // Master import is what actually populates them.
   const products = [
-    P('ATT001','Ganesh Atta 5kg','ATTA','KG',25,5,600),
-    P('ATT002','Ganesh Atta 10kg','ATTA','KG',25,10,500),
-    P('ATT003','Chakki Fresh Atta 1kg','ATTA','KG',25,1,400),
-    P('ATT004','Ganesh Atta 25kg','ATTA','BAG',25,25,800),
-    P('MAI001','Maida Fine 1kg','MAIDA','KG',25,1,350),
-    P('MAI002','Maida Premium 5kg','MAIDA','KG',25,5,300),
-    P('MAI003','Maida 25kg Bag','MAIDA','BAG',25,25,500),
-    P('SOO001','Sooji Rava 1kg','SOOJI','KG',25,1,300),
-    P('SOO002','Bombay Rava 500g','SOOJI','KG',25,.5,250),
-    P('SAT001','Sattu Roasted 1kg','SATTU','KG',25,1,220,180),
-    P('SAT002','Sattu Premium 500g','SATTU','KG',25,.5,180,180),
-    P('BES001','Besan Fine 1kg','BESAN','KG',25,1,260),
-    P('BES002','Besan 5kg','BESAN','KG',25,5,240),
-    P('DAL001','Moong Dalia 1kg','DALIA','KG',25,1,200),
-    P('DAL002','Masoor Dalia 500g','DALIA','KG',25,.5,160),
-    P('SPC001','Garam Masala 100g','SPICES','PC',null,.1,90,365),
-    P('SPC002','Turmeric Powder 200g','SPICES','PC',null,.2,120,365),
-    P('SPC003','Chilli Powder 200g','SPICES','PC',null,.2,120,365),
-    P('SNK001','Bhujia Sev 200g','SNACKS','PC',null,.2,150,120),
-    P('SNK002','Namkeen Mix 400g','SNACKS','PC',null,.4,150,120),
-    P('INS001','Instant Poha Mix 80g','INSTANT','PC',null,.08,100,180),
-    P('INS002','Instant Upma Mix 80g','INSTANT','PC',null,.08,100,180),
-    P('MIL001','Ragi Flour 1kg','MILLET','KG',25,1,180,150),
-    P('MIL002','Jowar Flour 1kg','MILLET','KG',25,1,150,150),
-    P('MIL003','Bajra Flour 1kg','MILLET','KG',25,1,150,150),
-    P('PAP001','Papad Plain 200g','PAPAD','PC',null,.2,110,270),
-    P('PAP002','Papad Masala 200g','PAPAD','PC',null,.2,90,270),
-    P('OTH001','Vermicelli 200g','OTHERS','PC',null,.2,120,270),
-    P('OTH002','Custard Powder 100g','OTHERS','PC',null,.1,80,365),
+    P('100490','CHAKKI ATTA - 1 KG','ATTA','KG',30,1,0),
+    P('100491','CHAKKI ATTA - 5 KG','ATTA','KG',30,5,0),
+    P('100317','CHAKKI ATTA - CHINEE FREE - 5 KG','ATTA','KG',30,5,0),
+    P('100860','CHAKKI ATTA - DALIA FREE RS. 10 - 1 KG','ATTA','KG',30,1,0),
+    P('100485','DESI CHAKKI ATTA - 5 KG','ATTA','KG',30,5,0),
+    P('100214','DAILY ATTA - 1 KG','ATTA','KG',30,1,0),
+    P('100213','DAILY ATTA - 5 KG','ATTA','KG',30,5,0),
+    P('100470','MAIDA - 1 KG','MAIDA','KG',30,1,0),
+    P('100475','SOOJI - 500 GM','SOOJI','KG',30,.5,0),
+    P('100476','SOOJI - 100 GM','SOOJI','KG',30,.1,0),
+    P('100477','SOOJI - 200 GM','SOOJI','KG',30,.2,0),
+    P('100479','SOOJI - RS 10 - 150 GM','SOOJI','KG',30,.15,0),
+    P('100201','DAILY SOOJI - 200 GM','SOOJI','KG',30,.2,0),
+    P('100202','DAILY SOOJI - 500 GM','SOOJI','KG',30,.5,0),
+    P('100459','WHEAT DALIA - 500 GM','DALIA','KG',30,.5,0),
+    P('100458','WHEAT DALIA - 200 GM','DALIA','KG',30,.2,0),
+    P('100242','GOLD DALIA - 500 GM','DALIA','KG',30,.5,0),
+    P('100450','CHANA SATTU - 200 GM','SATTU','KG',30,.2,0,180),
+    P('100451','CHANA SATTU - 500 GM','SATTU','KG',30,.5,0,180),
+    P('100248','GOLD SHAKTI SATTU - 200 GM','SATTU','KG',30,.2,0,180),
+    P('100432','MATAR BESAN - 200 GM','M.BESAN','KG',30,.2,0),
+    P('100433','MATAR BESAN - 500 GM','M.BESAN','KG',30,.5,0),
+    P('100647','SHAHI PANEER MASALA - 50 GM','SPICES','KG',30,.05,0,365),
+    P('100650','SHUKTO MASALA - 50 GM','SPICES','KG',30,.05,0,365),
+    P('100665','TADKA MASALA - 50 GM','SPICES','KG',30,.05,0,365),
+    P('100160','BANSKATHI RICE - 1 KG','OTHERS','KG',30,1,0),
+    P('100150','CHANA DAL - 500 GM','OTHERS','KG',30,.5,0),
+    P('100126','SONA MOONG DAL - 500 GM','OTHERS','KG',30,.5,0),
+    P('100167','ARHAR DAL - 500 GM','OTHERS','KG',30,.5,0),
+    P('100424','CHAWAL ATTA - 500 GM','OTHERS','KG',30,.5,0),
   ];
-  const categorySelfLife = {ATTA:120,MAIDA:150,SOOJI:150,SATTU:180,BESAN:150,DALIA:180,SPICES:365,SNACKS:120,INSTANT:180,MILLET:150,PAPAD:270,OTHERS:270};
-  const categories = CATS.slice();
+  const categorySelfLife = {ATTA:120,MAIDA:150,SOOJI:150,SATTU:180,BESAN:150,DALIA:180,SPICES:365,SNACKS:120,INSTANT:180,MILLET:150,PAPAD:270,OTHERS:270,'M.BESAN':150};
+  const categories = CATS.concat(['M.BESAN']);
   const thresholds = { fresh:70, normal:40, ageing:20, critical:10 }; // % of shelf life remaining — global default
   const categoryThresholds = {}; // optional per-category overrides of the above; empty = every category inherits the global default
   const adminUsers = [
@@ -694,7 +771,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-19.13';
+const APP_VERSION = '2026-08-20.7';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -987,6 +1064,23 @@ async function saveOrDownloadCsv(filename, headers, dataRows){
   }
   downloadCsvFile(filename, csvText);
 }
+// Styled-Excel counterpart of the above — same "Choose Folder" support,
+// same silent-fallback-to-download behaviour, just writing the coloured
+// .xls content instead of plain CSV text.
+async function writeStyledExcelToChosenFolder(filename, htmlContent){
+  const fileHandle = await reportFolderHandle.getFileHandle(filename, {create:true});
+  const writable = await fileHandle.createWritable();
+  await writable.write(htmlContent);
+  await writable.close();
+}
+async function saveOrDownloadStyledExcel(filenameBase, htmlContent){
+  const filename = filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xls';
+  if(reportFolderHandle){
+    try{ await writeStyledExcelToChosenFolder(filename, htmlContent); showToast(`✓ Saved to ${reportFolderHandle.name}/${filename}`); return; }
+    catch(e){ /* permission revoked or folder issue — fall through to normal download */ }
+  }
+  downloadStyledExcel(filenameBase, htmlContent);
+}
 
 async function flushPendingQueue(){
   if(!getApiUrl()) return;
@@ -1011,6 +1105,16 @@ if(typeof window!=='undefined' && window.addEventListener) window.addEventListen
 // longer than a minute for the next attempt, network permitting — cheap,
 // safe no-op when the queue is empty.
 if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{ if(state.loaded) flushPendingQueue(); }, 60000);
+// Same idea for messages — a CNF with the tab open (even backgrounded,
+// e.g. they've switched to WhatsApp) still gets a desktop notification
+// within a minute or two of a new rate/scheme message going out, not only
+// at their next explicit login or Sync tap. This is still not a true push
+// notification — nothing can run once the tab is actually closed, that
+// needs a whole different (service-worker + push-server) setup — but it's
+// a real improvement for the common "app's open somewhere" case.
+if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{
+  if(state.loaded && state.cnfUser) loadMessagesForCnf(state.cnfUser.code).catch(()=>{});
+}, 75000);
 
 // Full submission history for one CNF (History screen) or all CNFs
 // (Admin Audit Log) — fetched on demand since bootstrap only carries
@@ -1066,7 +1170,27 @@ function ageingStatus(product, mfd){
   const age = ageDays(mfd);
   const remaining = life - age;
   const pct = (remaining/life)*100;
-  const t = (state.masters.categoryThresholds && state.masters.categoryThresholds[product.category]) || state.masters.thresholds;
+  let t = (state.masters.categoryThresholds && state.masters.categoryThresholds[product.category]) || state.masters.thresholds;
+  // A product-specific "Ageing at N days remaining" override — the actual
+  // fix for a real problem: within one category, products can genuinely
+  // need different treatment (e.g. a smaller pack with a much longer
+  // shelf life shouldn't be flagged Ageing on the same percentage-of-life
+  // schedule as the rest of its category). Expressed in days (how people
+  // actually think about it and how it's imported via CSV), converted here
+  // to this product's OWN self-life percentage so the rest of the
+  // Critical/Near-Expiry/Expired math — which is percentage-based — stays
+  // internally consistent instead of needing four separate day-thresholds.
+  // Overrides t.normal specifically: that's the field that actually decides
+  // the "Ageing" label's cutoff below (pct <= t.normal -> "Ageing") — despite
+  // the similar name, t.ageing is a different tier's boundary (the one for
+  // "Critical").
+  if(product.ageingDaysOverride){
+    const ageingPct = Math.min(100, (product.ageingDaysOverride / life) * 100);
+    // Never let the override end up BELOW the category's own Critical cutoff
+    // (t.ageing) — that would invert the tiers and make "Ageing" literally
+    // unreachable (pct would hit the Critical check first, every time).
+    t = Object.assign({}, t, {normal: Math.max(ageingPct, t.ageing)});
+  }
   if(remaining <= 0) return {label:'Expired', cls:'expired', pct, remaining, age, life};
   if(pct <= t.critical) return {label:'Near Expiry', cls:'expiring', pct, remaining, age, life};
   if(pct <= t.ageing) return {label:'Critical', cls:'critical', pct, remaining, age, life};
@@ -1464,10 +1588,22 @@ function Topbar(){
     ${loggedIn ? `<div class="roletabs"><span class="roletab active" style="cursor:default;">${roleLabel}</span></div>` : ''}
     <div class="spacer"></div>
     <div class="whoami">${state.role==='cnf' && state.cnfUser ? `CNF <b>${state.cnfUser.code}</b> · ${state.cnfUser.name}` : state.role==='admin' && state.adminUser ? `Admin · <b>${state.adminUser.name}</b>` : state.role==='mis' && state.misUser ? `MIS · <b>${state.misUser.name}</b>` : ''}</div>
+    ${loggedIn ? NotifyPermissionButton() : ''}
     ${loggedIn ? TopbarSyncButton() : ''}
     ${state.role==='mis' ? NotificationBell() : ''}
     ${ThemeSwitcher()}
   </div>`;
+}
+
+// Desktop notification opt-in — a CNF turns this on to hear about new
+// messages (rates, schemes) the moment they arrive, without keeping the
+// app open in front of them. Browsers require this to be a real click,
+// not something turned on automatically, so it's a one-tap toggle.
+function NotifyPermissionButton(){
+  if(state.notifyPermission==='unsupported') return '';
+  if(state.notifyPermission==='granted') return `<span class="notify-on-badge" title="Desktop notifications are on">🔔 On</span>`;
+  if(state.notifyPermission==='denied') return `<span class="notify-off-badge" title="Notifications were blocked — turn them back on from your browser's site settings if you want them.">🔕 Blocked</span>`;
+  return `<button class="topbar-sync-btn" id="btnEnableNotify" title="Get a desktop alert the moment a new message arrives">🔔 Enable Alerts</button>`;
 }
 
 // Always visible, on every screen, for every role — no digging into Admin
@@ -1591,6 +1727,71 @@ async function restoreCnfSession(cnf){
   state.sapUpload = draftMatchesToday ? (draft.sapUpload||null) : null;
   state.varianceReasons = draftMatchesToday ? (draft.varianceReasons||{}) : {};
   try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // e.g. submitted from a different phone earlier — dashboard shouldn't show a stale "Pending"
+  try{ await loadMessagesForCnf(cnf.code); }catch(e){ /* not critical to getting them logged in */ }
+}
+
+/* ---------------- Messages (rates, schemes — Admin/MIS -> CNF) ---------------- */
+
+// "Read" state is tracked per-device via a last-seen timestamp, same
+// pattern as MIS's own notification bell — no server-side read-receipts.
+function messagesLastSeenKey(cnfCode){ return `msgsLastSeenAt:${cnfCode}`; }
+// Separate from the above: which message IDs have already triggered a
+// desktop notification on this device. Needed because lastSeen only
+// updates when the CNF actually opens the Messages tab — without this,
+// the periodic background check would re-notify for the SAME unopened
+// message every 75 seconds forever.
+function notifiedMessageIdsKey(cnfCode){ return `notifiedMsgIds:${cnfCode}`; }
+
+async function loadMessagesForCnf(cnfCode){
+  if(!getApiUrl()) return;
+  const res = await apiGet('messagesForCnf', {cnf: cnfCode});
+  const incoming = (res && res.messages) || [];
+  state.messages = incoming;
+  const notifiedIds = new Set(lsGet(notifiedMessageIdsKey(cnfCode)) || []);
+  const freshOnes = incoming.filter(m => !notifiedIds.has(m.id));
+  // A message that's never triggered a notification on this device before
+  // is worth one now, if permission is granted — the actual point of the
+  // feature: a rate/scheme update should reach them without having to
+  // remember to go check. Deliberately NOT gated on the tab being
+  // visible/focused — the periodic background check this also runs from
+  // exists specifically to catch a backgrounded tab (e.g. they've switched
+  // to WhatsApp); a visibility check would silence exactly the case it's
+  // meant to cover. Each message ID only ever fires once, regardless of
+  // how many times this function runs (login, manual Sync, the periodic
+  // check) — without that, an unopened message would re-notify forever.
+  if(freshOnes.length){
+    freshOnes.slice(0,3).forEach(m => showDesktopNotification(m.subject || 'New message', m.body || ''));
+    freshOnes.forEach(m => notifiedIds.add(m.id));
+    lsSet(notifiedMessageIdsKey(cnfCode), Array.from(notifiedIds));
+  }
+}
+
+async function loadAllMessages(){
+  if(!getApiUrl()) return;
+  const res = await apiGet('allMessages');
+  state.messages = (res && res.messages) || [];
+}
+
+async function sendMessage(subject, body, targetCnfs){
+  const fromRole = state.adminUser ? 'admin' : state.misUser ? 'mis' : '';
+  const fromName = state.adminUser ? state.adminUser.name : state.misUser ? state.misUser.name : '';
+  await apiPost('sendMessage', { message: { fromRole, fromName, subject, body, targetCnfs: targetCnfs||[] } });
+  await loadAllMessages();
+}
+
+// Desktop notifications — entirely optional, and only ever fired for
+// something the person would actually want interrupted for (a new
+// message), never for routine background syncs.
+async function r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(){
+  if(typeof Notification==='undefined'){ showToast('This browser does not support desktop notifications.'); return; }
+  const perm = await Notification.requestPermission();
+  state.notifyPermission = perm;
+  render();
+  showToast(perm==='granted' ? '✓ Desktop notifications enabled' : 'Notifications not enabled — you can turn this on later from your browser settings.');
+}
+function showDesktopNotification(title, body){
+  if(typeof Notification==='undefined' || Notification.permission!=='granted') return;
+  try{ new Notification(title, { body, icon: undefined }); }catch(e){ /* some browsers restrict this outside a user gesture — safe to skip */ }
 }
 
 // Called once after masters load — silently signs back in if a valid
@@ -1608,6 +1809,7 @@ async function tryRestoreSession(){
     if(u && u.status==='Active'){
       state.role='admin'; state.adminUser=u;
       try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ }
+      try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
       return;
     }
   } else if(remembered.role==='mis'){
@@ -1616,6 +1818,7 @@ async function tryRestoreSession(){
       state.role='mis'; state.misUser=u;
       if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now());
       try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // Remember Me shouldn't mean "stuck on whatever was cached at last login"
+      try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
       return;
     }
   }
@@ -1642,6 +1845,7 @@ async function tryLogin(userId, password, remember){
     state.role = 'admin'; state.adminUser = admin; state.loginError = null;
     if(remember) saveRememberedSession('admin', admin.userId); else clearRememberedSession();
     try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ }
+    try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
     return true;
   }
   // MIS / Back Office
@@ -1653,6 +1857,7 @@ async function tryLogin(userId, password, remember){
     if(remember) saveRememberedSession('mis', mis.userId); else clearRememberedSession();
     if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now()); // first-ever login: don't dump the whole existing history into "new"
     try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // pull every CNF's latest submission fresh the moment MIS opens, not whatever was cached last
+    try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
     return true;
   }
   state.loginError = 'Unknown User ID or Password.';
@@ -1671,7 +1876,7 @@ function CnfPanel(){
   return `<div class="cnf-shell">
     ${CnfHeader()}
     <div class="cnf-body">
-      ${state.cnfScreen==='dashboard' ? CnfDashboard() : state.cnfScreen==='submit' ? CnfSubmit() : state.cnfScreen==='reports' ? CnfReports() : CnfHistory()}
+      ${state.cnfScreen==='dashboard' ? CnfDashboard() : state.cnfScreen==='submit' ? CnfSubmit() : state.cnfScreen==='reports' ? CnfReports() : state.cnfScreen==='messages' ? CnfMessages() : CnfHistory()}
     </div>
   </div>${state.cnfModal||''}${SyncFailureModal()}${CnfLineDetailModal()}`;
 }
@@ -1696,7 +1901,8 @@ function SyncFailureModal(){
 }
 
 function CnfHeader(){
-  const nav = [['dashboard','Dashboard'],['submit','Submit Stock'],['reports','Reports'],['history','History']];
+  const nav = [['dashboard','Dashboard'],['submit','Submit Stock'],['reports','Reports'],['history','History'],['messages','Messages']];
+  const unreadCount = cnfUnreadMessageCount();
   return `<div class="cnf-header">
     <div class="cnf-header-inner">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1707,10 +1913,30 @@ function CnfHeader(){
         <button class="btn btn-ghost btn-sm" id="btnCnfLogout">Log out</button>
       </div>
       <div style="display:flex;gap:6px;margin-top:12px;">
-        ${nav.map(([k,l])=>`<button class="btn ${state.cnfScreen===k?'btn-dark':'btn-ghost'} btn-sm" data-cnfnav="${k}">${l}</button>`).join('')}
+        ${nav.map(([k,l])=>`<button class="btn ${state.cnfScreen===k?'btn-dark':'btn-ghost'} btn-sm" data-cnfnav="${k}" style="position:relative;">${l}${k==='messages'&&unreadCount?`<span class="nav-badge">${unreadCount}</span>`:''}</button>`).join('')}
       </div>
     </div>
   </div>`;
+}
+
+function cnfUnreadMessageCount(){
+  const lastSeen = Number(lsGet(messagesLastSeenKey(state.cnfUser.code))) || 0;
+  return state.messages.filter(m => new Date(m.timestamp).getTime() > lastSeen).length;
+}
+
+function CnfMessages(){
+  const msgs = state.messages;
+  // Opening this tab counts as "seen" — the badge clears once they've
+  // actually looked, same idea as MIS's own notification bell.
+  lsSet(messagesLastSeenKey(state.cnfUser.code), Date.now());
+  return `<div class="section-title">Messages <span class="num">${msgs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">rates, schemes, and updates from Admin/Back Office</span></div>
+  ${msgs.map(m=>`
+    <div class="msg-card">
+      <div class="msg-card-top"><b>${m.subject||'(no subject)'}</b><span class="msg-card-time">${new Date(m.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div>
+      <div class="msg-card-body">${(m.body||'').replace(/\n/g,'<br>')}</div>
+      <div class="msg-card-from">— ${m.fromName||m.fromRole} (${m.fromRole==='admin'?'Admin':'Back Office'})${m.targetType==='SPECIFIC'?' · sent just to you':' · sent to all CNFs'}</div>
+    </div>`).join('') || '<div class="empty">No messages yet.</div>'}
+  `;
 }
 
 function CnfDashboard(){
@@ -1834,8 +2060,21 @@ function CnfSubmit(){
   </div>` : ''}
 
   ${state.sapMissingOnlyFilter ? '' : `<div class="cat-tabs">
-    ${catGroups.map(g=>`<span class="cat-tab ${g.cat===state.submitCat?'active':''} ${g.hasStock?'':'cat-zero'}" data-cat="${g.cat}">${g.cat}<span class="cnt">${g.stockedCount}/${g.total}</span></span>`).join('')}
+    ${catGroups.map(g=>{
+      const prog = categoryEntryProgress(g.cat);
+      const done = prog.pct===100;
+      return `<span class="cat-tab-v2 ${g.cat===state.submitCat?'active':''} ${g.hasStock?'':'cat-zero'} ${done?'cat-tab-done':''} ${g.cat===state.categoryJustAdvanced?'cat-tab-advanced':''}" data-cat="${g.cat}">
+        <span class="cat-tab-gauge" title="${prog.entered}/${prog.required} entered"><span class="cat-tab-gauge-fill" style="height:${prog.pct}%;"></span></span>
+        <span class="cat-tab-textwrap"><span class="cat-tab-label">${g.cat}</span><span class="cat-tab-cnt">${g.stockedCount}/${g.total} stocked</span></span>
+        ${done && prog.required>0 ? '<span class="cat-tab-check">✓</span>' : ''}
+      </span>`;
+    }).join('')}
   </div>`}
+
+  <div class="overall-progress">
+    <div class="overall-progress-bar"><div class="overall-progress-fill" style="width:${requiredTotal?Math.round(requiredDone/requiredTotal*100):100}%;"></div></div>
+    <div class="overall-progress-label"><b>${requiredDone}/${requiredTotal}</b> required entered across all categories${varianceCodes.length?` · <span style="color:var(--red);">${varianceCodes.length} unresolved</span>`:''}</div>
+  </div>
 
   <div class="chip-row" style="margin-bottom:10px;">
     ${state.sapMissingOnlyFilter ? '' : `
@@ -1848,6 +2087,17 @@ function CnfSubmit(){
     ${rows.map(r=>SapProductRow(r)).join('') || '<div class="empty"><div class="big">No items</div>Try another search term, or enable "Show all".</div>'}
   </div>
 
+  ${(()=>{
+    if(state.sapMissingOnlyFilter) return '';
+    const currentIdx = catGroups.findIndex(g=>g.cat===state.submitCat);
+    const nextCat = catGroups[currentIdx+1];
+    if(!nextCat) return '';
+    return `<button type="button" class="next-cat-cta" id="btnNextCategory" data-nextcat="${nextCat.cat}">
+      <span class="next-cat-cta-label">Done here? When you've added every batch for ${state.submitCat}</span>
+      <span class="next-cat-cta-target">Continue to ${nextCat.cat} <span class="next-cat-cta-arrow">→</span></span>
+    </button>`;
+  })()}
+
   <div class="sticky-submit">
     <div class="row">
       <div class="prog">${requiredDone}/${requiredTotal} required entered${varianceCodes.length?` · ${varianceCodes.length} unresolved`:''}</div>
@@ -1859,6 +2109,16 @@ function CnfSubmit(){
 }
 
 function SapUploadGate(){
+  if(state.sapFileLoading){
+    return `
+    <div class="sap-gate">
+      <div class="sap-gate-icon sap-gate-icon-spin">🌾</div>
+      <div class="t1">Reading your SAP file…</div>
+      <div class="sap-loading-dots"><span></span><span></span><span></span></div>
+      <div class="t2">Matching products, checking categories, converting units.</div>
+    </div>
+    `;
+  }
   return `
   <div class="date-strip">
     <select id="yearSel">${(()=>{ const year=state.submitDate.slice(0,4); return [year-1,year,Number(year)+1].map(y=>`<option ${String(y)===year?'selected':''}>${y}</option>`); })()}</select>
@@ -1898,6 +2158,28 @@ function enteredKgFor(code){
 function batchFilled(code){
   const batches = state.draftItems[code] || [];
   return batches.some(b=>b.qty!==undefined && b.qty!=='');
+}
+// Is every SAP line in this category that actually needs entry (nonzero
+// current stock) filled in yet? Drives the tab auto-advance below — a
+// category with nothing to enter counts as trivially complete so it's
+// skipped over rather than stalling the flow.
+function categoryComplete(cat){
+  const group = sapCategoryGroups().find(g=>g.cat===cat);
+  if(!group) return false;
+  const required = group.rows.filter(r=>r.currentStockKg>0);
+  if(!required.length) return true;
+  return required.every(r=>batchFilled(r.code));
+}
+// Real entry progress for a category — how many of the SAP lines that
+// actually need a batch (nonzero current stock) have one yet. Drives the
+// silo-style fill gauge on each category tab.
+function categoryEntryProgress(cat){
+  const group = sapCategoryGroups().find(g=>g.cat===cat);
+  if(!group) return {required:0, entered:0, pct:100};
+  const required = group.rows.filter(r=>r.currentStockKg>0);
+  if(!required.length) return {required:0, entered:0, pct:100};
+  const entered = required.filter(r=>batchFilled(r.code)).length;
+  return {required: required.length, entered, pct: Math.round((entered/required.length)*100)};
 }
 // Groups the uploaded SAP rows by the matching product's category, sorted so
 // categories that actually have current stock come first (alphabetically
@@ -1983,9 +2265,9 @@ function SapProductRow(sapRow){
       ${batches.map((b,i)=>BatchRow(p,b,i,batches.length)).join('')}
     </div>
     <button class="addbatch-btn" data-addbatch="${p.code}">+ Add another MFD batch</button>
-    ${needsReason ? `<div class="reason-row">
-      <label>Reason for difference (required)</label>
-      <input type="text" data-reasoncode="${p.code}" placeholder="e.g. Damage, unrecorded dispatch, counting error…" value="${state.varianceReasons[p.code]||''}">
+    ${filled ? `<div class="reason-row ${needsReason?'':'reason-row-optional'}">
+      <label>${needsReason ? 'Reason for difference (required)' : 'Note (optional)'}</label>
+      <input type="text" data-reasoncode="${p.code}" placeholder="${needsReason ? 'e.g. Damage, unrecorded dispatch, counting error…' : 'Matches SAP — add a note if you want to record anything'}" value="${state.varianceReasons[p.code]||''}">
     </div>` : ''}
   </div>`;
 }
@@ -2001,11 +2283,13 @@ function BatchRow(p,b,i,total){
   const noConversion = (uom==='BAG' && !p.bagToKg) || (uom==='PC' && !p.pcToKg);
   return `
   <div class="batchrow" data-batchrow="${p.code}:${i}">
+    ${total>1?`<div class="batch-badge">${i+1}</div>`:''}
+    <div class="batch-fields">
     <div class="mfd-row">
-      <label>MFD${total>1?(' #'+(i+1)):''}</label>
+      ${total>1?'':'<label>MFD</label>'}
       <div class="mfd-input-wrap">
         <input type="text" class="mfd-text" data-mfdcode="${p.code}" data-batch="${i}" value="${ddmmyyyy(b.mfd)}" placeholder="DD-MM-YYYY" inputmode="numeric" autocomplete="off">
-        <button type="button" class="mfd-cal-btn" data-mfdcal="${p.code}:${i}" title="Pick from calendar instead">📅</button>
+        <button type="button" class="mfd-cal-btn" data-mfdcal="${p.code}:${i}" tabindex="-1" title="Pick from calendar instead">📅</button>
         <input type="date" class="mfd-picker-hidden" data-mfdpicker="${p.code}:${i}" value="${b.mfd||''}" tabindex="-1">
       </div>
       ${i===0 && total>1 ? `<button type="button" class="mfd-copyall-btn" data-copymfd="${p.code}" title="Fill every batch below with this same date — then just fix the few that differ">Same date for all ${total}</button>` : ''}
@@ -2020,6 +2304,7 @@ function BatchRow(p,b,i,total){
       ${total>1?`<button type="button" class="rmbatch-btn" data-removebatch="${p.code}:${i}" title="Remove this batch">✕</button>`:''}
     </div>
     <div class="uom-warn" data-uomwarn="${p.code}:${i}" style="${noConversion?'':'display:none;'}">⚠ No ${uom} size set for this product yet — Admin can add it in Product Master or via UOM Converter import. Until then, this ${uom} quantity is <b>not converted</b>, it's used as-is.</div>
+    </div>
   </div>`;
 }
 
@@ -2212,12 +2497,14 @@ function AdminPanel(){
     ['cnfs','CNF Master'],['products','Product Master'],['selflife','Self-Life & Thresholds'],['safety','Safety Stock'],
     ['misusers','MIS Users'],['adminusers','Admin Users'],
     ['reports','Report Builder'],
+    ['messages','Messages to CNFs'],
     ['api','API Connection'],['audit','Audit Log'],
   ];
   const navBtn = ([k,l])=>`<button class="navitem ${state.adminScreen===k?'active':''}" data-adminnav="${k}"><span class="dot"></span>${l}</button>`;
   const screens = {
     cnfs:AdminCnfs, products:AdminProducts, selflife:AdminSelfLife, safety:AdminSafety,
     misusers:AdminMisUsers, adminusers:AdminAdminUsers, reports:AdminReportBuilder,
+    messages:MessagingScreen,
     api:AdminApi, audit:AdminAudit
   };
   return `<div class="console">
@@ -2229,8 +2516,10 @@ function AdminPanel(){
       ${nav.slice(4,6).map(navBtn).join('')}
       <div class="grp">Reports</div>
       ${nav.slice(6,7).map(navBtn).join('')}
+      <div class="grp">Communication</div>
+      ${nav.slice(7,8).map(navBtn).join('')}
       <div class="grp">System</div>
-      ${nav.slice(7).map(navBtn).join('')}
+      ${nav.slice(8).map(navBtn).join('')}
       <div style="margin-top:18px;padding-top:12px;border-top:1px solid var(--line);">
         <div style="font-family:var(--mono);font-size:10px;color:var(--wheat-dim);padding:0 10px 6px;">Signed in as ${state.adminUser.name}</div>
         <button class="navitem" id="btnAdminLogout"><span class="dot"></span>Log out</button>
@@ -2243,6 +2532,43 @@ function AdminPanel(){
       ${(screens[state.adminScreen]||AdminCnfs)()}
     </div>
   </div>${state.adminModal||''}${PasswordResetModal()}${AddFormModal()}${ImportPreviewModal()}`;
+}
+
+// Shared by Admin and MIS — either can send a rate/scheme/update to one,
+// several, or every CNF. Read by CNFs on their own "Messages" tab, and
+// pinged as a desktop notification if they've enabled that.
+function MessagingScreen(){
+  const targetAll = state.composerTargetCnfs.length===0;
+  return `
+  <div class="panel-card">
+    <h4>Send a Message to CNFs</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;line-height:1.6;">Rate changes, scheme details, anything a CNF needs to know — this reaches them right inside the app, on their own "Messages" tab, and as a desktop notification if they've turned that on.</p>
+    <div class="fg" style="margin-bottom:12px;">
+      <label>Send to</label>
+      <div class="chip-row">
+        <span class="chip ${targetAll?'on':''}" data-msgtarget="ALL">All CNFs</span>
+        ${state.masters.cnfs.filter(c=>c.status==='Active').map(c=>`<span class="chip ${state.composerTargetCnfs.includes(c.code)?'on':''}" data-msgtarget="${c.code}">${c.name} · ${c.code}</span>`).join('')}
+      </div>
+    </div>
+    <div class="fg" style="margin-bottom:12px;"><label>Subject</label><input id="msgSubject" placeholder="e.g. New ATTA Rate, Diwali Scheme"></div>
+    <div class="fg" style="margin-bottom:12px;"><label>Message</label><textarea id="msgBody" rows="4" placeholder="e.g. Effective 20-Aug: 5kg Chakki Atta pack — Rs 42/kg. Buy 10 bags get 1 free through end of month."></textarea></div>
+    <button class="btn btn-primary" id="btnSendMessage">Send Message${targetAll?' to All CNFs':state.composerTargetCnfs.length===1?'':` to ${state.composerTargetCnfs.length} CNFs`}</button>
+  </div>
+  <div class="panel-card">
+    <h4>Sent History <span class="num">${state.messages.length}</span></h4>
+    <div class="tablewrap"><table class="dtable">
+      <thead><tr><th>Date</th><th>From</th><th>Target</th><th>Subject</th><th>Message</th></tr></thead>
+      <tbody>
+        ${state.messages.map(m=>`<tr>
+          <td class="mono">${new Date(m.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+          <td>${m.fromName||m.fromRole}</td>
+          <td>${m.targetType==='ALL'?'All CNFs':`${m.targetCnfs.length} CNF${m.targetCnfs.length!==1?'s':''}`}</td>
+          <td><b>${m.subject||'—'}</b></td>
+          <td style="max-width:320px;">${m.body||''}</td>
+        </tr>`).join('') || `<tr><td colspan="5" style="text-align:center;padding:20px;">No messages sent yet.</td></tr>`}
+      </tbody>
+    </table></div>
+  </div>`;
 }
 
 function AdminApi(){
@@ -2336,14 +2662,15 @@ function AdminProducts(){
     <h4>Product Master
       <span class="small-btn-row">
         <button class="btn btn-ghost btn-sm" data-samplecsv="product">⬇ Sample CSV</button>
-        <button class="btn btn-ghost btn-sm" id="btnExportForCategoryEdit">⬇ Export for Bulk Category Edit</button>
+        <button class="btn btn-primary btn-sm" id="btnExportFullMaster">⬇ Export Full Product Master</button>
         <button class="btn btn-ghost btn-sm" data-triggerimport="product">⬆ Import CSV</button>
         <button class="btn btn-primary btn-sm" data-openadd="product">+ Add Product</button>
       </span>
     </h4>
     <input type="file" id="importProductFile" accept=".csv,.xlsx,.xls" style="display:none;">
-    <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 12px;">Bulk-loading 400+ SKUs, or uploading a <b>UOM Converter</b> (BAG/PC → kg factors)? Same file — .xlsx or .csv both work. A new code creates a product; a code that already exists (e.g. one auto-added from a CNF's SAP Current Stock upload) gets updated — only the columns you fill in change, everything else stays as-is. So a converter file with just <code>code, bagToKg, pcToKg</code> filled in and the rest blank works perfectly for patching conversion factors onto existing products. A category in the file that doesn't exist yet (e.g. "M.Besan") is created automatically — no need to add it first.</p>
-    <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 16px;"><b>Two ways to bulk-set category:</b> (1) <b>Export for Bulk Category Edit</b> → edit the Category column in Excel/Sheets → <b>Import CSV</b> back — matching codes update in place. (2) Or right here: tick the checkbox on however many products, pick a category below, and apply — no file needed.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 12px;"><b>To fix or fill in gaps across your whole Product Master:</b> tap <b>Export Full Product Master</b> — this downloads every product you already have, every column, exactly as it stands (including blanks where something's missing). Align/fill it in Excel, then <b>Import CSV</b> the same file back — matching codes update in place, nothing existing gets wiped by a blank cell.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 12px;">Columns: <code>Product Code, Product Name, Category, Pack Size, Kg, Pc, Bag, Selflife, Safety Stock, Ageing</code>. <b>Kg / Pc / Bag</b> — put a number in whichever ONE column matches how this product is normally entered (e.g. "5" under Kg for a product sold by weight, or "1" under Pc for one sold by the piece) — that becomes its default unit. If it's also sold in bulk bags, Pc and Bag can both carry their own kg-conversion regardless of which one is the default.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin:-4px 0 16px;">A category in the file that doesn't exist yet (e.g. "M.Besan") is created automatically — no need to add it first.</p>
     ${uncategorized.length ? `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
       <span>⚠ <b>${uncategorized.length} product${uncategorized.length!==1?'s':''}</b> landed in "Others" — no real category was matched (usually a SAP-auto-created item whose description didn't resemble anything already in your Product Master). Worth reviewing and assigning a real category.</span>
       <button class="btn btn-dark btn-sm" id="btnToggleUncategorized">${filterOn?'Show All Products':'Show Only Uncategorized'}</button>
@@ -2359,16 +2686,17 @@ function AdminProducts(){
       </span>
     </div>` : ''}
     <div class="tablewrap"><table class="dtable">
-      <thead><tr><th><input type="checkbox" id="chkSelectAllProducts" ${visibleProducts.length && visibleProducts.every(p=>state.selectedProductCodes.includes(p.code))?'checked':''}></th><th>Code</th><th>Name</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">Self-Life Override</th><th class="mono">Safety (kg)</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="chkSelectAllProducts" ${visibleProducts.length && visibleProducts.every(p=>state.selectedProductCodes.includes(p.code))?'checked':''}></th><th>Code</th><th>Name</th><th>Pack Size</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">Self-Life Override</th><th class="mono">Ageing Override</th><th class="mono">Safety (kg)</th><th></th></tr></thead>
       <tbody>
         ${visibleProducts.map(p=>`<tr ${p.category==='OTHERS'?'style="background:var(--amber-bg);"':''}>
           <td><input type="checkbox" class="prod-select" data-prodcode="${p.code}" ${state.selectedProductCodes.includes(p.code)?'checked':''}></td>
-          <td class="mono">${p.code}</td><td>${p.name}</td><td>${p.category==='OTHERS'?'<span class="badge low">OTHERS — uncategorized</span>':p.category}</td><td class="mono">${p.defaultUOM}</td>
+          <td class="mono">${p.code}</td><td>${p.name}</td><td class="mono">${p.packSize||'—'}</td><td>${p.category==='OTHERS'?'<span class="badge low">OTHERS — uncategorized</span>':p.category}</td><td class="mono">${p.defaultUOM}</td>
           <td class="mono">${p.bagToKg??'—'}</td><td class="mono">${p.pcToKg??'—'}</td>
           <td class="mono">${p.selfLifeOverride? p.selfLifeOverride+'d' : `<span style="color:var(--ink-soft)">inherits ${state.masters.categorySelfLife[p.category]}d</span>`}</td>
+          <td class="mono">${p.ageingDaysOverride? p.ageingDaysOverride+'d remaining' : `<span style="color:var(--ink-soft)">category default</span>`}</td>
           <td class="mono">${p.safetyStockKg}</td>
           <td><span data-removeproduct="${p.code}" title="Remove this product" style="cursor:pointer;color:var(--red);font-weight:700;">✕</span></td>
-        </tr>`).join('') || `<tr><td colspan="10" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
+        </tr>`).join('') || `<tr><td colspan="12" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
       </tbody>
     </table></div>
   </div>`;
@@ -2600,12 +2928,98 @@ function downloadCsvFile(filename, text){
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
+
+/* ---------------- Styled Excel exports (CNF/MIS/Admin reports) ----------------
+   Plain CSV can't carry colour, so a genuinely "someone built this in Excel"
+   look needs actual Excel formatting — done here via an HTML table saved
+   with an .xls extension, which Excel/Sheets/LibreOffice all open natively
+   and render with full colour/borders/bold, without needing any paid
+   library. The DATA is built exactly the same way it always was (same
+   values, same order) — only the presentation layer changes, so nothing
+   about correctness is at risk; styling is applied on top of values
+   already computed elsewhere, never recalculated here.
+   Every export gets its own title, generated-by, and exact
+   date+timestamp — because a report is only trustworthy if you can tell
+   at a glance exactly when it was pulled, and by whom. */
+const AGEING_STATUS_COLORS = {
+  'Expired':      {bg:'#c0392b', fg:'#ffffff'},
+  'Near Expiry':  {bg:'#e67e22', fg:'#ffffff'},
+  'Critical':     {bg:'#e67e22', fg:'#ffffff'},
+  'Ageing':       {bg:'#f0c419', fg:'#3a2c00'},
+  'Normal':       {bg:'#5dade2', fg:'#0b2b40'},
+  'Fresh':        {bg:'#27ae60', fg:'#ffffff'},
+  'No MFD':       {bg:'#bdc3c7', fg:'#2c2c2c'},
+};
+function excelEsc_(v){
+  return String(v===null||v===undefined?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function generatedByLabel(){
+  if(state.cnfUser) return `CNF ${state.cnfUser.code} · ${state.cnfUser.name}`;
+  if(state.adminUser) return `Admin · ${state.adminUser.name}`;
+  if(state.misUser) return `MIS/Back Office · ${state.misUser.name}`;
+  return 'Ganesh Stock IQ';
+}
+// headers: string[]; rows: array of arrays (cell values, in header order);
+// statusColIndex: which column (if any) holds an Ageing-style label to
+// colour-code; summaryHtml: optional extra <tr> block (a pivot/summary
+// table) inserted above the main data table.
+function buildStyledExcelHtml({title, subtitle, headers, rows, statusColIndex, summaryHtml}){
+  const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const colCount = headers.length;
+  return `<html xmlns:x="urn:schemas-microsoft-com:office:excel">
+<head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Report</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
+<style>
+  table{border-collapse:collapse;font-family:Calibri,Arial,sans-serif;}
+  .brand{font-size:19px;font-weight:bold;color:#5a3d1a;padding:4px 6px;}
+  .title{font-size:14px;font-weight:bold;color:#2c2416;padding:2px 6px;}
+  .meta{font-size:10.5px;color:#666666;padding:2px 6px;}
+  .colhead{background:#cc8f3f;color:#ffffff;font-weight:bold;padding:6px 8px;border:1px solid #a97a30;text-align:left;font-size:11px;white-space:nowrap;}
+  td{padding:5px 8px;border:1px solid #e0d5bd;font-size:11px;}
+  .sumhead{background:#1c1712;color:#ffffff;font-weight:bold;padding:6px 8px;font-size:12px;}
+  .sumlbl{background:#f6eed4;font-weight:bold;padding:5px 8px;border:1px solid #e0d5bd;font-size:11px;}
+  .sumval{padding:5px 8px;border:1px solid #e0d5bd;font-size:11px;font-weight:bold;}
+</style></head>
+<body>
+<table>
+  <tr><td colspan="${colCount}" class="brand">Ganesh Stock IQ</td></tr>
+  <tr><td colspan="${colCount}" class="title">${excelEsc_(title)}</td></tr>
+  ${subtitle ? `<tr><td colspan="${colCount}" class="meta">${excelEsc_(subtitle)}</td></tr>` : ''}
+  <tr><td colspan="${colCount}" class="meta">Generated: ${genStamp} &nbsp;·&nbsp; By: ${excelEsc_(generatedByLabel())}</td></tr>
+  <tr><td colspan="${colCount}">&nbsp;</td></tr>
+  ${summaryHtml || ''}
+  <tr>${headers.map(h=>`<th class="colhead">${excelEsc_(h)}</th>`).join('')}</tr>
+  ${rows.map(row=>`<tr>${row.map((cell,i)=>{
+    const isStatus = statusColIndex!=null && i===statusColIndex;
+    const c = isStatus ? AGEING_STATUS_COLORS[cell] : null;
+    const style = c ? ` style="background:${c.bg};color:${c.fg};font-weight:bold;"` : '';
+    return `<td${style}>${excelEsc_(cell)}</td>`;
+  }).join('')}</tr>`).join('')}
+</table>
+</body></html>`;
+}
+function downloadStyledExcel(filenameBase, htmlContent){
+  const blob = new Blob([htmlContent], {type:'application/vnd.ms-excel'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xls';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+// A small "label / value" summary block (2-column mini-table) for the
+// pivot/insight section at the top of a report — e.g. "Total Stock (kg):
+// 12,400". colSpanForValue lets the value cell stretch across the rest of
+// the real data table's columns so it reads cleanly.
+function summaryRowsHtml(pairs, totalCols){
+  return pairs.map(([label,value])=>`<tr><td class="sumlbl">${excelEsc_(label)}</td><td class="sumval" colspan="${Math.max(1,totalCols-1)}">${excelEsc_(value)}</td></tr>`).join('');
+}
+
 function sampleProductsCsv(){
   return [
-    'code,name,category,defaultUOM,bagToKg,pcToKg,safetyStockKg,selfLifeOverride',
-    'ATT010,Ganesh Atta 2kg,ATTA,KG,25,2,300,',
-    'SPC010,Kitchen King Masala 100g,SPICES,PC,,0.1,80,365',
-    '100493,,,,25,1,,',
+    'code,name,category,defaultUOM,bagToKg,pcToKg,safetyStockKg,selfLifeOverride,ageing',
+    'ATT010,Ganesh Atta 2kg,ATTA,KG,25,2,300,,',
+    'SPC010,Kitchen King Masala 100g,SPICES,PC,,0.1,80,365,45',
+    'DAL010,Dalia Box 500gm,DALIA,PC,,0.5,50,365,60',
+    '100493,,,,25,1,,,',
   ].join('\n');
 }
 function sampleCnfsCsv(){
@@ -2641,7 +3055,36 @@ function isBogusProductRow(code, name){
   return BOGUS_PRODUCT_FIELD_VALUES.has(String(code||'').trim().toUpperCase()) || BOGUS_PRODUCT_FIELD_VALUES.has(String(name||'').trim().toUpperCase());
 }
 
-function validateProductRows(objs){
+// Supports two CSV header styles for Product Master imports: the original
+// machine-style headers (code,name,category,defaultuom,bagtokg,pctokg,
+// safetystockkg,selflifeoverride,ageing) and the newer, more readable
+// "Product Code, Product Name, Category, Pack Size, Kg, Pc, Bag, Selflife,
+// Safety Stock, Ageing" — whichever a given file actually uses. In the
+// newer style, whichever of Kg/Pc/Bag has a value marks that row's default
+// unit; Pc's and Bag's own values double as their kg-conversion factors,
+// exactly like bagToKg/pcToKg always have.
+function normalizeProductImportRow_(o){
+  const code = o.code || o['product code'] || '';
+  const name = o.name || o['product name'] || '';
+  const category = o.category || '';
+  const packsize = o['pack size'] || o.packsize || '';
+  let defaultuom = o.defaultuom || '';
+  let bagtokg = o.bagtokg, pctokg = o.pctokg;
+  if(bagtokg===undefined && pctokg===undefined && ('kg' in o || 'pc' in o || 'bag' in o)){
+    if(o.kg){ defaultuom = 'KG'; }
+    else if(o.pc){ defaultuom = 'PC'; }
+    else if(o.bag){ defaultuom = 'BAG'; }
+    pctokg = o.pc!==undefined ? o.pc : '';
+    bagtokg = o.bag!==undefined ? o.bag : '';
+  }
+  const safetystockkg = o.safetystockkg!==undefined ? o.safetystockkg : (o['safety stock']!==undefined ? o['safety stock'] : '');
+  const selflifeoverride = o.selflifeoverride!==undefined ? o.selflifeoverride : (o.selflife!==undefined ? o.selflife : '');
+  const ageing = o.ageing!==undefined ? o.ageing : (o.ageingdaysoverride!==undefined ? o.ageingdaysoverride : '');
+  return {code, name, category, packsize, defaultuom, bagtokg: bagtokg||'', pctokg: pctokg||'', safetystockkg, selflifeoverride, ageing};
+}
+
+function validateProductRows(rawObjs){
+  const objs = rawObjs.map(normalizeProductImportRow_);
   const valid = [], errors = [], warnings = [];
   const seenCodes = new Set();
   const newCategories = {}; // name -> default self-life, auto-created by this import
@@ -2668,9 +3111,11 @@ function validateProductRows(objs){
       if(!['KG','PC','BAG'].includes(uom)){ warnings.push(`Row ${rowNum} (${code}): unknown UOM "${o.defaultuom}" — set to KG.`); uom = 'KG'; }
       const bagToKg = o.bagtokg ? Number(o.bagtokg) : null;
       const pcToKg = o.pctokg ? Number(o.pctokg) : null;
+      const packSize = o.packsize || null;
       const safetyStockKg = o.safetystockkg ? Number(o.safetystockkg)||0 : 0;
       const selfLifeOverride = o.selflifeoverride ? Number(o.selflifeoverride)||null : null;
-      valid.push({action:'create', code, name, category, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride});
+      const ageingDaysOverride = o.ageing ? Number(o.ageing)||null : null;
+      valid.push({action:'create', code, name, category, packSize, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride, ageingDaysOverride});
       return;
     }
 
@@ -2680,6 +3125,7 @@ function validateProductRows(objs){
     const patch = {};
     const changed = [];
     if(o.name){ patch.name = o.name; changed.push('name'); }
+    if(o.packsize){ patch.packSize = o.packsize; changed.push('packSize'); }
     if(o.category){
       const cat = o.category.toUpperCase();
       if(isBogusCategoryName(cat)){
@@ -2698,8 +3144,9 @@ function validateProductRows(objs){
     if(o.pctokg!==''){ patch.pcToKg = Number(o.pctokg)||null; changed.push('pcToKg'); }
     if(o.safetystockkg!==''){ patch.safetyStockKg = Number(o.safetystockkg)||0; changed.push('safetyStockKg'); }
     if(o.selflifeoverride!==''){ patch.selfLifeOverride = Number(o.selflifeoverride)||null; changed.push('selfLifeOverride'); }
+    if(o.ageing!==''){ patch.ageingDaysOverride = Number(o.ageing)||null; changed.push('ageingDaysOverride'); }
     if(!changed.length){ warnings.push(`Row ${rowNum} (${code}): matches an existing product but no fields to update — skipped.`); return; }
-    valid.push({action:'update', code, name: existing.name, category: existing.category, defaultUOM: patch.defaultUOM||existing.defaultUOM, bagToKg: patch.bagToKg!==undefined?patch.bagToKg:existing.bagToKg, pcToKg: patch.pcToKg!==undefined?patch.pcToKg:existing.pcToKg, safetyStockKg: patch.safetyStockKg!==undefined?patch.safetyStockKg:existing.safetyStockKg, selfLifeOverride: patch.selfLifeOverride!==undefined?patch.selfLifeOverride:existing.selfLifeOverride, patch, changed});
+    valid.push({action:'update', code, name: existing.name, category: existing.category, packSize: patch.packSize!==undefined?patch.packSize:existing.packSize, defaultUOM: patch.defaultUOM||existing.defaultUOM, bagToKg: patch.bagToKg!==undefined?patch.bagToKg:existing.bagToKg, pcToKg: patch.pcToKg!==undefined?patch.pcToKg:existing.pcToKg, safetyStockKg: patch.safetyStockKg!==undefined?patch.safetyStockKg:existing.safetyStockKg, selfLifeOverride: patch.selfLifeOverride!==undefined?patch.selfLifeOverride:existing.selfLifeOverride, ageingDaysOverride: patch.ageingDaysOverride!==undefined?patch.ageingDaysOverride:existing.ageingDaysOverride, patch, changed});
   });
   if(Object.keys(newCategories).length){
     warnings.unshift(`${Object.keys(newCategories).length} new categor${Object.keys(newCategories).length===1?'y':'ies'} will be added: ${Object.keys(newCategories).join(', ')} (180-day default self-life — adjust anytime in Self-Life & Thresholds).`);
@@ -2790,12 +3237,14 @@ function AddFormModal(){
     <div class="formgrid" style="grid-template-columns:1fr 1fr;">
       <div class="fg"><label>Product Code</label><input id="afCode" placeholder="ATT005"></div>
       <div class="fg"><label>Product Name</label><input id="afName" placeholder="e.g. Ganesh Atta 2kg"></div>
+      <div class="fg"><label>Pack Size (optional)</label><input id="afPackSize" placeholder="e.g. 5 KG, 500 GM"></div>
       <div class="fg"><label>Category</label><select id="afCategory">${state.masters.categories.map(c=>`<option>${c}</option>`).join('')}</select></div>
       <div class="fg"><label>Default UOM</label><select id="afUom"><option>KG</option><option>PC</option><option>BAG</option></select></div>
       <div class="fg"><label>1 BAG = kg (optional)</label><input id="afBagKg" type="number" placeholder="25"></div>
       <div class="fg"><label>1 PC = kg (optional)</label><input id="afPcKg" type="number" step="0.01" placeholder="1"></div>
       <div class="fg"><label>Safety Stock (kg)</label><input id="afSafety" type="number" placeholder="200"></div>
       <div class="fg"><label>Self-Life Override (days, optional)</label><input id="afSelfLife" type="number" placeholder="leave blank to inherit category"></div>
+      <div class="fg"><label>Ageing Override (days remaining, optional)</label><input id="afAgeing" type="number" placeholder="leave blank to inherit category"></div>
     </div>
     <p id="addFormErr" style="color:var(--red);font-size:12px;min-height:16px;margin:6px 0 0;"></p>
     <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-ghost btn-block" id="btnCancelAddForm">Cancel</button><button class="btn btn-primary btn-block" id="btnSaveAddForm">Add Product</button></div>
@@ -2845,7 +3294,8 @@ function AdminAudit(){
 
 /* ================= MIS / BACK OFFICE PANEL ================= */
 function MisPanel(){
-  const nav = [['overview','Overview'],['stock','Current Stock'],['fifo','FIFO / MFD Monitor'],['ageing','Ageing Analysis'],['safety','Safety Stock'],['movement','Movement & History'],['export','Export Centre']];
+  const nav = [['overview','Overview'],['stock','Current Stock'],['fifo','FIFO / MFD Monitor'],['ageing','Ageing Analysis'],['safety','Safety Stock'],['movement','Movement & History'],['messages','Messages to CNFs'],['export','Export Centre']];
+  const screenMap = {overview:MisOverview, stock:MisStockTable, fifo:MisFifo, ageing:MisAgeing, safety:MisSafety, movement:MisMovement, messages:MessagingScreen, export:MisExport};
   return `<div class="console">
     <div class="sidenav-overlay ${state.sideOpen?'open':''}" id="navOverlay"></div>
     <div class="sidenav ${state.sideOpen?'open':''}">
@@ -2860,9 +3310,9 @@ function MisPanel(){
       <button class="navtoggle" id="btnNavToggle">☰ Menu</button>
       <div class="ch-title">Back Office — ${nav.find(n=>n[0]===state.misScreen)[1]}</div>
       <div class="ch-sub">REAL-TIME CNF-WISE STOCK · AGEING · FIFO · click any card, bar or row for detail ${state.backendConnected?'<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>':'<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>'}</div>
-      ${ActiveFilterBanner()}
-      ${state.misScreen==='movement' ? '' : MisFilters()}
-      ${state.misScreen==='overview' ? MisOverview() : state.misScreen==='stock' ? MisStockTable() : state.misScreen==='fifo' ? MisFifo() : state.misScreen==='ageing' ? MisAgeing() : state.misScreen==='safety' ? MisSafety() : state.misScreen==='movement' ? MisMovement() : MisExport()}
+      ${state.misScreen==='movement' || state.misScreen==='messages' ? '' : ActiveFilterBanner()}
+      ${state.misScreen==='movement' || state.misScreen==='messages' ? '' : MisFilters()}
+      ${(screenMap[state.misScreen]||MisOverview)()}
     </div>
   </div>${MisDetailModal()}${MisSubmissionDetailModal()}`;
 }
@@ -3276,33 +3726,82 @@ function MisExport(){
 }
 
 /* ---------------- CSV export ---------------- */
-function toCsv(rows){
+// Single source of truth for the MIS export's row VALUES — both the plain
+// CSV path and the new styled-Excel path build from this exact same
+// function, so there's no risk of the two ever silently disagreeing on a
+// number. Only the presentation differs downstream.
+function buildMisExportRows(rows){
   const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','BAG Equiv','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Reorder Suggested','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
-  const lines = [headers.join(',')];
-  rows.forEach(r=>{
+  const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? (r.item.kgQty/r.product.bagToKg).toFixed(2) : '';
     const pcEquiv = r.product.pcToKg ? (r.item.kgQty/r.product.pcToKg).toFixed(1) : '';
-    const line = [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, `"${r.product.name}"`, r.product.category, r.item.qty, r.item.uom, r.item.kgQty.toFixed(2), bagEquiv, pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
-    lines.push(line.join(','));
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, r.item.uom, r.item.kgQty.toFixed(2), bagEquiv, pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
+  return {headers, dataRows};
+}
+function toCsv(rows){
+  const {headers, dataRows} = buildMisExportRows(rows);
+  const esc = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g,'""')}"` : v;
+  const lines = [headers.map(esc).join(',')];
+  dataRows.forEach(row=>{ lines.push(row.map(esc).join(',')); });
   return lines.join('\n');
+}
+// The pivot/insight block every MIS export leads with — the same numbers
+// the raw rows already contain, just pre-aggregated so the picture is
+// visible in one glance instead of needing a fresh pivot table built by
+// hand every time.
+function buildMisPivotSummaryHtml(rows, totalCols){
+  const totalKg = rows.reduce((s,r)=>s+r.item.kgQty,0);
+  const byCategory = {}, byCnf = {}, byStatus = {};
+  let belowSafety = 0;
+  rows.forEach(r=>{
+    byCategory[r.product.category] = (byCategory[r.product.category]||0) + r.item.kgQty;
+    byCnf[r.cnf.name] = (byCnf[r.cnf.name]||0) + r.item.kgQty;
+    byStatus[r.ageStatus.label] = (byStatus[r.ageStatus.label]||0) + 1;
+    if(r.safetyStatus==='low') belowSafety++;
+  });
+  const kgFmt = n => n.toLocaleString('en-IN',{maximumFractionDigits:1});
+  let html = `<tr><td colspan="${totalCols}" class="sumhead">SUMMARY — AT A GLANCE</td></tr>`;
+  html += summaryRowsHtml([
+    ['Total Stock (kg)', kgFmt(totalKg)],
+    ['Total Lines', rows.length],
+    ['CNFs Represented', new Set(rows.map(r=>r.cnf.code)).size],
+    ['Below Safety Stock', belowSafety],
+  ], totalCols);
+  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}" class="sumhead">STOCK BY CATEGORY (kg)</td></tr>`;
+  html += Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cat,kg])=>
+    `<tr><td class="sumlbl">${excelEsc_(cat)}</td><td class="sumval" colspan="${Math.max(1,totalCols-1)}">${kgFmt(kg)}</td></tr>`).join('');
+  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}" class="sumhead">STOCK BY CNF (kg)</td></tr>`;
+  html += Object.entries(byCnf).sort((a,b)=>b[1]-a[1]).map(([cnf,kg])=>
+    `<tr><td class="sumlbl">${excelEsc_(cnf)}</td><td class="sumval" colspan="${Math.max(1,totalCols-1)}">${kgFmt(kg)}</td></tr>`).join('');
+  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}" class="sumhead">AGEING BREAKDOWN (line count)</td></tr>`;
+  const statusOrder = ['Expired','Near Expiry','Critical','Ageing','Normal','Fresh','No MFD'];
+  html += statusOrder.filter(s=>byStatus[s]).map(s=>{
+    const c = AGEING_STATUS_COLORS[s];
+    return `<tr><td class="sumlbl" style="background:${c.bg};color:${c.fg};">${excelEsc_(s)}</td><td class="sumval" colspan="${Math.max(1,totalCols-1)}">${byStatus[s]}</td></tr>`;
+  }).join('');
+  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}">&nbsp;</td></tr>`;
+  return html;
 }
 async function runExport(){
   const prog = document.getElementById('exportProg');
-  const stages = ['Preparing Data…','Filtering…','Applying UOM Conversion…','Calculating Ageing…','Preparing CSV…','Download Ready'];
+  const stages = ['Preparing Data…','Filtering…','Applying UOM Conversion…','Calculating Ageing…','Building Summary…','Formatting Report…'];
   prog.style.display='block';
   for(let i=0;i<stages.length;i++){
     prog.textContent = `${stages[i]}  ${Math.round((i+1)/stages.length*100)}%`;
     await new Promise(r=>setTimeout(r, 220));
   }
   const rows = filteredRows();
-  const csv = toCsv(rows);
-  const blob = new Blob([csv], {type:'text/csv'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `cnf-stock-export-${todayISO()}.csv`;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  const {headers, dataRows} = buildMisExportRows(rows);
+  const summaryHtml = buildMisPivotSummaryHtml(rows, headers.length);
+  const html = buildStyledExcelHtml({
+    title: 'CNF Stock Export',
+    subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}`,
+    headers, rows: dataRows,
+    statusColIndex: headers.indexOf('Ageing Status'),
+    summaryHtml
+  });
+  downloadStyledExcel(`cnf-stock-export-${todayISO()}`, html);
 }
 
 /* ---------------- Toast ---------------- */
@@ -3439,11 +3938,17 @@ function bindGlobal(){
   }
   // Export the CNF's own full current-stock report
   const btnExportCnfReport = document.getElementById('btnExportCnfReport');
-  if(btnExportCnfReport) btnExportCnfReport.onclick = ()=>{
+  if(btnExportCnfReport) btnExportCnfReport.onclick = async ()=>{
     const sub = latestSubmissionFor(state.cnfUser.code);
     if(!sub) return;
     const report = buildDetailedReportRows(sub);
-    saveOrDownloadCsv(report.filename, report.headers, report.rows);
+    const html = buildStyledExcelHtml({
+      title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
+      subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+      headers: report.headers, rows: report.rows,
+      statusColIndex: report.headers.indexOf('Status'),
+    });
+    await saveOrDownloadStyledExcel(report.filename, html);
   };
   const btnChooseFolder = document.getElementById('btnChooseFolder');
   if(btnChooseFolder) btnChooseFolder.onclick = async ()=>{
@@ -3456,7 +3961,12 @@ function bindGlobal(){
     if(!sub) return;
     const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason'];
     const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
-    exportGenericCsv(`${state.cnfUser.code}-stock-${sub.date}.csv`, headers, rows);
+    const html = buildStyledExcelHtml({
+      title: `${state.cnfUser.name} (${state.cnfUser.code}) — Stock Submission`,
+      subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+      headers, rows,
+    });
+    downloadStyledExcel(`${state.cnfUser.code}-stock-${sub.date}`, html);
   });
 
   // Submit screen interactions — stock is ALWAYS current/today's physical
@@ -3484,13 +3994,17 @@ function bindGlobal(){
   if(sapFileInput) sapFileInput.onchange = async ()=>{
     const file = sapFileInput.files[0];
     if(!file) return;
-    const errEl = document.getElementById('sapUploadErr');
-    if(errEl) errEl.textContent = 'Reading file…';
+    state.sapFileLoading = true;
+    render();
     try{
       await handleSapUpload(file);
+      state.sapFileLoading = false;
       render();
       showToast('SAP Current Stock loaded');
     }catch(e){
+      state.sapFileLoading = false;
+      render();
+      const errEl = document.getElementById('sapUploadErr');
       if(errEl) errEl.textContent = e.message || 'Could not read this file. Make sure it matches the SAP export format.';
     }
   };
@@ -3503,6 +4017,8 @@ function bindGlobal(){
 
   document.querySelectorAll('[data-sapzero]').forEach(el=>el.onclick=()=>{ state.sapShowZero = el.dataset.sapzero==='show'; render(); });
   document.querySelectorAll('[data-cat]').forEach(el=>el.onclick=()=>{ state.submitCat = el.dataset.cat; state.sapMissingOnlyFilter=false; render(); });
+  const btnNextCategory = document.getElementById('btnNextCategory');
+  if(btnNextCategory) btnNextCategory.onclick = ()=>{ goToNextCategory(btnNextCategory.dataset.nextcat); };
   document.querySelectorAll('[data-missingfilter]').forEach(el=>el.onclick=()=>{ state.sapMissingOnlyFilter = el.dataset.missingfilter==='on'; render(); });
 
   const search = document.getElementById('sapSearch');
@@ -3575,7 +4091,13 @@ function bindGlobal(){
       // Detailed report, every time — every submission, successful or not,
       // leaves the CNF with an immediate local copy of exactly what was sent.
       const detailedReport = buildDetailedReportRows(sub);
-      saveOrDownloadCsv(detailedReport.filename, detailedReport.headers, detailedReport.rows);
+      const detailedHtml = buildStyledExcelHtml({
+        title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
+        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        headers: detailedReport.headers, rows: detailedReport.rows,
+        statusColIndex: detailedReport.headers.indexOf('Status'),
+      });
+      saveOrDownloadStyledExcel(detailedReport.filename, detailedHtml);
       const backendOn = !!getApiUrl();
       showToast(backendOn ? 'Stock submitted — syncing…' : 'Stock submitted successfully (local demo mode)');
       if(backendOn){
@@ -3666,10 +4188,48 @@ function bindGlobal(){
     render();
     showToast('Product removed');
   });
-  const btnExportForCategoryEdit = document.getElementById('btnExportForCategoryEdit');
-  if(btnExportForCategoryEdit) btnExportForCategoryEdit.onclick = ()=>{
-    exportGenericCsv('products-for-category-edit.csv', ['code','name','category','defaultUOM','bagToKg','pcToKg','safetyStockKg','selfLifeOverride'],
-      state.masters.products.map(p=>[p.code, p.name, p.category, p.defaultUOM, p.bagToKg??'', p.pcToKg??'', p.safetyStockKg, p.selfLifeOverride??'']));
+  const btnExportFullMaster = document.getElementById('btnExportFullMaster');
+  if(btnExportFullMaster) btnExportFullMaster.onclick = ()=>{
+    exportGenericCsv('ganesh-stock-iq-full-product-master.csv',
+      ['Product Code','Product Name','Category','Pack Size','Kg','Pc','Bag','Selflife','Safety Stock','Ageing'],
+      state.masters.products.map(p=>[
+        p.code, p.name, p.category, p.packSize||'',
+        p.defaultUOM==='KG' ? 1 : '',
+        p.pcToKg??'',
+        p.bagToKg??'',
+        p.selfLifeOverride??'',
+        p.safetyStockKg??'',
+        p.ageingDaysOverride??''
+      ]));
+    showToast(`Exported all ${state.masters.products.length} products — fill in any gaps and Import CSV the same file back.`);
+  };
+  // Messaging — shared by Admin and MIS (MessagingScreen())
+  document.querySelectorAll('[data-msgtarget]').forEach(el=>el.onclick=()=>{
+    const val = el.dataset.msgtarget;
+    if(val==='ALL'){ state.composerTargetCnfs = []; }
+    else {
+      state.composerTargetCnfs = state.composerTargetCnfs.includes(val)
+        ? state.composerTargetCnfs.filter(c=>c!==val)
+        : [...state.composerTargetCnfs, val];
+    }
+    render();
+  });
+  const btnSendMessage = document.getElementById('btnSendMessage');
+  if(btnSendMessage) btnSendMessage.onclick = async ()=>{
+    const subjectEl = document.getElementById('msgSubject');
+    const bodyEl = document.getElementById('msgBody');
+    const subject = subjectEl.value.trim(), body = bodyEl.value.trim();
+    if(!subject && !body){ showToast('Write a subject or a message first'); return; }
+    btnSendMessage.disabled = true; btnSendMessage.textContent = 'Sending…';
+    try{
+      await sendMessage(subject, body, state.composerTargetCnfs);
+      state.composerTargetCnfs = [];
+      showToast('✓ Message sent');
+      render();
+    }catch(e){
+      showToast('Could not send — check connection');
+      btnSendMessage.disabled = false; btnSendMessage.textContent = 'Send Message';
+    }
   };
   const btnMisRefresh = document.getElementById('btnMisRefresh');
   if(btnMisRefresh) btnMisRefresh.onclick = async ()=>{
@@ -3678,10 +4238,17 @@ function bindGlobal(){
     catch(e){ showToast('Refresh failed — check connection'); }
     render();
   };
+  const btnEnableNotify = document.getElementById('btnEnableNotify');
+  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(); };
   const btnTopbarSync = document.getElementById('btnTopbarSync');
   if(btnTopbarSync) btnTopbarSync.onclick = async ()=>{
     state.syncingNow = true; render();
-    try{ await forceSyncMasters(); state.backendError = null; showToast('✓ Synced — showing the latest data'); }
+    try{
+      await forceSyncMasters();
+      if(state.cnfUser) await loadMessagesForCnf(state.cnfUser.code);
+      else if(state.adminUser || state.misUser) await loadAllMessages();
+      state.backendError = null; showToast('✓ Synced — showing the latest data');
+    }
     catch(e){ state.backendError = String((e&&e.message)||e); showToast('⚠ Sync failed — see the error banner for why'); }
     state.syncingNow = false; render();
     checkForNewVersion(); // the sync button doubles as "check for a code update too"
@@ -3804,13 +4371,15 @@ function bindGlobal(){
         await saveMasters(); state.addFormTarget=null; render(); showToast('CNF added');
       } else if(type==='product'){
         const code = val('afCode'), name = val('afName'), category = document.getElementById('afCategory').value, uom = document.getElementById('afUom').value;
+        const packSize = val('afPackSize') || null;
         const bagToKg = val('afBagKg') ? Number(val('afBagKg')) : null;
         const pcToKg = val('afPcKg') ? Number(val('afPcKg')) : null;
         const safetyStockKg = Number(val('afSafety'))||0;
         const selfLifeOverride = val('afSelfLife') ? Number(val('afSelfLife')) : null;
+        const ageingDaysOverride = val('afAgeing') ? Number(val('afAgeing')) : null;
         if(!code || !name){ err.textContent = 'Product Code and Name are required.'; return; }
         if(state.masters.products.some(p=>p.code===code)){ err.textContent = 'A product with that code already exists.'; return; }
-        state.masters.products.push({code, name, category, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride});
+        state.masters.products.push({code, name, category, packSize, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride, ageingDaysOverride});
         await saveMasters(); state.addFormTarget=null; render(); showToast('Product added');
       } else if(type==='misuser' || type==='adminuser'){
         const userId = val('afUserId'), name = val('afName'), password = val('afPassword');
@@ -3895,7 +4464,7 @@ function bindGlobal(){
             const existing = state.masters.products.find(p=>p.code===r.code);
             if(existing){ Object.assign(existing, r.patch); updated++; }
           } else {
-            state.masters.products.push({code:r.code, name:r.name, category:r.category, defaultUOM:r.defaultUOM, bagToKg:r.bagToKg, pcToKg:r.pcToKg, safetyStockKg:r.safetyStockKg, selfLifeOverride:r.selfLifeOverride});
+            state.masters.products.push({code:r.code, name:r.name, category:r.category, packSize:r.packSize, defaultUOM:r.defaultUOM, bagToKg:r.bagToKg, pcToKg:r.pcToKg, safetyStockKg:r.safetyStockKg, selfLifeOverride:r.selfLifeOverride, ageingDaysOverride:r.ageingDaysOverride});
             created++;
           }
         });
@@ -4170,6 +4739,24 @@ function autoSaveDraft(){
   }, 800);
 }
 
+// Once every SAP line in the active category that needs entry has a
+// A CNF taps "Next Category" only when THEY decide this category is truly
+// done — never automatically. A single filled batch does not mean a
+// product is finished: many products arrive as several dated lots
+// (multiple MFD batches), and jumping away the moment the first batch got
+// a quantity would skip the rest before they'd had a chance to add them.
+// This function is only ever called from that manual button click, and
+// always goes to the specific category shown on the button — no
+// recomputation that could disagree with what was actually on screen.
+function goToNextCategory(targetCat){
+  if(!targetCat) return;
+  state.submitCat = targetCat;
+  state.sapMissingOnlyFilter = false;
+  state.categoryJustAdvanced = targetCat;
+  render();
+  setTimeout(()=>{ state.categoryJustAdvanced = null; render(); }, 900);
+}
+
 function bindRowInputs(){
   document.querySelectorAll('[data-qtycode]').forEach(inp=>inp.oninput=()=>{
     const code = inp.dataset.qtycode, idx = Number(inp.dataset.batch);
@@ -4276,6 +4863,41 @@ function bindRowInputs(){
     state.varianceReasons[inp.dataset.reasoncode] = inp.value;
     autoSaveDraft();
   });
+  wireKeyboardFlow();
+}
+
+// Enter-to-advance so a CNF entering 50+ batches never has to reach for
+// the mouse: MFD -> Enter -> lands in that same batch's Quantity ->
+// Enter -> jumps straight to the NEXT batch's MFD (which may be the next
+// batch of the same product, or the first batch of the next product —
+// whichever comes next on screen). UOM is skipped in this chain since it's
+// almost always left at the product default; it's still reachable with a
+// normal Tab press for the rare case it needs changing. If the date just
+// typed didn't parse, focus deliberately stays put so the error (shown by
+// the blur handler) doesn't get jumped past unnoticed.
+function wireKeyboardFlow(){
+  const mfdInputs = Array.from(document.querySelectorAll('.mfd-text'));
+  const qtyInputs = Array.from(document.querySelectorAll('.qty'));
+  mfdInputs.forEach((inp,i)=>{
+    inp.onkeydown = (e)=>{
+      if(e.key !== 'Enter') return;
+      e.preventDefault();
+      inp.blur(); // runs the existing parse/validate/normalize logic synchronously
+      if(!inp.classList.contains('mfd-error-state') && qtyInputs[i]){
+        qtyInputs[i].focus();
+        qtyInputs[i].select();
+      }
+    };
+  });
+  qtyInputs.forEach((inp,i)=>{
+    inp.onkeydown = (e)=>{
+      if(e.key !== 'Enter') return;
+      e.preventDefault();
+      const next = mfdInputs[i+1];
+      if(next){ next.focus(); next.select(); }
+      else { inp.blur(); } // last field on the page — nothing further to jump to
+    };
+  });
 }
 
 function rerenderOneRow(code){
@@ -4337,13 +4959,22 @@ function updateRowMeta(code){
   }
 
   let reasonRow = row.querySelector('.reason-row');
-  if(needsReason && !reasonRow){
+  if(filled && !reasonRow){
     const div = document.createElement('div');
-    div.className = 'reason-row';
-    div.innerHTML = `<label>Reason for difference (required)</label><input type="text" data-reasoncode="${code}" placeholder="e.g. Damage, unrecorded dispatch, counting error…" value="${state.varianceReasons[code]||''}">`;
+    div.className = needsReason ? 'reason-row' : 'reason-row reason-row-optional';
+    div.innerHTML = `<label>${needsReason?'Reason for difference (required)':'Note (optional)'}</label><input type="text" data-reasoncode="${code}" placeholder="${needsReason?'e.g. Damage, unrecorded dispatch, counting error…':'Matches SAP — add a note if you want to record anything'}" value="${state.varianceReasons[code]||''}">`;
     row.appendChild(div);
-    div.querySelector('input').oninput = (e)=>{ state.varianceReasons[code] = e.target.value; };
-  } else if(!needsReason && reasonRow){
+    div.querySelector('input').oninput = (e)=>{ state.varianceReasons[code] = e.target.value; autoSaveDraft(); };
+  } else if(filled && reasonRow){
+    // matched/mismatched can flip live as someone edits quantity — keep the
+    // label and required/optional styling in sync without losing whatever
+    // they've already typed into the note.
+    reasonRow.className = needsReason ? 'reason-row' : 'reason-row reason-row-optional';
+    const label = reasonRow.querySelector('label');
+    const input = reasonRow.querySelector('input');
+    if(label) label.textContent = needsReason ? 'Reason for difference (required)' : 'Note (optional)';
+    if(input) input.placeholder = needsReason ? 'e.g. Damage, unrecorded dispatch, counting error…' : 'Matches SAP — add a note if you want to record anything';
+  } else if(!filled && reasonRow){
     reasonRow.remove();
   }
   updateProgress();
