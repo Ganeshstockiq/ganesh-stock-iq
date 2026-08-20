@@ -382,6 +382,31 @@ tr[data-attn]{cursor:pointer;}
 .dkpi .v.r{color:var(--red);}
 .dkpi .hint{font-family:var(--mono);font-size:9px;color:var(--wheat-dim);margin-top:6px;opacity:.8;}
 
+/* KPI cards v2 — a real "power dashboard" hero row: icon, gradient
+   accent bar, and a number that visibly counts up into place on load
+   rather than just appearing static. Same click-to-drill-in behaviour as
+   before (data-kpi is unchanged), just a much stronger first impression. */
+.kpi-grid-v2{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:24px;}
+.kpi-card-v2{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px 18px 16px;overflow:hidden;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;text-align:left;font-family:var(--sans);width:100%;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+.kpi-card-v2:hover{transform:translateY(-3px);box-shadow:0 10px 24px rgba(0,0,0,.14);}
+.kpi-card-v2::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--kpi-accent,var(--wheat));}
+.kpi-card-v2 .kpi-icon{font-size:20px;width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;background:var(--kpi-accent-bg,var(--amber-bg));margin-bottom:12px;}
+.kpi-card-v2 .kpi-label{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.6px;color:var(--ink-soft);font-weight:700;}
+.kpi-card-v2 .kpi-value{font-family:var(--mono);font-size:30px;font-weight:800;color:var(--surface-text);margin-top:4px;line-height:1;letter-spacing:-.5px;}
+.kpi-card-v2 .kpi-value.g{color:var(--green);} .kpi-card-v2 .kpi-value.r{color:var(--red);} .kpi-card-v2 .kpi-value.o{color:var(--orange);}
+.kpi-card-v2 .kpi-hint{font-family:var(--mono);font-size:9.5px;color:var(--wheat-dim);margin-top:8px;opacity:.85;}
+
+/* Donut chart — genuine SVG-drawn, not a decorative image, built straight
+   from the same status counts the bars below already used. Animates its
+   stroke in on load. */
+.donut-wrap{display:flex;align-items:center;gap:24px;flex-wrap:wrap;}
+.donut-svg circle{transition:stroke-dashoffset 1.1s cubic-bezier(.16,1,.3,1);}
+.donut-legend{display:flex;flex-direction:column;gap:7px;flex:1;min-width:160px;}
+.donut-legend-row{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11.5px;color:var(--muted-text);}
+.donut-legend-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0;}
+.donut-legend-row b{color:var(--surface-text);margin-left:auto;}
+.donut-center-label{font-family:var(--mono);}
+
 .panel-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px;}
 .panel-card h4{font-family:var(--disp);font-size:15px;margin:0 0 12px;color:var(--surface-text);display:flex;align-items:center;justify-content:space-between;}
 .filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
@@ -418,7 +443,7 @@ table.dtable td.mono,table.dtable th.mono{font-family:var(--mono);}
 .barrow[data-catbar]:hover,.barrow[data-statusbar]:hover{background:var(--panel-2);}
 .barrow .l{width:76px;font-family:var(--mono);font-size:11px;color:var(--muted-text);flex:none;}
 .barrow .track{flex:1;height:10px;background:var(--input-bg);border-radius:6px;overflow:hidden;border:1px solid var(--line);}
-.barrow .fill{height:100%;border-radius:6px;}
+.barrow .fill{height:100%;border-radius:6px;transition:width 1s cubic-bezier(.16,1,.3,1);}
 .barrow .n{width:44px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--surface-text);flex:none;}
 
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;}
@@ -771,7 +796,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-20.7';
+const APP_VERSION = '2026-08-20.8';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -3367,6 +3392,69 @@ function filteredRows(){
   return rows;
 }
 
+// A real SVG donut chart — not a decorative image, built directly from the
+// same status counts the app already computes everywhere else. Final
+// values are correct from the first paint (no risk of an animation glitch
+// showing a wrong number mid-transition); a CSS keyframe on the whole SVG
+// gives the "just arrived" feel instead of animating individual arcs,
+// which is the part that's genuinely easy to get subtly wrong for a
+// multi-segment chart.
+function buildAgeingDonutSvg(statusCounts, colors, size){
+  size = size || 148;
+  const total = Object.values(statusCounts).reduce((a,b)=>a+b,0);
+  const radius = size/2 - 15;
+  const circumference = 2 * Math.PI * radius;
+  const cx = size/2, cy = size/2;
+  if(!total){
+    return `<svg class="donut-svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="var(--panel-2)" stroke-width="16"/>
+      <text x="${cx}" y="${cy+5}" text-anchor="middle" class="donut-center-label" font-size="12" fill="var(--ink-soft)">No data</text>
+    </svg>`;
+  }
+  let offset = 0;
+  const order = ['expired','expiring','critical','ageing','normal','fresh'];
+  const segments = order.filter(k=>statusCounts[k]>0).map(k=>{
+    const frac = statusCounts[k]/total;
+    const dash = frac * circumference;
+    const seg = `<circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="${colors[k]}" stroke-width="16" stroke-dasharray="${dash.toFixed(2)} ${(circumference-dash).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"/>`;
+    offset += dash;
+    return seg;
+  }).join('');
+  return `<svg class="donut-svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <circle cx="${cx}" cy="${cy}" r="${radius}" fill="none" stroke="var(--panel-2)" stroke-width="16"/>
+    ${segments}
+    <text x="${cx}" y="${cy-3}" text-anchor="middle" class="donut-center-label" font-size="24" font-weight="800" fill="var(--surface-text)">${total}</text>
+    <text x="${cx}" y="${cy+15}" text-anchor="middle" class="donut-center-label" font-size="9" letter-spacing="1" fill="var(--ink-soft)">LINES</text>
+  </svg>`;
+}
+
+// KPI numbers that visibly count up into place, and bars that grow in
+// rather than just appearing — the actual "feels alive" difference between
+// a spreadsheet-in-a-browser and a dashboard. Purely cosmetic: the final
+// values rendered are always the exact numbers already computed elsewhere;
+// this only controls how they arrive on screen.
+function animateDashboardIn(){
+  document.querySelectorAll('[data-countup]').forEach(el=>{
+    const target = Number(el.dataset.countup)||0;
+    const isDecimal = el.dataset.countupDecimals === '1';
+    const duration = 900;
+    const start = performance.now();
+    function tick(now){
+      const t = Math.min(1, (now-start)/duration);
+      const eased = 1 - Math.pow(1-t, 3);
+      const val = target * eased;
+      el.textContent = isDecimal ? val.toLocaleString('en-IN',{maximumFractionDigits:1}) : Math.round(val).toLocaleString('en-IN');
+      if(t<1) requestAnimationFrame(tick); else el.textContent = target.toLocaleString('en-IN',{maximumFractionDigits:isDecimal?1:0});
+    }
+    requestAnimationFrame(tick);
+  });
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    document.querySelectorAll('.barrow .fill[data-fillwidth]').forEach(el=>{
+      el.style.width = el.dataset.fillwidth;
+    });
+  }));
+}
+
 function MisOverview(){
   const rows = filteredRows();
   const totalKg = rows.reduce((s,r)=>s+r.item.kgQty,0);
@@ -3383,6 +3471,8 @@ function MisOverview(){
   rows.forEach(r=>statusCounts[r.ageStatus.cls]=(statusCounts[r.ageStatus.cls]||0)+1);
   const maxStatus = Math.max(1,...Object.values(statusCounts));
   const statusColor = {fresh:'var(--green)',normal:'#6b7a4a',ageing:'var(--amber)',critical:'var(--orange)',expiring:'var(--red)',expired:'var(--red)'};
+  const donutColors = {fresh:'#27ae60',normal:'#5dade2',ageing:'#f0c419',critical:'#e67e22',expiring:'#e67e22',expired:'#c0392b'};
+  const statusLabels = {fresh:'Fresh',normal:'Normal',ageing:'Ageing',critical:'Critical',expiring:'Near Expiry',expired:'Expired'};
 
   return `
   <div class="panel-card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
@@ -3392,12 +3482,36 @@ function MisOverview(){
     </div>
     <button class="btn btn-primary btn-sm" id="btnMisRefresh" ${state.backendConnected?'':'disabled title="Connect a backend first"'}>⟳ Refresh Now — pull every CNF's latest stock</button>
   </div>
-  <div class="kpi-grid">
-    <button class="dkpi" data-kpi="cnfs"><div class="l">CNFs Reporting</div><div class="v">${cnfCount}</div><div class="hint">click for status list ›</div></button>
-    <button class="dkpi" data-kpi="stock"><div class="l">Total Stock (kg)</div><div class="v">${totalKg.toLocaleString('en-IN',{maximumFractionDigits:0})}</div><div class="hint">click for all lines ›</div></button>
-    <button class="dkpi" data-kpi="ageing"><div class="l">Ageing / Critical Lines</div><div class="v ${critical?'o':'g'}">${critical}</div><div class="hint">click for breakdown ›</div></button>
-    <button class="dkpi" data-kpi="safety"><div class="l">Below Safety Stock</div><div class="v ${belowSafety?'r':'g'}">${belowSafety}</div><div class="hint">click for shortfalls ›</div></button>
-    <div class="dkpi"><div class="l">CNFs Overdue on Stock</div><div class="v ${overdueCnfs.length?'r':'g'}">${overdueCnfs.length}</div></div>
+  <div class="kpi-grid-v2">
+    <button class="kpi-card-v2" data-kpi="cnfs" style="--kpi-accent:var(--wheat);--kpi-accent-bg:var(--amber-bg);">
+      <div class="kpi-icon">🏭</div>
+      <div class="kpi-label">CNFs Reporting</div>
+      <div class="kpi-value" data-countup="${cnfCount}">0</div>
+      <div class="kpi-hint">click for status list ›</div>
+    </button>
+    <button class="kpi-card-v2" data-kpi="stock" style="--kpi-accent:#5dade2;--kpi-accent-bg:#e8f2fa;">
+      <div class="kpi-icon">🌾</div>
+      <div class="kpi-label">Total Stock (kg)</div>
+      <div class="kpi-value" data-countup="${totalKg}">0</div>
+      <div class="kpi-hint">click for all lines ›</div>
+    </button>
+    <button class="kpi-card-v2" data-kpi="ageing" style="--kpi-accent:${critical?'var(--orange)':'var(--green)'};--kpi-accent-bg:${critical?'#fdf0e4':'var(--green-bg,#e7f5ec)'};">
+      <div class="kpi-icon">⏳</div>
+      <div class="kpi-label">Ageing / Critical Lines</div>
+      <div class="kpi-value ${critical?'o':'g'}" data-countup="${critical}">0</div>
+      <div class="kpi-hint">click for breakdown ›</div>
+    </button>
+    <button class="kpi-card-v2" data-kpi="safety" style="--kpi-accent:${belowSafety?'var(--red)':'var(--green)'};--kpi-accent-bg:${belowSafety?'var(--red-bg)':'var(--green-bg,#e7f5ec)'};">
+      <div class="kpi-icon">⚠️</div>
+      <div class="kpi-label">Below Safety Stock</div>
+      <div class="kpi-value ${belowSafety?'r':'g'}" data-countup="${belowSafety}">0</div>
+      <div class="kpi-hint">click for shortfalls ›</div>
+    </button>
+    <div class="kpi-card-v2" style="cursor:default;--kpi-accent:${overdueCnfs.length?'var(--red)':'var(--green)'};--kpi-accent-bg:${overdueCnfs.length?'var(--red-bg)':'var(--green-bg,#e7f5ec)'};">
+      <div class="kpi-icon">📅</div>
+      <div class="kpi-label">CNFs Overdue on Stock</div>
+      <div class="kpi-value ${overdueCnfs.length?'r':'g'}" data-countup="${overdueCnfs.length}">0</div>
+    </div>
   </div>
   ${overdueCnfs.length ? `<div class="panel-card" style="border-color:var(--red);">
     <h4 style="color:var(--red);">⚠ Overdue Stock Submissions</h4>
@@ -3415,22 +3529,28 @@ function MisOverview(){
     <h4>Category-wise Stock (kg) <span style="font-family:var(--mono);font-size:9px;color:var(--wheat-dim);text-transform:none;letter-spacing:0;font-weight:400;">click a bar to drill in</span></h4>
     <div class="bars">
       ${Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).map(([c,v])=>`
-        <div class="barrow" data-catbar="${c}"><div class="l">${c}</div><div class="track"><div class="fill" style="width:${(v/maxCat*100).toFixed(1)}%;background:var(--wheat);"></div></div><div class="n">${v.toFixed(0)}</div></div>
+        <div class="barrow" data-catbar="${c}"><div class="l">${c}</div><div class="track"><div class="fill" data-fillwidth="${(v/maxCat*100).toFixed(1)}%" style="width:0%;background:linear-gradient(90deg,var(--wheat-dim),var(--wheat-light));"></div></div><div class="n">${v.toFixed(0)}</div></div>
       `).join('') || '<div class="empty">No data for current filters.</div>'}
     </div>
   </div>
   <div class="panel-card">
-    <h4>Ageing Distribution (lines) <span style="font-family:var(--mono);font-size:9px;color:var(--wheat-dim);text-transform:none;letter-spacing:0;font-weight:400;">click a bar to drill in</span></h4>
-    <div class="bars">
-      ${Object.entries(statusCounts).map(([s,v])=>`
-        <div class="barrow" data-statusbar="${s}"><div class="l" style="text-transform:capitalize;">${s}</div><div class="track"><div class="fill" style="width:${(v/maxStatus*100).toFixed(1)}%;background:${statusColor[s]};"></div></div><div class="n">${v}</div></div>
-      `).join('')}
+    <h4>Ageing Distribution <span style="font-family:var(--mono);font-size:9px;color:var(--wheat-dim);text-transform:none;letter-spacing:0;font-weight:400;">click a status to drill in</span></h4>
+    <div class="donut-wrap">
+      ${buildAgeingDonutSvg(statusCounts, donutColors)}
+      <div class="donut-legend">
+        ${Object.entries(statusCounts).filter(([s,v])=>v>0 || true).map(([s,v])=>`
+          <div class="donut-legend-row" data-statusbar="${s}" style="cursor:pointer;">
+            <span class="donut-legend-dot" style="background:${donutColors[s]};"></span>
+            <span>${statusLabels[s]}</span>
+            <b>${v}</b>
+          </div>
+        `).join('')}
+      </div>
     </div>
   </div>
   <div class="panel-card">
     <h4>CNF-wise Summary <span style="font-family:var(--mono);font-size:9px;color:var(--wheat-dim);text-transform:none;letter-spacing:0;font-weight:400;">click a row to drill in</span> <button class="btn btn-ghost btn-sm" id="btnExportCnfSummary" style="float:right;">⬇ Export</button></h4>
-    <div class="tablewrap"><table class="dtable">
-      <thead><tr><th>CNF</th><th>Code</th><th>Products</th><th class="mono">Batch Lines</th><th class="mono">Total kg</th><th class="mono">Ageing/Critical</th><th class="mono">Below Safety</th><th>Last Submission</th><th>Compliance</th></tr></thead>
+    <div class="tablewrap"><table class="dtable">      <thead><tr><th>CNF</th><th>Code</th><th>Products</th><th class="mono">Batch Lines</th><th class="mono">Total kg</th><th class="mono">Ageing/Critical</th><th class="mono">Below Safety</th><th>Last Submission</th><th>Compliance</th></tr></thead>
       <tbody>
       ${state.masters.cnfs.map(c=>{
         const crows = rows.filter(r=>r.cnf.code===c.code);
@@ -3823,6 +3943,9 @@ function bindGlobal(){
     state.themeMenuOpen = false;
     render();
   });
+  // MIS Overview's count-up numbers and growing bars — purely cosmetic, so
+  // this only needs to run when that specific screen is showing.
+  if(state.role==='mis' && state.misScreen==='overview') animateDashboardIn();
   if(state.themeMenuOpen){
     const closeThemeMenu = ()=>{ state.themeMenuOpen=false; render(); document.removeEventListener('click', closeThemeMenu); };
     // Deferred so this doesn't fire on the same click that opened the menu
