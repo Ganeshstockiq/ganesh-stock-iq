@@ -835,7 +835,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.17';
+const APP_VERSION = '2026-08-21.19';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1580,16 +1580,38 @@ function render(){
     state.submitDate = todayISO();
   }
   const loggedIn = !!(state.cnfUser || state.adminUser || state.misUser);
-  app.innerHTML = `
-    ${Topbar()}
-    ${DemoBanner()}
-    ${NewVersionBanner()}
-    ${BackendErrorBanner()}
-    <main>
-      ${!loggedIn ? UnifiedLoginScreen() : state.role==='cnf' ? CnfPanel() : state.role==='admin' ? AdminPanel() : MisPanel()}
-    </main>
-  `;
-  bindGlobal();
+  // A real, confirmed failure mode this guards against: if building the
+  // actual app screen throws for ANY reason (a data shape one screen
+  // doesn't expect, anything), the loading screen above had ALREADY been
+  // cleared from state (loadingActive=false) — but without this try/catch,
+  // app.innerHTML is simply never reassigned, so the OLD loading screen's
+  // HTML stays exactly where it was, forever. Visually indistinguishable
+  // from "still loading," with no way out except knowing to hard-reload —
+  // exactly the symptom this exists to make impossible. A clear recovery
+  // screen with a reload button is always better than silently frozen HTML
+  // that still LOOKS like progress is happening.
+  try{
+    app.innerHTML = `
+      ${Topbar()}
+      ${DemoBanner()}
+      ${NewVersionBanner()}
+      ${BackendErrorBanner()}
+      <main>
+        ${!loggedIn ? UnifiedLoginScreen() : state.role==='cnf' ? CnfPanel() : state.role==='admin' ? AdminPanel() : MisPanel()}
+      </main>
+    `;
+    bindGlobal();
+  }catch(e){
+    console.error('Render failed:', e);
+    app.innerHTML = `<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--silo-dark);gap:16px;padding:24px;text-align:center;">
+      <div style="width:52px;height:52px;">${Mark()}</div>
+      <div style="font-family:var(--serif);font-size:19px;color:var(--wheat-light);">Ganesh&nbsp;Stock&nbsp;IQ</div>
+      <div style="max-width:380px;font-family:var(--mono);font-size:12.5px;color:var(--wheat-dim);line-height:1.7;">Something went wrong while loading this screen. Your data is safe — reloading should fix it.</div>
+      <button id="btnRenderErrorReload" style="background:var(--wheat);color:#1c1712;border:none;border-radius:8px;padding:10px 22px;font-family:var(--mono);font-weight:700;font-size:13px;cursor:pointer;margin-top:6px;">Reload</button>
+    </div>`;
+    const btn = document.getElementById('btnRenderErrorReload');
+    if(btn) btn.onclick = ()=>{ if(typeof window!=='undefined' && window.location) window.location.reload(); };
+  }
 }
 
 function DemoBanner(){
