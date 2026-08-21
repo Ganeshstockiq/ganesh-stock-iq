@@ -515,15 +515,25 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
      distinct from the mobile-only fix made earlier for the same symptom. */
 }
 </style>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <!-- SheetJS above is used only for READING uploaded SAP/import files — its
      free build can't write cell colours reliably, so report GENERATION
      uses ExcelJS below instead: it produces the same genuinely-valid
      .xlsx format (no Excel "format and extension don't match" warning)
      while still supporting real fill colours, bold headers, and column
      widths — the professional look reports had before, without bringing
-     back the security warning that look used to cause. -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+     back the security warning that look used to cause.
+
+     Both carry `defer`: without it, these are render-blocking — the
+     browser can't parse/show ANYTHING in <body> (not even the loading
+     screen) until both libraries finish downloading. ExcelJS in
+     particular is a large bundle, so on a slow mobile connection that's a
+     real, confirmed blank-screen-on-load bug, not just a slow one. `defer`
+     lets the page (and its own loading screen) appear immediately while
+     these download in the background — nothing in this app needs either
+     library until a user actually exports or imports a file, well after
+     the page has already loaded. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js" defer></script>
 </head>
 <body>
 <div id="app"></div>
@@ -825,7 +835,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.13';
+const APP_VERSION = '2026-08-21.15';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -921,7 +931,7 @@ async function loadAll(){
     state.submissions = normalizeSubmissionList(lsGet('submissions') || []);
     state.loaded = true;
     startFakeProgress(['Restoring your session…','Syncing latest stock…','Loading dashboard…']);
-    await tryRestoreSession();
+    try{ await tryRestoreSession(); }catch(e){ /* never leave the progress bar stuck — worst case they land on the login screen and can try again */ }
     finishFakeProgress('Ready');
     render();
     flushPendingQueue();
@@ -960,7 +970,7 @@ async function loadAll(){
     lsSet('masters', state.masters);
     lsSet('submissions', state.submissions);
   }
-  await tryRestoreSession();
+  try{ await tryRestoreSession(); }catch(e){ /* never leave the progress bar stuck — worst case they land on the login screen and can try again */ }
   state.loaded = true;
   finishFakeProgress('Ready');
   render();
@@ -1814,11 +1824,13 @@ function getRememberedSession(){ try{ const v = localStorage.getItem('gsi:sessio
 
 async function restoreCnfSession(cnf){
   state.role = 'cnf'; state.cnfUser = cnf; state.cnfScreen = 'dashboard'; state.submitDate = todayISO(); state.submitDateManuallySet = false;
-  const draft = await loadDraft(cnf.code);
-  const draftMatchesToday = draft && draft.date===state.submitDate;
-  state.draftItems = draftMatchesToday ? draft.items : {};
-  state.sapUpload = draftMatchesToday ? (draft.sapUpload||null) : null;
-  state.varianceReasons = draftMatchesToday ? (draft.varianceReasons||{}) : {};
+  try{
+    const draft = await loadDraft(cnf.code);
+    const draftMatchesToday = draft && draft.date===state.submitDate;
+    state.draftItems = draftMatchesToday ? draft.items : {};
+    state.sapUpload = draftMatchesToday ? (draft.sapUpload||null) : null;
+    state.varianceReasons = draftMatchesToday ? (draft.varianceReasons||{}) : {};
+  }catch(e){ /* corrupt/unreadable local draft — start clean rather than blocking login entirely */ state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {}; }
   try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // e.g. submitted from a different phone earlier — dashboard shouldn't show a stale "Pending"
   try{ await loadMessagesForCnf(cnf.code); }catch(e){ /* not critical to getting them logged in */ }
 }
@@ -4434,7 +4446,18 @@ function bindGlobal(){
     const remember = rememberEl ? rememberEl.checked : false;
     if(!userId || !pw){ showToast('Enter your User ID and Password'); return; }
     startFakeProgress(['Checking your details…','Loading your data…','Almost there…']);
-    const ok = await tryLogin(userId, pw, remember);
+    // Safety net: no matter what throws inside tryLogin (a network hiccup,
+    // an unexpected data shape, anything not already caught deeper in),
+    // finishFakeProgress() below is GUARANTEED to run — the one thing that
+    // must never happen is the progress bar freezing partway with no way
+    // forward. A failed login should show an error and let them retry, not
+    // trap them on a stuck loading screen.
+    let ok = false;
+    try{
+      ok = await tryLogin(userId, pw, remember);
+    }catch(e){
+      state.loginError = 'Something went wrong — please try again.';
+    }
     finishFakeProgress(ok ? 'Welcome!' : null);
     render();
     if(ok) checkForNewVersion();
@@ -4899,8 +4922,7 @@ function bindGlobal(){
     render();
   };
   const btnEnableNotify = document.getElementById('btnEnableNotify');
-  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ error code: 504
-(); };
+  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(); };
   const btnTopbarSync = document.getElementById('btnTopbarSync');
   if(btnTopbarSync) btnTopbarSync.onclick = async ()=>{
     state.syncingNow = true; render();
