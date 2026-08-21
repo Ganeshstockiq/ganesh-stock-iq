@@ -807,7 +807,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.9';
+const APP_VERSION = '2026-08-21.10';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -3287,13 +3287,13 @@ function normalizeProductImportRow_(o){
     }
   }
   // Which unit a CNF starts on when entering this product — purely a
-  // starting point (they can still switch KG/PC/BAG per batch), so this
-  // is inferred from the piece size rather than needing its own column:
-  // a piece under ~2kg reads as an individually packed item (PC-first);
-  // 2kg or heavier reads as a bulk/loose product normally described by
-  // its weight (KG-first).
-  if(!defaultuom && pctokg!==''){
-    defaultuom = Number(pctokg) >= 2 ? 'KG' : 'PC';
+  // starting point (they can still switch KG/PC/BAG per batch). Always KG
+  // unless a file explicitly says otherwise: the SAP Current Stock export
+  // every CNF uploads is always denominated in KG, so starting there
+  // matches what they're actually reading off that file, for every
+  // product, not just the bulk/loose ones.
+  if(!defaultuom){
+    defaultuom = 'KG';
   }
   const safetystockkg = o.safetystockkg!==undefined ? o.safetystockkg : (o['safety stock']!==undefined ? o['safety stock'] : '');
   const selflifeoverride = o.selflifeoverride!==undefined ? o.selflifeoverride : (o.selflife!==undefined ? o.selflife : '');
