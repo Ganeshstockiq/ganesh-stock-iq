@@ -277,6 +277,7 @@ main{flex:1;}
 .mfd-row label{font-family:var(--mono);font-size:9px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.4px;white-space:nowrap;}
 .uom-fixed{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--ink-soft);padding:9px 10px;background:#f2e8d0;border-radius:7px;flex:none;}
 .uom-warn{font-family:var(--mono);font-size:10px;color:var(--orange);background:var(--amber-bg);border-radius:7px;padding:6px 9px;margin-top:6px;line-height:1.5;}
+.uom-warn-blocking{color:#fff;background:var(--red);font-weight:700;}
 .reason-row{margin-top:8px;padding-top:10px;border-top:1px dashed #ecdfbe;}
 .reason-row label{display:block;font-family:var(--mono);font-size:9px;color:var(--red);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px;font-weight:700;}
 .reason-row input{width:100%;padding:9px 10px;border-radius:7px;border:1px solid var(--red);background:#fff;font-size:13px;}
@@ -302,8 +303,8 @@ main{flex:1;}
 .addbatch-btn:hover{color:var(--wheat);}
 .rmbatch-btn{background:var(--red-bg);color:var(--red);border:none;border-radius:7px;width:32px;height:37px;font-size:13px;font-weight:700;flex:none;}
 
-.sticky-submit{position:sticky;bottom:0;background:linear-gradient(0deg,var(--cream) 60%,transparent);padding:14px 0 6px;margin-top:10px;}
-.sticky-submit .row{display:flex;gap:8px;background:#fff;border:1px solid #ecdfbe;border-radius:12px;padding:10px;box-shadow:0 -6px 18px rgba(60,45,15,.06);}
+.sticky-submit{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(0deg,var(--cream) 75%,transparent);padding:14px 16px 10px;z-index:40;}
+.sticky-submit .row{display:flex;gap:8px;background:#fff;border:1px solid #ecdfbe;border-radius:12px;padding:10px;box-shadow:0 -6px 18px rgba(60,45,15,.1);max-width:720px;margin:0 auto;}
 .sticky-submit .prog{font-family:var(--mono);font-size:11px;color:var(--ink-soft);flex:1;align-self:center;}
 
 .badge{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;letter-spacing:.3px;}
@@ -476,8 +477,6 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
   .brand .sub{display:none;}
   .roletab{padding:14px 12px;font-size:12px;}
   .whoami{display:none;}
-  .prow{flex-wrap:wrap;}
-  .prow .pinfo{width:100%;}
   .prow .pinputs{width:100%;justify-content:flex-end;margin-top:8px;}
   .kpi-row.four{grid-template-columns:repeat(2,1fr);}
 }
@@ -496,7 +495,14 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
   #prodRows{max-width:760px;}
   .kpi-row{grid-template-columns:repeat(4,1fr);}
   .sticky-submit .row{max-width:1180px;margin:0 auto;}
-  .cat-tabs{position:sticky;flex-wrap:wrap;overflow-x:visible;}
+  /* Deliberately still a single scrollable line here too, not wrapped —
+     a taller category bar (from wrapping onto 2-3 lines, easy to hit with
+     10+ real categories on a normal laptop width) would silently grow past
+     the fixed pixel offset the product card's own sticky header below is
+     calibrated against, pushing that header out of view behind it. A
+     constant-height bar is what makes a fixed sticky offset safe to use
+     at all — this was a real, confirmed bug on desktop specifically,
+     distinct from the mobile-only fix made earlier for the same symptom. */
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -613,6 +619,7 @@ const state = {
   messages: [], // Admin/MIS -> CNF broadcasts (rates, schemes) — loaded per-role on login
   employeeMappings: [], // [{cnfCode, employeeName, employeeEmail}] — who gets CC'd on overdue/ageing emails for each CNF
   emailLog: [], // sent-email follow-up history, loaded on demand
+  emailConfig: null, // Admin's Email Configuration — sender, rules, templates; loaded on demand
   composerOpen: false, // Admin/MIS "Send Message" form visibility
   composerTargetCnfs: [], // [] means "All CNFs" in the composer
   notifyPermission: (typeof Notification!=='undefined') ? Notification.permission : 'unsupported', // desktop notification permission state
@@ -635,6 +642,7 @@ const state = {
   pwResetTarget: null,     // {type:'cnf'|'mis'|'admin', code}
   addFormTarget: null,     // {type:'cnf'|'product'|'misuser'|'adminuser'}
   importPreview: null,     // {type:'product'|'cnf', valid, errors, warnings}
+  replaceMasterPreview: null, // {valid, errors, warnings, removedCodes} — pending "Replace Entire Master" confirmation
   reportFilters: { cnfs:'ALL', categories:'ALL', columns:null },
   reportRows: null,        // generated report rows, once "Generate Report" clicked
   masters: null,
@@ -799,7 +807,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.2';
+const APP_VERSION = '2026-08-21.9';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1044,14 +1052,25 @@ function reorderSuggested(cls){ return REORDER_STATUSES.includes(cls) ? 'Yes' : 
 // its ageing status, self-life, remaining shelf life, and safety-stock
 // standing. Used both for the auto-download right after every Final Submit
 // and for the manual "Export" buttons on CNF Reports/History.
+// A UOM value that isn't one of the three real units means it came from
+// data corrupted somewhere upstream (an old product with a defaultUOM
+// that ended up holding a raw number instead of "KG"/"PC"/"BAG", which
+// then got copied into an actual submission when a batch's own uom was
+// never explicitly changed from that default). Reports should never
+// silently print that raw garbage value — showing it plainly as
+// unrecognised is safer than passing through a number a reader could
+// mistake for something meaningful.
+function safeUomLabel(uom){
+  return ['KG','PC','BAG'].includes(uom) ? uom : `${uom} (unrecognised — check Product Master)`;
+}
 function buildDetailedReportRows(sub){
   const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Reorder Suggested','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
   const rows = sub.items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
     const bagEquiv = p && p.bagToKg ? bagEquivDisplay(it.kgQty, p) : '';
-    const pcEquiv = p && p.pcToKg ? (it.kgQty/p.pcToKg).toFixed(1) : '';
-    return [it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), bagEquiv, pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), bagEquiv, pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
@@ -1092,22 +1111,28 @@ async function saveOrDownloadCsv(filename, headers, dataRows){
   }
   downloadCsvFile(filename, csvText);
 }
-// Styled-Excel counterpart of the above — same "Choose Folder" support,
-// same silent-fallback-to-download behaviour, just writing the coloured
-// .xls content instead of plain CSV text.
-async function writeStyledExcelToChosenFolder(filename, htmlContent){
+// Real-XLSX counterpart of the above — same "Choose Folder" support, same
+// silent-fallback-to-download behaviour, writing a genuine .xlsx workbook
+// (built by buildXlsxWorkbook) instead of plain CSV text. Deliberately a
+// REAL Excel file, not an HTML file wearing an .xls extension — that
+// earlier approach triggered Excel's own "format and extension don't
+// match, could be corrupted or unsafe" warning on every single open, which
+// is exactly the kind of thing that erodes trust in a report that's
+// supposed to be authoritative.
+async function writeXlsxToChosenFolder(filename, wb){
+  const wbBinary = XLSX.write(wb, {type:'array', bookType:'xlsx'});
   const fileHandle = await reportFolderHandle.getFileHandle(filename, {create:true});
   const writable = await fileHandle.createWritable();
-  await writable.write(htmlContent);
+  await writable.write(wbBinary);
   await writable.close();
 }
-async function saveOrDownloadStyledExcel(filenameBase, htmlContent){
-  const filename = filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xls';
+async function saveOrDownloadRealXlsx(filenameBase, wb){
+  const filename = filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xlsx';
   if(reportFolderHandle){
-    try{ await writeStyledExcelToChosenFolder(filename, htmlContent); showToast(`✓ Saved to ${reportFolderHandle.name}/${filename}`); return; }
+    try{ await writeXlsxToChosenFolder(filename, wb); showToast(`✓ Saved to ${reportFolderHandle.name}/${filename}`); return; }
     catch(e){ /* permission revoked or folder issue — fall through to normal download */ }
   }
-  downloadStyledExcel(filenameBase, htmlContent);
+  downloadRealXlsx(filenameBase, wb);
 }
 
 async function flushPendingQueue(){
@@ -1823,6 +1848,15 @@ async function loadEmailLog(){
 async function sendOverdueRemindersNow(){
   return await apiPost('sendOverdueReminders', {});
 }
+async function loadEmailConfig(){
+  if(!getApiUrl()) return;
+  const res = await apiGet('emailConfig');
+  state.emailConfig = (res && res.config) || {};
+}
+async function saveEmailConfigToServer(config){
+  await apiPost('saveEmailConfig', {config});
+  state.emailConfig = config;
+}
 
 // Desktop notifications — entirely optional, and only ever fired for
 // something the person would actually want interrupted for (a new
@@ -2280,22 +2314,39 @@ function hasUnresolvedVariance(code){
 // wherever a product's conversion factors are known. Never changes any
 // actual math — KG stays the number of record everywhere; this is purely
 // "so a CNF doesn't have to do the division in their head."
-// A BAG is a sealed, whole unit — a CNF can only ever submit stock in KG
-// or PC, never a fraction of a bag (you can't hand over "0.97 bags"). So
-// whenever the kg quantity doesn't divide evenly into whole bags, showing
-// a fractional bag count is actively misleading — it implies a bag was
-// counted when what's really there is loose/opened stock. This is the one
-// place that decision gets made, so every screen and every export agrees.
+// BAG and PC are PHYSICAL units — a bag or a piece either exists or it
+// doesn't, so neither can ever be shown as a fraction (0.999 BAG, 999.5
+// PC are never valid). Only KG is a true weight and can be decimal.
+//
+// BAG specifically represents physical bag COUNT, not "kg divided by bag
+// size" — once a bag is opened, it still counts as one of the bags on
+// hand (nothing physically vanished), it's just no longer sealed. So the
+// count of whole, still-sealed bags is shown, PLUS a "(1 Open)" note the
+// moment there's any partial remainder — never a fractional bag number.
 function bagEquivDisplay(kgQty, product){
   if(!product || !product.bagToKg) return '';
-  const bags = kgQty / product.bagToKg;
-  const rounded = Math.round(bags);
-  return (Math.abs(bags - rounded) < 0.005) ? String(rounded) : 'Open';
+  const bagKg = product.bagToKg;
+  const wholeBags = Math.floor((kgQty/bagKg) + 1e-6); // tiny epsilon absorbs float rounding noise
+  const remainder = kgQty - wholeBags*bagKg;
+  return remainder > 0.0005 ? `${wholeBags+1} (1 Open)` : String(wholeBags);
+}
+// PC is always a whole physical piece count — rounds, never shows a
+// decimal, unlike KG.
+function pcEquivDisplay(kgQty, product){
+  if(!product || !product.pcToKg) return '';
+  return String(Math.round(kgQty / product.pcToKg));
+}
+// How many pieces make up one whole bag — a purely informational number
+// (Bag KG ÷ PC KG), shown so a CNF or Admin can see the full picture (e.g.
+// "1 BAG = 30 KG = 600 PC") without doing the division themselves.
+function pcPerBag(product){
+  if(!product || !product.bagToKg || !product.pcToKg) return null;
+  return Math.round(product.bagToKg / product.pcToKg);
 }
 function formatUomEquivalents(kg, product){
   const parts = [];
   if(product.bagToKg) parts.push(`${bagEquivDisplay(kg, product)} BAG`);
-  if(product.pcToKg) parts.push(`${(kg/product.pcToKg).toFixed(1)} PC`);
+  if(product.pcToKg) parts.push(`${pcEquivDisplay(kg, product)} PC`);
   return parts.length ? ` <span class="uom-equiv">(≈ ${parts.join(' / ')})</span>` : '';
 }
 
@@ -2316,7 +2367,7 @@ function SapProductRow(sapRow){
       <div class="pmeta">${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
         ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}
       </div>
-      <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b></div>
+      <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b>${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}</div>
     </div>
     <div class="batchlist">
       ${batches.map((b,i)=>BatchRow(p,b,i,batches.length)).join('')}
@@ -2554,14 +2605,14 @@ function AdminPanel(){
     ['cnfs','CNF Master'],['products','Product Master'],['selflife','Self-Life & Thresholds'],['safety','Safety Stock'],
     ['misusers','MIS Users'],['adminusers','Admin Users'],
     ['reports','Report Builder'],
-    ['messages','Messages to CNFs'],['empmap','Employee Mapping'],['emaillog','Email Follow-up'],
+    ['messages','Messages to CNFs'],['empmap','Employee Mapping'],['emailconfig','Email Configuration'],['emaillog','Email Follow-up'],
     ['api','API Connection'],['audit','Audit Log'],
   ];
   const navBtn = ([k,l])=>`<button class="navitem ${state.adminScreen===k?'active':''}" data-adminnav="${k}"><span class="dot"></span>${l}</button>`;
   const screens = {
     cnfs:AdminCnfs, products:AdminProducts, selflife:AdminSelfLife, safety:AdminSafety,
     misusers:AdminMisUsers, adminusers:AdminAdminUsers, reports:AdminReportBuilder,
-    messages:MessagingScreen, empmap:EmployeeMappingScreen, emaillog:EmailFollowUpScreen,
+    messages:MessagingScreen, empmap:EmployeeMappingScreen, emailconfig:EmailConfigScreen, emaillog:EmailFollowUpScreen,
     api:AdminApi, audit:AdminAudit
   };
   return `<div class="console">
@@ -2574,9 +2625,9 @@ function AdminPanel(){
       <div class="grp">Reports</div>
       ${nav.slice(6,7).map(navBtn).join('')}
       <div class="grp">Communication</div>
-      ${nav.slice(7,10).map(navBtn).join('')}
+      ${nav.slice(7,11).map(navBtn).join('')}
       <div class="grp">System</div>
-      ${nav.slice(10).map(navBtn).join('')}
+      ${nav.slice(11).map(navBtn).join('')}
       <div style="margin-top:18px;padding-top:12px;border-top:1px solid var(--line);">
         <div style="font-family:var(--mono);font-size:10px;color:var(--wheat-dim);padding:0 10px 6px;">Signed in as ${state.adminUser.name}</div>
         <button class="navitem" id="btnAdminLogout"><span class="dot"></span>Log out</button>
@@ -2588,7 +2639,7 @@ function AdminPanel(){
       <div class="ch-sub">MASTER DATA · CONFIGURATION ${state.backendConnected?'<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>':'<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>'}</div>
       ${(screens[state.adminScreen]||AdminCnfs)()}
     </div>
-  </div>${state.adminModal||''}${PasswordResetModal()}${AddFormModal()}${ImportPreviewModal()}`;
+  </div>${state.adminModal||''}${PasswordResetModal()}${AddFormModal()}${ImportPreviewModal()}${ReplaceMasterModal()}`;
 }
 
 // Shared by Admin and MIS — either can send a rate/scheme/update to one,
@@ -2626,6 +2677,48 @@ function EmployeeMappingScreen(){
     <button class="btn btn-primary btn-sm" id="btnSendOverdueNow" ${state.backendConnected?'':'disabled title="Connect a backend first"'}>✉ Send Overdue Reminders Now</button>
     <div id="overdueSendResult" style="margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--ink-soft);"></div>
   </div>`;
+}
+
+// Every knob for the two automated email types — sender identity, who's
+// in To/Cc for each, the subject/body wording (with a placeholder
+// cheat-sheet so nobody has to guess what tokens exist), and for the
+// Ageing Summary specifically, whether the flagged-items table shows
+// inline in the email body and/or goes out as a CSV attachment.
+function EmailConfigScreen(){
+  const cfg = state.emailConfig || {};
+  const checkbox = (key, label) => `<label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin-right:16px;"><input type="checkbox" data-cfgcheck="${key}" ${cfg[key]==='true'?'checked':''}> ${label}</label>`;
+  const placeholderHint = (list) => `<div style="font-family:var(--mono);font-size:10.5px;color:var(--wheat-dim);margin-top:4px;">Placeholders: ${list.map(p=>`{${p}}`).join(', ')}</div>`;
+  return `
+  <div class="panel-card">
+    <h4>Sender</h4>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;">Apps Script can only send from the Google account it's authorized under (with this display name) — it can't forge crm@ganeshconsumer.com as the actual From address unless that's set up as a "Send As" alias on that account in Gmail Settings, by whoever administers it. This name is what recipients see either way.</p>
+    <div class="fg" style="margin-bottom:10px;"><label>Sender Display Name</label><input type="text" id="cfgSenderName" value="${cfg.senderName||''}" placeholder="Ganesh Consumer — Stock Team"></div>
+    <div class="fg" style="margin-bottom:10px;"><label>Reply-To (optional)</label><input type="email" id="cfgReplyTo" value="${cfg.replyTo||''}" placeholder="crm@ganeshconsumer.com"></div>
+    <div class="fg"><label>Default CC List (comma-separated — always CC'd when enabled below, on top of any mapped employees)</label><input type="text" id="cfgDefaultCc" value="${cfg.defaultCc||''}" placeholder="manager@ganeshconsumer.com, ops@ganeshconsumer.com"></div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Rule: Overdue Stock Reminder ${checkbox('overdueEnabled','Enabled')}</h4>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;">Sent when a CNF hasn't submitted stock within its own required cadence (set per-CNF in CNF Master).</p>
+    <div style="margin-bottom:10px;"><b style="font-size:11px;">To:</b><br>${checkbox('overdueToCnf','CNF Email')}${checkbox('overdueToEmployees','Mapped Employee(s)')}</div>
+    <div style="margin-bottom:14px;"><b style="font-size:11px;">Cc:</b><br>${checkbox('overdueCcEmployees','Mapped Employee(s)')}${checkbox('overdueCcDefault','Default CC List')}</div>
+    <div class="fg" style="margin-bottom:10px;"><label>Subject</label><input type="text" id="cfgOverdueSubject" value="${(cfg.overdueSubject||'').replace(/"/g,'&quot;')}"></div>
+    <div class="fg"><label>Body</label><textarea id="cfgOverdueBody" rows="5">${cfg.overdueBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DAYS_OVERDUE','SUBMIT_FREQ'])}</div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Rule: Ageing / Near-Expiry Summary ${checkbox('ageingEnabled','Enabled')}</h4>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;">Sent once, right after a CNF's stock submission, if anything in it is Ageing/Critical/Expired — based on that product's own Ageing (days) setting in Product Master.</p>
+    <div style="margin-bottom:10px;"><b style="font-size:11px;">To:</b><br>${checkbox('ageingToCnf','CNF Email')}${checkbox('ageingToEmployees','Mapped Employee(s)')}</div>
+    <div style="margin-bottom:14px;"><b style="font-size:11px;">Cc:</b><br>${checkbox('ageingCcEmployees','Mapped Employee(s)')}${checkbox('ageingCcDefault','Default CC List')}</div>
+    <div class="fg" style="margin-bottom:10px;"><label>Subject</label><input type="text" id="cfgAgeingSubject" value="${(cfg.ageingSubject||'').replace(/"/g,'&quot;')}"></div>
+    <div class="fg" style="margin-bottom:10px;"><label>Body</label><textarea id="cfgAgeingBody" rows="4">${cfg.ageingBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DATE','ITEM_COUNT'])}</div>
+    <div>${checkbox('ageingEmbedTable','Show the flagged items as a table inside the email body')}</div>
+    <div style="margin-top:6px;">${checkbox('ageingAttachReport','Attach the flagged items as a CSV file')}</div>
+  </div>
+
+  <button class="btn btn-primary" id="btnSaveEmailConfig">Save Email Configuration</button>
+  `;
 }
 
 // The sent-email audit trail — every overdue reminder and ageing-summary
@@ -2772,28 +2865,28 @@ function AdminCnfs(){
 
 function AdminProducts(){
   const uncategorized = state.masters.products.filter(p=>p.category==='OTHERS');
-  const filterOn = state.adminProductFilter==='uncategorized';
-  const visibleProducts = filterOn ? uncategorized : state.masters.products;
-  const selectedCount = state.selectedProductCodes.length;
-  // A BAG is virtually always a much larger unit than a PC — so if
-  // bagToKg ends up smaller than pcToKg, that's a strong, reliable signal
-  // the two got entered swapped (a real bug reports have shown: this
-  // silently makes every BAG/PC equivalent in every export wrong for that
-  // product, with no error anywhere to notice it by).
   const likelySwapped = state.masters.products.filter(p=>p.bagToKg && p.pcToKg && p.bagToKg < p.pcToKg);
+  const filterOn = state.adminProductFilter==='uncategorized';
+  const swapFilterOn = state.adminProductFilter==='swapped';
+  const visibleProducts = filterOn ? uncategorized : swapFilterOn ? likelySwapped : state.masters.products;
+  const selectedCount = state.selectedProductCodes.length;
   return `
   <div class="panel-card">
     <h4>Product Master
       <span class="small-btn-row">
         <button class="btn btn-ghost btn-sm" data-samplecsv="product">⬇ Sample CSV</button>
         <button class="btn btn-primary btn-sm" id="btnExportFullMaster">⬇ Export Full Product Master</button>
-        <button class="btn btn-ghost btn-sm" data-triggerimport="product">⬆ Import CSV</button>
+        <button class="btn btn-ghost btn-sm" data-triggerimport="product">⬆ Import CSV (update/add)</button>
+        <button class="btn btn-danger btn-sm" id="btnReplaceMaster" style="background:var(--red);color:#fff;border:none;">⚠ Replace Entire Master (from file)</button>
         <button class="btn btn-primary btn-sm" data-openadd="product">+ Add Product</button>
       </span>
     </h4>
     <input type="file" id="importProductFile" accept=".csv,.xlsx,.xls" style="display:none;">
+    <input type="file" id="replaceMasterFile" accept=".csv,.xlsx,.xls" style="display:none;">
+    <p style="color:var(--ink-soft);font-size:12px;margin:-6px 0 12px;">"Import CSV" only updates the columns your file actually has, leaving everything else untouched — good for small fixes. If a product's data has been wrong for a while from an earlier bad import, <b>Replace Entire Master</b> rebuilds every product fresh from one trusted file instead, so nothing old can quietly survive.</p>
     ${likelySwapped.length ? `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
-      <span>⚠ <b>${likelySwapped.length} product${likelySwapped.length!==1?'s':''}</b> ha${likelySwapped.length!==1?'ve':'s'} a BAG size smaller than the PC size — almost certainly swapped (a bag should be much bigger than one piece): <b>${likelySwapped.map(p=>`${p.code} (Bag=${p.bagToKg}, Pc=${p.pcToKg})`).join(', ')}</b>. Fix in the table below, or via Export Full Product Master.</span>
+      <span>⚠ <b>${likelySwapped.length} product${likelySwapped.length!==1?'s':''}</b> ha${likelySwapped.length!==1?'ve':'s'} a BAG size smaller than the PC size — almost certainly swapped (a bag should be much bigger than one piece).</span>
+      <button class="btn btn-dark btn-sm" data-swapfilter="${swapFilterOn?'off':'on'}">${swapFilterOn?'Show All Products':`Show Only These ${likelySwapped.length}`}</button>
     </div>` : ''}
     ${uncategorized.length ? `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
       <span>⚠ <b>${uncategorized.length} product${uncategorized.length!==1?'s':''}</b> landed in "Others" — no real category was matched (usually a SAP-auto-created item whose description didn't resemble anything already in your Product Master). Worth reviewing and assigning a real category.</span>
@@ -2810,17 +2903,17 @@ function AdminProducts(){
       </span>
     </div>` : ''}
     <div class="tablewrap"><table class="dtable">
-      <thead><tr><th><input type="checkbox" id="chkSelectAllProducts" ${visibleProducts.length && visibleProducts.every(p=>state.selectedProductCodes.includes(p.code))?'checked':''}></th><th>Code</th><th>Name</th><th>Pack Size</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">Self-Life Override</th><th class="mono">Ageing Override</th><th class="mono">Safety (kg)</th><th></th></tr></thead>
+      <thead><tr><th><input type="checkbox" id="chkSelectAllProducts" ${visibleProducts.length && visibleProducts.every(p=>state.selectedProductCodes.includes(p.code))?'checked':''}></th><th>Code</th><th>Name</th><th>Pack Size</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">PC per Bag</th><th class="mono">Self-Life Override</th><th class="mono">Ageing Override</th><th class="mono">Safety (kg)</th><th></th></tr></thead>
       <tbody>
         ${visibleProducts.map(p=>`<tr ${p.category==='OTHERS'?'style="background:var(--amber-bg);"':''}>
           <td><input type="checkbox" class="prod-select" data-prodcode="${p.code}" ${state.selectedProductCodes.includes(p.code)?'checked':''}></td>
           <td class="mono">${p.code}</td><td>${p.name}</td><td class="mono">${p.packSize||'—'}</td><td>${p.category==='OTHERS'?'<span class="badge low">OTHERS — uncategorized</span>':p.category}</td><td class="mono">${p.defaultUOM}</td>
-          <td class="mono">${p.bagToKg??'—'}</td><td class="mono">${p.pcToKg??'—'}</td>
+          <td class="mono">${p.bagToKg??'—'}</td><td class="mono">${p.pcToKg??'—'}</td><td class="mono">${pcPerBag(p)??'—'}</td>
           <td class="mono">${p.selfLifeOverride? p.selfLifeOverride+'d' : `<span style="color:var(--ink-soft)">inherits ${state.masters.categorySelfLife[p.category]}d</span>`}</td>
           <td class="mono">${p.ageingDaysOverride? p.ageingDaysOverride+'d remaining' : `<span style="color:var(--ink-soft)">category default</span>`}</td>
           <td class="mono">${p.safetyStockKg}</td>
           <td><span data-removeproduct="${p.code}" title="Remove this product" style="cursor:pointer;color:var(--red);font-weight:700;">✕</span></td>
-        </tr>`).join('') || `<tr><td colspan="12" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
+        </tr>`).join('') || `<tr><td colspan="13" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
       </tbody>
     </table></div>
   </div>`;
@@ -3084,63 +3177,38 @@ function generatedByLabel(){
   return 'Ganesh Stock IQ';
 }
 // headers: string[]; rows: array of arrays (cell values, in header order);
-// statusColIndex: which column (if any) holds an Ageing-style label to
-// colour-code; summaryHtml: optional extra <tr> block (a pivot/summary
-// table) inserted above the main data table.
-function buildStyledExcelHtml({title, subtitle, headers, rows, statusColIndex, summaryHtml}){
+// summaryRows: optional array of [label, value] pairs — becomes its own
+// "Summary" sheet ahead of the data, instead of squeezed into spacer rows
+// above a single sheet (which the old HTML-table version needed; a real
+// workbook can just have two sheets). A genuine XLSX file — proper column
+// types (numbers stay numbers, sortable/filterable in Excel), no colour
+// coding (the free build of the library this app already uses can't
+// reliably write cell fill colours), but that trade is worth it: this
+// never triggers Excel's "file format and extension don't match" warning,
+// which the earlier HTML-labelled-as-.xls approach did on every open.
+function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows}){
+  const wb = XLSX.utils.book_new();
   const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
-  const colCount = headers.length;
-  return `<html xmlns:x="urn:schemas-microsoft-com:office:excel">
-<head><meta charset="UTF-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>Report</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->
-<style>
-  table{border-collapse:collapse;font-family:Calibri,Arial,sans-serif;}
-  .brand{font-size:19px;font-weight:bold;color:#5a3d1a;padding:4px 6px;}
-  .title{font-size:14px;font-weight:bold;color:#2c2416;padding:2px 6px;}
-  .meta{font-size:10.5px;color:#666666;padding:2px 6px;}
-  .colhead{background:#cc8f3f;color:#ffffff;font-weight:bold;padding:6px 8px;border:1px solid #a97a30;text-align:left;font-size:11px;white-space:nowrap;}
-  td{padding:5px 8px;border:1px solid #e0d5bd;font-size:11px;}
-  .sumhead{background:#1c1712;color:#ffffff;font-weight:bold;padding:6px 8px;font-size:12px;}
-  .sumlbl{background:#f6eed4;font-weight:bold;padding:5px 8px;border:1px solid #e0d5bd;font-size:11px;}
-  .sumval{padding:5px 8px;border:1px solid #e0d5bd;font-size:11px;font-weight:bold;}
-</style></head>
-<body>
-<table>
-  <tr><td colspan="${colCount}" class="brand">Ganesh Stock IQ</td></tr>
-  <tr><td colspan="${colCount}" class="title">${excelEsc_(title)}</td></tr>
-  ${subtitle ? `<tr><td colspan="${colCount}" class="meta">${excelEsc_(subtitle)}</td></tr>` : ''}
-  <tr><td colspan="${colCount}" class="meta">Generated: ${genStamp} &nbsp;·&nbsp; By: ${excelEsc_(generatedByLabel())}</td></tr>
-  <tr><td colspan="${colCount}">&nbsp;</td></tr>
-  ${summaryHtml || ''}
-  <tr>${headers.map(h=>`<th class="colhead">${excelEsc_(h)}</th>`).join('')}</tr>
-  ${rows.map(row=>`<tr>${row.map((cell,i)=>{
-    const isStatus = statusColIndex!=null && i===statusColIndex;
-    const c = isStatus ? AGEING_STATUS_COLORS[cell] : null;
-    const style = c ? ` style="background:${c.bg};color:${c.fg};font-weight:bold;"` : '';
-    return `<td${style}>${excelEsc_(cell)}</td>`;
-  }).join('')}</tr>`).join('')}
-</table>
-</body></html>`;
+  const metaRows = [
+    ['Ganesh Stock IQ'],
+    [title||''],
+    ...(subtitle ? [[subtitle]] : []),
+    [`Generated: ${genStamp}`, `By: ${generatedByLabel()}`],
+    [],
+  ];
+  if(summaryRows && summaryRows.length){
+    const wsSummary = XLSX.utils.aoa_to_sheet([...metaRows, ['Summary'], ...summaryRows]);
+    wsSummary['!cols'] = [{wch:28},{wch:20}];
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+  }
+  const wsData = XLSX.utils.aoa_to_sheet([...metaRows, headers, ...rows]);
+  wsData['!cols'] = headers.map(h=>({wch: Math.max(12, String(h).length+2)}));
+  XLSX.utils.book_append_sheet(wb, wsData, summaryRows&&summaryRows.length ? 'Data' : 'Report');
+  return wb;
 }
-function downloadStyledExcel(filenameBase, htmlContent){
-  const blob = new Blob([htmlContent], {type:'application/vnd.ms-excel'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xls';
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+function downloadRealXlsx(filenameBase, wb){
+  XLSX.writeFile(wb, filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xlsx');
 }
-// A small "label / value" summary block (2-column mini-table) for the
-// pivot/insight section at the top of a report — e.g. "Total Stock (kg):
-// 12,400". Deliberately a SMALL FIXED colspan (3), not spanning out to the
-// full width of the main data table below: a value cell merged across 20+
-// columns is exactly what made Excel silently fail to render the value at
-// all for every summary block after the first one — a real, confirmed bug.
-// A small merge is both safer and reads better than a value stretched
-// almost across the whole sheet.
-function summaryRowsHtml(pairs){
-  return pairs.map(([label,value])=>`<tr><td class="sumlbl">${excelEsc_(label)}</td><td class="sumval" colspan="3">${excelEsc_(value)}</td></tr>`).join('');
-}
-
 function sampleProductsCsv(){
   return [
     'Product Code,Product Name,Category,Pack Size,1 PC KG,1 Bag KG,Selflife,Safety Stock,Ageing',
@@ -3231,6 +3299,71 @@ function normalizeProductImportRow_(o){
   const selflifeoverride = o.selflifeoverride!==undefined ? o.selflifeoverride : (o.selflife!==undefined ? o.selflife : '');
   const ageing = o.ageing!==undefined ? o.ageing : (o.ageingdaysoverride!==undefined ? o.ageingdaysoverride : '');
   return {code, name, category, packsize, defaultuom, bagtokg: bagtokg||'', pctokg: pctokg||'', safetystockkg, selflifeoverride, ageing};
+}
+
+// Builds a product record FRESH from one file row, ignoring whatever
+// might already exist for that code — used by "Replace Entire Product
+// Master" (a full rebuild) as well as the "create new" branch of the
+// normal merge-import above. Kept as one function so both paths can never
+// silently diverge on how a category gets inferred or a UOM gets derived.
+function buildFreshProductFromRow_(o, wordMap, newCategories, warnings, rowNum){
+  const code = o.code, name = o.name;
+  let category = (o.category||'').toUpperCase();
+  if(!category){
+    const inferred = inferCategoryFromName(name, wordMap);
+    if(inferred){ category = inferred; warnings.push(`Row ${rowNum} (${code}): no category given — inferred "${inferred}" from the product name.`); }
+    else { category = 'OTHERS'; }
+  }
+  else if(isBogusCategoryName(category)){ warnings.push(`Row ${rowNum} (${code}): category "${o.category}" looks like a stray header value, not a real category — set to OTHERS.`); category = 'OTHERS'; }
+  else if(!state.masters.categories.includes(category) && !newCategories[category]){
+    newCategories[category] = 180;
+  }
+  let uom = (o.defaultuom||'KG').toUpperCase();
+  if(!['KG','PC','BAG'].includes(uom)){ warnings.push(`Row ${rowNum} (${code}): unknown UOM "${o.defaultuom}" — set to KG.`); uom = 'KG'; }
+  return {
+    code, name, category, packSize: o.packsize||null, defaultUOM: uom,
+    bagToKg: o.bagtokg ? Number(o.bagtokg) : null,
+    pcToKg: o.pctokg ? Number(o.pctokg) : null,
+    safetyStockKg: o.safetystockkg ? Number(o.safetystockkg)||0 : 0,
+    selfLifeOverride: o.selflifeoverride ? Number(o.selflifeoverride)||null : null,
+    ageingDaysOverride: o.ageing ? Number(o.ageing)||null : null,
+  };
+}
+// A full rebuild, not a merge: every code in the file becomes a fresh
+// product record, and any product code NOT in the file is dropped. This
+// is the deliberate, stronger fix for a real problem — patch-style
+// imports only touch the columns present in a given file, so any field
+// corrupted by an earlier bad import (a defaultUOM that ended up holding
+// a raw number instead of "KG"/"PC"/"BAG", for instance) can survive
+// indefinitely if no later file happens to re-specify that exact field.
+// Treating one trusted, complete file as the master eliminates that
+// entire class of lingering corruption in one pass.
+function buildFullProductMasterReplacement(rawObjs){
+  const objs = rawObjs.map(normalizeProductImportRow_);
+  const valid = [], errors = [], warnings = [];
+  const seenCodes = new Set();
+  const newCategories = {};
+  const wordMap = buildCategoryWordMap();
+  function learnCategoryWords(name, category){
+    if(!name || !category || category==='OTHERS') return;
+    tokenizeProductName(name).forEach(w=>{ wordMap[w] = wordMap[w]||{}; wordMap[w][category] = (wordMap[w][category]||0)+1; });
+  }
+  objs.forEach((o,idx)=>{
+    const rowNum = idx+2;
+    const code = o.code;
+    if(!code){ errors.push(`Row ${rowNum}: missing product code — skipped.`); return; }
+    if(isBogusProductRow(code, o.name)){ errors.push(`Row ${rowNum}: "${code}" / "${o.name}" looks like a stray header row, not a real product — skipped.`); return; }
+    if(seenCodes.has(code)){ errors.push(`Row ${rowNum}: code "${code}" appears twice in this file — first occurrence used.`); return; }
+    seenCodes.add(code);
+    if(!o.name){ errors.push(`Row ${rowNum} (${code}): missing product name — skipped.`); return; }
+    const product = buildFreshProductFromRow_(o, wordMap, newCategories, warnings, rowNum);
+    learnCategoryWords(product.name, product.category);
+    valid.push(product);
+  });
+  if(Object.keys(newCategories).length){
+    warnings.unshift(`${Object.keys(newCategories).length} new categor${Object.keys(newCategories).length===1?'y':'ies'} will be added: ${Object.keys(newCategories).join(', ')} (180-day default self-life — adjust anytime in Self-Life & Thresholds).`);
+  }
+  return {valid, errors, warnings, newCategories};
 }
 
 function validateProductRows(rawObjs){
@@ -3343,6 +3476,33 @@ function validateCnfRows(objs){
     valid.push({code, name, userId, password, status, location, email});
   });
   return {valid, errors, warnings};
+}
+
+// A stronger, more clearly destructive confirmation than the normal merge-
+// import preview — this REPLACES every existing product, so it's worth
+// naming exactly what disappears (codes in the current master that the
+// new file doesn't mention) as plainly as what gets added or changed.
+function ReplaceMasterModal(){
+  if(!state.replaceMasterPreview) return '';
+  const {valid, errors, warnings, removedCodes} = state.replaceMasterPreview;
+  return `<div class="modal-bg dark" id="replaceMasterBg"><div class="modal-dark" style="max-width:680px;">
+    <h3 style="color:var(--red);">⚠ Replace Entire Product Master</h3>
+    <div class="msub">This is not a merge — every product in your Product Master will be replaced with what's in this file.</div>
+    <div style="max-height:50vh;overflow:auto;margin:14px 0;">
+      <div class="cadence-banner ${valid.length?'ok':'overdue'}" style="margin-bottom:10px;">
+        <b>${valid.length}</b> product${valid.length!==1?'s':''} will be built fresh from this file — including their category, UOM, self-life, ageing, and safety stock, all taken directly from the file.
+      </div>
+      ${removedCodes.length ? `<div class="cadence-banner overdue" style="margin-bottom:10px;">
+        <b>${removedCodes.length}</b> existing product code${removedCodes.length!==1?'s are':' is'} NOT in this file and will be <b>removed</b>: ${removedCodes.slice(0,15).join(', ')}${removedCodes.length>15?` and ${removedCodes.length-15} more`:''}.
+      </div>` : `<div class="cadence-banner ok" style="margin-bottom:10px;">Every existing product code is covered by this file — nothing will be dropped.</div>`}
+      ${errors.length ? `<div style="margin-bottom:10px;"><b style="color:var(--red);">${errors.length} row${errors.length!==1?'s':''} skipped:</b><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--red);">${errors.slice(0,10).map(e=>`<li>${e}</li>`).join('')}</ul></div>` : ''}
+      ${warnings.length ? `<div><b style="color:var(--orange);">${warnings.length} note${warnings.length!==1?'s':''}:</b><ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--orange);">${warnings.slice(0,10).map(w=>`<li>${w}</li>`).join('')}</ul></div>` : ''}
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn btn-ghost" id="btnCancelReplaceMaster">Cancel</button>
+      <button class="btn" style="background:var(--red);color:#fff;border:none;" id="btnConfirmReplaceMaster" ${!valid.length?'disabled':''}>Replace All ${valid.length} Products</button>
+    </div>
+  </div></div>`;
 }
 
 function ImportPreviewModal(){
@@ -4007,8 +4167,8 @@ function buildMisExportRows(rows){
   const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','BAG Equiv','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Reorder Suggested','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
-    const pcEquiv = r.product.pcToKg ? (r.item.kgQty/r.product.pcToKg).toFixed(1) : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, r.item.uom, r.item.kgQty.toFixed(2), bagEquiv, pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), bagEquiv, pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
   return {headers, dataRows};
 }
@@ -4023,7 +4183,7 @@ function toCsv(rows){
 // the raw rows already contain, just pre-aggregated so the picture is
 // visible in one glance instead of needing a fresh pivot table built by
 // hand every time.
-function buildMisPivotSummaryHtml(rows, totalCols){
+function buildMisPivotSummaryRows(rows){
   const totalKg = rows.reduce((s,r)=>s+r.item.kgQty,0);
   const byCategory = {}, byCnf = {}, byStatus = {};
   let belowSafety = 0;
@@ -4033,28 +4193,24 @@ function buildMisPivotSummaryHtml(rows, totalCols){
     byStatus[r.ageStatus.label] = (byStatus[r.ageStatus.label]||0) + 1;
     if(r.safetyStatus==='low') belowSafety++;
   });
-  const kgFmt = n => n.toLocaleString('en-IN',{maximumFractionDigits:1});
-  let html = `<tr><td colspan="${totalCols}" class="sumhead">SUMMARY — AT A GLANCE</td></tr>`;
-  html += summaryRowsHtml([
+  const kgFmt = n => Number(n.toFixed(1));
+  const out = [
+    ['AT A GLANCE',''],
     ['Total Stock (kg)', kgFmt(totalKg)],
     ['Total Lines', rows.length],
     ['CNFs Represented', new Set(rows.map(r=>r.cnf.code)).size],
     ['Below Safety Stock', belowSafety],
-  ]);
-  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}" class="sumhead">STOCK BY CATEGORY (kg)</td></tr>`;
-  html += Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cat,kg])=>
-    `<tr><td class="sumlbl">${excelEsc_(cat)}</td><td class="sumval" colspan="3">${kgFmt(kg)}</td></tr>`).join('');
-  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}" class="sumhead">STOCK BY CNF (kg)</td></tr>`;
-  html += Object.entries(byCnf).sort((a,b)=>b[1]-a[1]).map(([cnf,kg])=>
-    `<tr><td class="sumlbl">${excelEsc_(cnf)}</td><td class="sumval" colspan="3">${kgFmt(kg)}</td></tr>`).join('');
-  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}" class="sumhead">AGEING BREAKDOWN (line count)</td></tr>`;
-  const statusOrder = ['Expired','Near Expiry','Critical','Ageing','Normal','Fresh','No MFD'];
-  html += statusOrder.filter(s=>byStatus[s]).map(s=>{
-    const c = AGEING_STATUS_COLORS[s];
-    return `<tr><td class="sumlbl" style="background:${c.bg};color:${c.fg};">${excelEsc_(s)}</td><td class="sumval" colspan="3">${byStatus[s]}</td></tr>`;
-  }).join('');
-  html += `<tr><td colspan="${totalCols}">&nbsp;</td></tr><tr><td colspan="${totalCols}">&nbsp;</td></tr>`;
-  return html;
+    ['',''],
+    ['STOCK BY CATEGORY (kg)',''],
+    ...Object.entries(byCategory).sort((a,b)=>b[1]-a[1]).map(([cat,kg])=>[cat, kgFmt(kg)]),
+    ['',''],
+    ['STOCK BY CNF (kg)',''],
+    ...Object.entries(byCnf).sort((a,b)=>b[1]-a[1]).map(([cnf,kg])=>[cnf, kgFmt(kg)]),
+    ['',''],
+    ['AGEING BREAKDOWN (line count)',''],
+    ...['Expired','Near Expiry','Critical','Ageing','Normal','Fresh','No MFD'].filter(s=>byStatus[s]).map(s=>[s, byStatus[s]]),
+  ];
+  return out;
 }
 async function runExport(){
   const prog = document.getElementById('exportProg');
@@ -4066,15 +4222,14 @@ async function runExport(){
   }
   const rows = filteredRows();
   const {headers, dataRows} = buildMisExportRows(rows);
-  const summaryHtml = buildMisPivotSummaryHtml(rows, headers.length);
-  const html = buildStyledExcelHtml({
+  const summaryRows = buildMisPivotSummaryRows(rows);
+  const wb = buildXlsxWorkbook({
     title: 'CNF Stock Export',
     subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}`,
     headers, rows: dataRows,
-    statusColIndex: headers.indexOf('Ageing Status'),
-    summaryHtml
+    summaryRows
   });
-  downloadStyledExcel(`cnf-stock-export-${todayISO()}`, html);
+  downloadRealXlsx(`cnf-stock-export-${todayISO()}`, wb);
 }
 
 /* ---------------- Toast ---------------- */
@@ -4218,13 +4373,12 @@ function bindGlobal(){
     const sub = latestSubmissionFor(state.cnfUser.code);
     if(!sub) return;
     const report = buildDetailedReportRows(sub);
-    const html = buildStyledExcelHtml({
+    const wb = buildXlsxWorkbook({
       title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
       subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
       headers: report.headers, rows: report.rows,
-      statusColIndex: report.headers.indexOf('Status'),
     });
-    await saveOrDownloadStyledExcel(report.filename, html);
+    await saveOrDownloadRealXlsx(report.filename, wb);
   };
   const btnChooseFolder = document.getElementById('btnChooseFolder');
   if(btnChooseFolder) btnChooseFolder.onclick = async ()=>{
@@ -4237,12 +4391,12 @@ function bindGlobal(){
     if(!sub) return;
     const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason'];
     const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
-    const html = buildStyledExcelHtml({
+    const wb = buildXlsxWorkbook({
       title: `${state.cnfUser.name} (${state.cnfUser.code}) — Stock Submission`,
       subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
       headers, rows,
     });
-    downloadStyledExcel(`${state.cnfUser.code}-stock-${sub.date}`, html);
+    downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
   });
 
   // Submit screen interactions — stock is ALWAYS current/today's physical
@@ -4309,6 +4463,13 @@ function bindGlobal(){
   };
   const btnFinal = document.getElementById('btnFinalReview');
   if(btnFinal) btnFinal.onclick = ()=>{
+    const violations = findOpenBagViolations();
+    if(violations.length){
+      const names = violations.slice(0,3).map(v=>v.name).join(', ');
+      const kind = violations.some(v=>v.uom==='BAG') && violations.some(v=>v.uom==='PC') ? 'Bag opened / PC not whole' : violations[0].uom==='BAG' ? 'Bag opened' : 'PC must be a whole number';
+      showToast(`⚠️ ${kind} for ${names}${violations.length>3?` and ${violations.length-3} more`:''} — submit stock in KG instead.`);
+      return;
+    }
     state.cnfModal = CnfFinalModal();
     render();
   };
@@ -4317,6 +4478,7 @@ function bindGlobal(){
     document.getElementById('btnCancelFinal').onclick = ()=>{ state.cnfModal=null; render(); };
     const btnConfirmFinal = document.getElementById('btnConfirmFinal');
     if(btnConfirmFinal) btnConfirmFinal.onclick = ()=>{
+      if(findOpenBagViolations().length){ showToast('⚠️ Bag opened or PC not whole for one or more items — submit stock in KG instead.'); state.cnfModal=null; render(); return; }
       if(state.submitDate > todayISO() || state.submitDate < yesterdayISO()){ showToast('Stock date must be today or yesterday — you can only submit current physical stock.'); state.submitDate = clampSubmitDate(state.submitDate); render(); return; }
       // Any submission for a date that isn't literally today requires an
       // explicit, in-the-moment acknowledgment — checked FRESH, right here,
@@ -4367,13 +4529,12 @@ function bindGlobal(){
       // Detailed report, every time — every submission, successful or not,
       // leaves the CNF with an immediate local copy of exactly what was sent.
       const detailedReport = buildDetailedReportRows(sub);
-      const detailedHtml = buildStyledExcelHtml({
+      const detailedWb = buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
         headers: detailedReport.headers, rows: detailedReport.rows,
-        statusColIndex: detailedReport.headers.indexOf('Status'),
       });
-      saveOrDownloadStyledExcel(detailedReport.filename, detailedHtml);
+      saveOrDownloadRealXlsx(detailedReport.filename, detailedWb);
       const backendOn = !!getApiUrl();
       showToast(backendOn ? 'Stock submitted — syncing…' : 'Stock submitted successfully (local demo mode)');
       if(backendOn){
@@ -4396,6 +4557,7 @@ function bindGlobal(){
     if(state.adminScreen==='audit'){ await ensureAllHistory(); render(); }
     if(state.adminScreen==='empmap'){ await loadEmployeeMappings(); render(); }
     if(state.adminScreen==='emaillog'){ await loadEmailLog(); render(); }
+    if(state.adminScreen==='emailconfig'){ await loadEmailConfig(); render(); }
   });
   document.querySelectorAll('[data-toggle-cnf]').forEach(el=>el.onclick=async ()=>{
     const c = state.masters.cnfs.find(c=>c.code===el.dataset.toggleCnf);
@@ -4431,6 +4593,11 @@ function bindGlobal(){
   const btnToggleUncategorized = document.getElementById('btnToggleUncategorized');
   if(btnToggleUncategorized) btnToggleUncategorized.onclick = ()=>{
     state.adminProductFilter = state.adminProductFilter==='uncategorized' ? 'all' : 'uncategorized';
+    render();
+  };
+  const btnSwapFilter = document.querySelector('[data-swapfilter]');
+  if(btnSwapFilter) btnSwapFilter.onclick = ()=>{
+    state.adminProductFilter = btnSwapFilter.dataset.swapfilter==='on' ? 'swapped' : 'all';
     render();
   };
   // Product Master — bulk category assign, per-row delete, export for bulk edit
@@ -4563,6 +4730,29 @@ function bindGlobal(){
   };
   const btnRefreshEmailLog = document.getElementById('btnRefreshEmailLog');
   if(btnRefreshEmailLog) btnRefreshEmailLog.onclick = async ()=>{ await loadEmailLog(); render(); showToast('Email log refreshed'); };
+  // Email Configuration — checkboxes update an in-memory copy of the
+  // config as they're toggled; text/textarea fields get read fresh at
+  // Save time (no need to bind an onchange per keystroke for those).
+  document.querySelectorAll('[data-cfgcheck]').forEach(el=>el.onchange=()=>{
+    if(!state.emailConfig) state.emailConfig = {};
+    state.emailConfig[el.dataset.cfgcheck] = el.checked ? 'true' : 'false';
+  });
+  const btnSaveEmailConfig = document.getElementById('btnSaveEmailConfig');
+  if(btnSaveEmailConfig) btnSaveEmailConfig.onclick = async ()=>{
+    const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+    const cfg = Object.assign({}, state.emailConfig, {
+      senderName: val('cfgSenderName'), replyTo: val('cfgReplyTo'), defaultCc: val('cfgDefaultCc'),
+      overdueSubject: val('cfgOverdueSubject'), overdueBody: val('cfgOverdueBody'),
+      ageingSubject: val('cfgAgeingSubject'), ageingBody: val('cfgAgeingBody'),
+    });
+    btnSaveEmailConfig.disabled = true; btnSaveEmailConfig.textContent = 'Saving…';
+    try{
+      await saveEmailConfigToServer(cfg);
+      showToast('✓ Email configuration saved');
+    }catch(e){ showToast('Could not save — check connection'); }
+    btnSaveEmailConfig.disabled = false; btnSaveEmailConfig.textContent = 'Save Email Configuration';
+    render();
+  };
   const btnMisRefresh = document.getElementById('btnMisRefresh');
   if(btnMisRefresh) btnMisRefresh.onclick = async ()=>{
     btnMisRefresh.textContent = 'Refreshing…'; btnMisRefresh.disabled = true;
@@ -4773,6 +4963,59 @@ function bindGlobal(){
       if(isExcel) reader.readAsArrayBuffer(file); else reader.readAsText(file);
     };
   });
+  const btnReplaceMaster = document.getElementById('btnReplaceMaster');
+  if(btnReplaceMaster) btnReplaceMaster.onclick = ()=>{
+    const input = document.getElementById('replaceMasterFile');
+    if(input) input.click();
+  };
+  const replaceMasterFile = document.getElementById('replaceMasterFile');
+  if(replaceMasterFile) replaceMasterFile.onchange = ()=>{
+    const file = replaceMasterFile.files[0];
+    if(!file) return;
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      let rows;
+      if(isExcel){
+        if(typeof XLSX === 'undefined'){ showToast('Excel reader failed to load — check your connection and try again.'); return; }
+        const wb = XLSX.read(reader.result, {type:'array'});
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, defval:''});
+      } else {
+        rows = parseCsv(String(reader.result));
+      }
+      const objs = csvRowsToObjects(rows);
+      const result = buildFullProductMasterReplacement(objs);
+      const newCodes = new Set(result.valid.map(p=>p.code));
+      const removedCodes = state.masters.products.filter(p=>!newCodes.has(p.code)).map(p=>p.code);
+      state.replaceMasterPreview = Object.assign({removedCodes}, result);
+      replaceMasterFile.value = '';
+      render();
+    };
+    if(isExcel) reader.readAsArrayBuffer(file); else reader.readAsText(file);
+  };
+  const replaceMasterBg = document.getElementById('replaceMasterBg');
+  if(replaceMasterBg){
+    replaceMasterBg.onclick = (e)=>{ if(e.target===replaceMasterBg){ state.replaceMasterPreview=null; render(); } };
+    const btnCancelReplaceMaster = document.getElementById('btnCancelReplaceMaster');
+    if(btnCancelReplaceMaster) btnCancelReplaceMaster.onclick = ()=>{ state.replaceMasterPreview=null; render(); };
+    const btnConfirmReplaceMaster = document.getElementById('btnConfirmReplaceMaster');
+    if(btnConfirmReplaceMaster) btnConfirmReplaceMaster.onclick = async ()=>{
+      const {valid, newCategories} = state.replaceMasterPreview;
+      Object.keys(newCategories||{}).forEach(cat=>{
+        if(!state.masters.categories.includes(cat)){
+          state.masters.categories.push(cat);
+          state.masters.categorySelfLife[cat] = newCategories[cat];
+        }
+      });
+      state.masters.products = valid; // full replace, not a merge
+      state.selectedProductCodes = [];
+      state.replaceMasterPreview = null;
+      btnConfirmReplaceMaster.disabled = true; btnConfirmReplaceMaster.textContent = 'Replacing…';
+      await saveMasters();
+      render();
+      showToast(`✓ Product Master replaced — ${valid.length} products, freshly built from your file`);
+    };
+  }
   const importPreviewBg = document.getElementById('importPreviewBg');
   if(importPreviewBg){
     importPreviewBg.onclick = (e)=>{ if(e.target===importPreviewBg){ state.importPreview=null; render(); } };
@@ -4926,13 +5169,13 @@ function bindGlobal(){
   if(btnExportStockTable) btnExportStockTable.onclick = ()=>{
     const rows = filteredRows();
     exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Reorder Suggested','Safety','Approved Order','Pending Order'],
-      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?(r.item.kgQty/r.product.pcToKg).toFixed(1):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,reorderSuggested(r.ageStatus.cls),r.safetyStatus==='ok'?'OK':'Below',r.item.approvedOrder??'',r.item.pendingOrder??'']));
+      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,reorderSuggested(r.ageStatus.cls),r.safetyStatus==='ok'?'OK':'Below',r.item.approvedOrder??'',r.item.pendingOrder??'']));
   };
   const btnExportFifo = document.getElementById('btnExportFifo');
   if(btnExportFifo) btnExportFifo.onclick = ()=>{
     const rows = filteredRows().filter(r=>r.item.mfd).sort((a,b)=> new Date(a.item.mfd) - new Date(b.item.mfd));
     exportGenericCsv('fifo-monitor.csv', ['#','CNF Code','CNF Name','Product Code','Product Name','MFD','Age (d)','Self-Life','Remaining','Qty (kg)','BAG Equiv','PC Equiv','Status'],
-      rows.map((r,i)=>[i+1,r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.item.mfd,r.ageStatus.age,r.ageStatus.life,r.ageStatus.remaining,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?(r.item.kgQty/r.product.pcToKg).toFixed(1):'',r.ageStatus.label]));
+      rows.map((r,i)=>[i+1,r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.item.mfd,r.ageStatus.age,r.ageStatus.life,r.ageStatus.remaining,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.ageStatus.label]));
   };
   const btnExportAgeing = document.getElementById('btnExportAgeing');
   if(btnExportAgeing) btnExportAgeing.onclick = ()=>{
@@ -5101,6 +5344,7 @@ function bindRowInputs(){
     const b = ensureBatch(code, idx);
     b.qty = inp.value;
     updateRowMeta(code);
+    updateUomWarning(code, idx, b.uom || (state.masters.products.find(p=>p.code===code)||{}).defaultUOM);
     autoSaveDraft();
   });
   document.querySelectorAll('[data-uomcode]').forEach(sel=>sel.onchange=()=>{
@@ -5247,18 +5491,54 @@ function rerenderOneRow(code){
   updateProgress();
 }
 
+// PC/Bag-opened check lives here alongside the missing-conversion-factor
+// check since both are "something about this UOM choice needs the CNF's
+// attention" — PC and BAG are both physical, whole-number units (a
+// piece or a sealed bag either exists or it doesn't), so a non-whole
+// count in either means the actual stock is loose/opened and should be
+// counted in KG instead. This both warns inline and (via the CSS class)
+// marks the field as blocking so Final Submit can refuse to go through
+// with it still set.
 function updateUomWarning(code, idx, uom){
   const p = state.masters.products.find(pp=>pp.code===code);
   const warnEl = document.querySelector(`[data-uomwarn="${code}:${idx}"]`);
   if(!warnEl || !p) return;
+  const batch = (state.draftItems[code]||[])[idx];
+  const qty = batch && batch.qty!==undefined && batch.qty!=='' ? Number(batch.qty) : null;
+  const notWhole = (uom==='BAG' || uom==='PC') && qty!==null && !isNaN(qty) && Math.abs(qty - Math.round(qty)) > 0.001;
   const noConversion = (uom==='BAG' && !p.bagToKg) || (uom==='PC' && !p.pcToKg);
-  if(noConversion){
+  if(notWhole){
     warnEl.style.display = '';
+    warnEl.classList.add('uom-warn-blocking');
+    warnEl.innerHTML = uom==='BAG' ? `⚠️ Bag opened. Submit stock in KG or PC.` : `⚠️ PC must be a whole number. Submit stock in KG instead.`;
+  } else if(noConversion){
+    warnEl.style.display = '';
+    warnEl.classList.remove('uom-warn-blocking');
     warnEl.innerHTML = `⚠ No ${uom} size set for this product yet — Admin can add it in Product Master or via UOM Converter import. Until then, this ${uom} quantity is <b>not converted</b>, it's used as-is.`;
   } else {
     warnEl.style.display = 'none';
+    warnEl.classList.remove('uom-warn-blocking');
     warnEl.innerHTML = '';
   }
+}
+// Whole-catalog version of the same check — used right before Final
+// Submit so a partial bag or a fractional piece can never slip through
+// just because nobody happened to re-trigger the inline warning for that
+// one row.
+function findOpenBagViolations(){
+  const violations = [];
+  Object.keys(state.draftItems).forEach(code=>{
+    (state.draftItems[code]||[]).forEach((b,idx)=>{
+      if((b.uom==='BAG' || b.uom==='PC') && b.qty!==undefined && b.qty!==''){
+        const qty = Number(b.qty);
+        if(!isNaN(qty) && Math.abs(qty - Math.round(qty)) > 0.001){
+          const p = state.masters.products.find(pp=>pp.code===code);
+          violations.push({code, idx, name: p?p.name:code, qty, uom: b.uom});
+        }
+      }
+    });
+  });
+  return violations;
 }
 
 function updateProgress(){
