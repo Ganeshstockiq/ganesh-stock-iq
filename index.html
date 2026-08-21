@@ -353,6 +353,16 @@ tr[data-attn]{cursor:pointer;}
 .modal-dark .msub{font-family:var(--mono);font-size:11px;color:var(--wheat-dim);margin-bottom:14px;}
 .modal-dark .drow{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted-text);}
 .modal-dark .drow b{font-family:var(--mono);color:var(--surface-text);font-weight:600;}
+
+.version-update-card{background:var(--panel);color:var(--surface-text);border:1px solid var(--wheat-dim);border-radius:18px;max-width:360px;width:90%;padding:32px 26px 26px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.35);}
+.version-update-card h3{font-family:var(--disp);font-size:19px;margin:4px 0 6px;}
+.version-update-card .msub{font-family:var(--mono);font-size:11.5px;color:var(--wheat-dim);line-height:1.6;margin-bottom:0;}
+.version-update-icon{position:relative;width:76px;height:76px;margin:0 auto 6px;display:flex;align-items:center;justify-content:center;}
+.version-update-icon span{position:relative;z-index:2;font-size:30px;color:var(--wheat);display:inline-block;animation:versionSpin 2.2s linear infinite;}
+.version-update-ring,.version-update-ring2{position:absolute;inset:0;border-radius:50%;border:2px solid var(--wheat);opacity:0;animation:versionPulse 2s ease-out infinite;}
+.version-update-ring2{animation-delay:1s;}
+@keyframes versionPulse{0%{transform:scale(.5);opacity:.7;}100%{transform:scale(1.3);opacity:0;}}
+@keyframes versionSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
 .modal-dark .dgrp{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.7px;color:var(--wheat-dim);margin:16px 0 2px;}
 .modal-dark .dgrp:first-of-type{margin-top:4px;}
 .modal-close{width:100%;margin-top:16px;}
@@ -506,6 +516,14 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- SheetJS above is used only for READING uploaded SAP/import files — its
+     free build can't write cell colours reliably, so report GENERATION
+     uses ExcelJS below instead: it produces the same genuinely-valid
+     .xlsx format (no Excel "format and extension don't match" warning)
+     while still supporting real fill colours, bold headers, and column
+     widths — the professional look reports had before, without bringing
+     back the security warning that look used to cause. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -807,7 +825,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.10';
+const APP_VERSION = '2026-08-21.13';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1064,15 +1082,15 @@ function safeUomLabel(uom){
   return ['KG','PC','BAG'].includes(uom) ? uom : `${uom} (unrecognised — check Product Master)`;
 }
 function buildDetailedReportRows(sub){
-  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Reorder Suggested','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
+  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Reorder Suggested','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
   const rows = sub.items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
     const bagEquiv = p && p.bagToKg ? bagEquivDisplay(it.kgQty, p) : '';
     const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), bagEquiv, pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
-  return {headers, rows, filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
+  return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
 
 /* ---------------- Optional: save reports directly to a chosen folder ----------------
@@ -1113,17 +1131,17 @@ async function saveOrDownloadCsv(filename, headers, dataRows){
 }
 // Real-XLSX counterpart of the above — same "Choose Folder" support, same
 // silent-fallback-to-download behaviour, writing a genuine .xlsx workbook
-// (built by buildXlsxWorkbook) instead of plain CSV text. Deliberately a
-// REAL Excel file, not an HTML file wearing an .xls extension — that
-// earlier approach triggered Excel's own "format and extension don't
-// match, could be corrupted or unsafe" warning on every single open, which
-// is exactly the kind of thing that erodes trust in a report that's
-// supposed to be authoritative.
+// (built by buildXlsxWorkbook, via ExcelJS) instead of plain CSV text.
+// Deliberately a REAL Excel file, not an HTML file wearing an .xls
+// extension — that earlier approach triggered Excel's own "format and
+// extension don't match, could be corrupted or unsafe" warning on every
+// single open, which is exactly the kind of thing that erodes trust in a
+// report that's supposed to be authoritative.
 async function writeXlsxToChosenFolder(filename, wb){
-  const wbBinary = XLSX.write(wb, {type:'array', bookType:'xlsx'});
+  const buffer = await wb.xlsx.writeBuffer();
   const fileHandle = await reportFolderHandle.getFileHandle(filename, {create:true});
   const writable = await fileHandle.createWritable();
-  await writable.write(wbBinary);
+  await writable.write(buffer);
   await writable.close();
 }
 async function saveOrDownloadRealXlsx(filenameBase, wb){
@@ -1132,7 +1150,7 @@ async function saveOrDownloadRealXlsx(filenameBase, wb){
     try{ await writeXlsxToChosenFolder(filename, wb); showToast(`✓ Saved to ${reportFolderHandle.name}/${filename}`); return; }
     catch(e){ /* permission revoked or folder issue — fall through to normal download */ }
   }
-  downloadRealXlsx(filenameBase, wb);
+  await downloadRealXlsx(filenameBase, wb);
 }
 
 async function flushPendingQueue(){
@@ -1158,6 +1176,15 @@ if(typeof window!=='undefined' && window.addEventListener) window.addEventListen
 // longer than a minute for the next attempt, network permitting — cheap,
 // safe no-op when the queue is empty.
 if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{ if(state.loaded) flushPendingQueue(); }, 60000);
+// Catches a newly-deployed version even for a tab that's been sitting open
+// for hours without the person ever touching Sync or logging back in —
+// exactly the CNF session that most needs to hear about a fix. 4 minutes
+// is frequent enough that a rollout reaches everyone within a few minutes
+// of going out, without being a meaningfully heavier polling load than the
+// other periodic checks already running here.
+if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{
+  if(state.loaded && state.role && !state.newVersionAvailable) checkForNewVersion().catch(()=>{});
+}, 4*60000);
 // Same idea for messages — a CNF with the tab open (even backgrounded,
 // e.g. they've switched to WhatsApp) still gets a desktop notification
 // within a minute or two of a new rate/scheme message going out, not only
@@ -1544,8 +1571,23 @@ function DemoBanner(){
 
 function NewVersionBanner(){
   if(!state.newVersionAvailable) return '';
-  return `<div style="background:#1f3d2e;border-bottom:1px solid #2f6b4a;color:#c9f0d8;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
-    🆕 A newer version of the app is ready. <button id="btnReloadNewVersion" style="background:#2f6b4a;color:#fff;border:none;border-radius:6px;padding:3px 10px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;margin-left:6px;">Reload Now</button>
+  // Deliberately no close/skip button — a stale tab left open for days is
+  // exactly the scenario a data or logic fix (a corrected conversion
+  // factor, a validation rule) needs to actually reach, and a dismissible
+  // banner is too easy to permanently ignore. Reload is always safe here:
+  // in-progress batch entry is autosaved as a draft (both locally and to
+  // the backend) well before this could ever appear, so nothing is lost.
+  return `<div class="modal-bg dark" style="z-index:999;">
+    <div class="version-update-card">
+      <div class="version-update-icon">
+        <div class="version-update-ring"></div>
+        <div class="version-update-ring2"></div>
+        <span>⟳</span>
+      </div>
+      <h3>A newer version is ready</h3>
+      <div class="msub">Ganesh Stock IQ has been updated with fixes and improvements. Your work is saved — reloading is safe.</div>
+      <button class="btn btn-primary" id="btnReloadNewVersion" style="width:100%;margin-top:16px;">Update Now</button>
+    </div>
   </div>`;
 }
 
@@ -2694,7 +2736,12 @@ function EmailConfigScreen(){
     <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;">Apps Script can only send from the Google account it's authorized under (with this display name) — it can't forge crm@ganeshconsumer.com as the actual From address unless that's set up as a "Send As" alias on that account in Gmail Settings, by whoever administers it. This name is what recipients see either way.</p>
     <div class="fg" style="margin-bottom:10px;"><label>Sender Display Name</label><input type="text" id="cfgSenderName" value="${cfg.senderName||''}" placeholder="Ganesh Consumer — Stock Team"></div>
     <div class="fg" style="margin-bottom:10px;"><label>Reply-To (optional)</label><input type="email" id="cfgReplyTo" value="${cfg.replyTo||''}" placeholder="crm@ganeshconsumer.com"></div>
-    <div class="fg"><label>Default CC List (comma-separated — always CC'd when enabled below, on top of any mapped employees)</label><input type="text" id="cfgDefaultCc" value="${cfg.defaultCc||''}" placeholder="manager@ganeshconsumer.com, ops@ganeshconsumer.com"></div>
+    <div class="fg" style="margin-bottom:14px;"><label>Default CC List (comma-separated — always CC'd when enabled below, on top of any mapped employees)</label><input type="text" id="cfgDefaultCc" value="${cfg.defaultCc||''}" placeholder="manager@ganeshconsumer.com, ops@ganeshconsumer.com"></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <input type="email" id="cfgTestEmailTo" placeholder="you@example.com — where to send the test" style="flex:1;min-width:200px;padding:8px 10px;border-radius:7px;border:1px solid var(--line);">
+      <button class="btn btn-dark btn-sm" id="btnSendTestEmail">✉ Send Test Email</button>
+    </div>
+    <div id="testEmailResult" style="margin-top:8px;font-family:var(--mono);font-size:12px;color:var(--ink-soft);"></div>
   </div>
 
   <div class="panel-card">
@@ -2715,6 +2762,17 @@ function EmailConfigScreen(){
     <div class="fg" style="margin-bottom:10px;"><label>Body</label><textarea id="cfgAgeingBody" rows="4">${cfg.ageingBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DATE','ITEM_COUNT'])}</div>
     <div>${checkbox('ageingEmbedTable','Show the flagged items as a table inside the email body')}</div>
     <div style="margin-top:6px;">${checkbox('ageingAttachReport','Attach the flagged items as a CSV file')}</div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Rule: Safety Stock Breach ${checkbox('safetyEnabled','Enabled')}</h4>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;">Sent once, right after a CNF's stock submission, if anything in it falls below its Safety Stock norm (Admin → Safety Stock). This is an internal signal, not something for the CNF to action — by default it goes to the CNF's mapped employee(s), not the CNF itself.</p>
+    <div style="margin-bottom:10px;"><b style="font-size:11px;">To:</b><br>${checkbox('safetyToCnf','CNF Email')}${checkbox('safetyToEmployees','Mapped Employee(s)')}</div>
+    <div style="margin-bottom:14px;"><b style="font-size:11px;">Cc:</b><br>${checkbox('safetyCcEmployees','Mapped Employee(s)')}${checkbox('safetyCcDefault','Default CC List')}</div>
+    <div class="fg" style="margin-bottom:10px;"><label>Subject</label><input type="text" id="cfgSafetySubject" value="${(cfg.safetySubject||'').replace(/"/g,'&quot;')}"></div>
+    <div class="fg" style="margin-bottom:10px;"><label>Body</label><textarea id="cfgSafetyBody" rows="4">${cfg.safetyBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DATE','ITEM_COUNT'])}</div>
+    <div>${checkbox('safetyEmbedTable','Show the breached items as a table inside the email body')}</div>
+    <div style="margin-top:6px;">${checkbox('safetyAttachReport','Attach the breached items as a CSV file')}</div>
   </div>
 
   <button class="btn btn-primary" id="btnSaveEmailConfig">Save Email Configuration</button>
@@ -3186,28 +3244,99 @@ function generatedByLabel(){
 // reliably write cell fill colours), but that trade is worth it: this
 // never triggers Excel's "file format and extension don't match" warning,
 // which the earlier HTML-labelled-as-.xls approach did on every open.
-function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows}){
-  const wb = XLSX.utils.book_new();
+// headers: string[]; rows: array of arrays (cell values, in header order);
+// statusColIndex: which column (if any) holds an Ageing-style label to
+// colour-code; summaryRows: optional array of [label, value] pairs —
+// becomes its own "Summary" sheet ahead of the data.
+//
+// Built with ExcelJS rather than the SheetJS instance loaded elsewhere in
+// this app (which only reads uploaded files) — ExcelJS's free build can
+// actually WRITE cell fill colours and bold headers, producing the same
+// professional look these reports had before, while still being a
+// genuinely valid .xlsx file that never triggers Excel's "format and
+// extension don't match, could be corrupted" warning the way an HTML file
+// wearing an .xls extension used to.
+async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, statusColIndex}){
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Ganesh Stock IQ';
   const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
-  const metaRows = [
-    ['Ganesh Stock IQ'],
-    [title||''],
-    ...(subtitle ? [[subtitle]] : []),
-    [`Generated: ${genStamp}`, `By: ${generatedByLabel()}`],
-    [],
-  ];
-  if(summaryRows && summaryRows.length){
-    const wsSummary = XLSX.utils.aoa_to_sheet([...metaRows, ['Summary'], ...summaryRows]);
-    wsSummary['!cols'] = [{wch:28},{wch:20}];
-    XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
+  const BRAND = 'FF5A3D1A', HEADBG = 'FFCC8F3F', HEADFG = 'FFFFFFFF', METAFG = 'FF666666';
+
+  function writeMeta(ws, colCount){
+    ws.mergeCells(1,1,1,colCount);
+    ws.getCell(1,1).value = 'Ganesh Stock IQ';
+    ws.getCell(1,1).font = {bold:true, size:16, color:{argb:BRAND}};
+    ws.mergeCells(2,1,2,colCount);
+    ws.getCell(2,1).value = title||'';
+    ws.getCell(2,1).font = {bold:true, size:12.5};
+    let row = 3;
+    if(subtitle){
+      ws.mergeCells(row,1,row,colCount);
+      ws.getCell(row,1).value = subtitle;
+      ws.getCell(row,1).font = {size:10, color:{argb:METAFG}};
+      row++;
+    }
+    ws.mergeCells(row,1,row,colCount);
+    ws.getCell(row,1).value = `Generated: ${genStamp}  ·  By: ${generatedByLabel()}`;
+    ws.getCell(row,1).font = {size:9.5, color:{argb:METAFG}};
+    row++;
+    return row+1; // blank spacer row, next real content starts after
   }
-  const wsData = XLSX.utils.aoa_to_sheet([...metaRows, headers, ...rows]);
-  wsData['!cols'] = headers.map(h=>({wch: Math.max(12, String(h).length+2)}));
-  XLSX.utils.book_append_sheet(wb, wsData, summaryRows&&summaryRows.length ? 'Data' : 'Report');
+
+  if(summaryRows && summaryRows.length){
+    const wsSummary = wb.addWorksheet('Summary');
+    wsSummary.columns = [{width:30},{width:20}];
+    let r = writeMeta(wsSummary, 2);
+    summaryRows.forEach(([label,value])=>{
+      const isHeading = value==='' && label!=='' && label===label.toUpperCase();
+      const row = wsSummary.getRow(r);
+      row.getCell(1).value = label; row.getCell(2).value = value;
+      if(isHeading){
+        row.getCell(1).font = {bold:true, color:{argb:HEADFG}};
+        row.getCell(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF1C1712'}};
+        wsSummary.mergeCells(r,1,r,2);
+      } else if(label!==''){
+        row.getCell(1).font = {bold:true};
+        row.getCell(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF6EED4'}};
+      }
+      r++;
+    });
+  }
+
+  const wsData = wb.addWorksheet(summaryRows&&summaryRows.length ? 'Data' : 'Report');
+  wsData.columns = headers.map(h=>({width: Math.max(12, String(h).length+2)}));
+  let r = writeMeta(wsData, headers.length);
+  const headerRow = wsData.getRow(r);
+  headers.forEach((h,i)=>{
+    const cell = headerRow.getCell(i+1);
+    cell.value = h;
+    cell.font = {bold:true, color:{argb:HEADFG}, size:10.5};
+    cell.fill = {type:'pattern', pattern:'solid', fgColor:{argb:HEADBG}};
+    cell.border = {top:{style:'thin',color:{argb:'FFA97A30'}}, bottom:{style:'thin',color:{argb:'FFA97A30'}}, left:{style:'thin',color:{argb:'FFA97A30'}}, right:{style:'thin',color:{argb:'FFA97A30'}}};
+  });
+  r++;
+  rows.forEach(rowVals=>{
+    const row = wsData.getRow(r);
+    rowVals.forEach((val,i)=>{
+      const cell = row.getCell(i+1);
+      cell.value = val;
+      cell.font = {size:10};
+      const isStatus = statusColIndex!=null && i===statusColIndex;
+      const c = isStatus ? AGEING_STATUS_COLORS[val] : null;
+      if(c){ cell.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+c.bg.replace('#','')}}; cell.font = {bold:true, size:10, color:{argb:'FF'+c.fg.replace('#','')}}; }
+    });
+    r++;
+  });
   return wb;
 }
-function downloadRealXlsx(filenameBase, wb){
-  XLSX.writeFile(wb, filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xlsx');
+async function downloadRealXlsx(filenameBase, wb){
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filenameBase.replace(/\.(csv|xlsx?)$/i,'') + '.xlsx';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
 }
 function sampleProductsCsv(){
   return [
@@ -4164,13 +4293,13 @@ function MisExport(){
 // function, so there's no risk of the two ever silently disagreeing on a
 // number. Only the presentation differs downstream.
 function buildMisExportRows(rows){
-  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','BAG Equiv','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Reorder Suggested','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
+  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Reorder Suggested','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), bagEquiv, pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
-  return {headers, dataRows};
+  return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
 function toCsv(rows){
   const {headers, dataRows} = buildMisExportRows(rows);
@@ -4221,15 +4350,15 @@ async function runExport(){
     await new Promise(r=>setTimeout(r, 220));
   }
   const rows = filteredRows();
-  const {headers, dataRows} = buildMisExportRows(rows);
+  const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
   const summaryRows = buildMisPivotSummaryRows(rows);
-  const wb = buildXlsxWorkbook({
+  const wb = await buildXlsxWorkbook({
     title: 'CNF Stock Export',
     subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}`,
     headers, rows: dataRows,
-    summaryRows
+    summaryRows, statusColIndex
   });
-  downloadRealXlsx(`cnf-stock-export-${todayISO()}`, wb);
+  await downloadRealXlsx(`cnf-stock-export-${todayISO()}`, wb);
 }
 
 /* ---------------- Toast ---------------- */
@@ -4373,10 +4502,10 @@ function bindGlobal(){
     const sub = latestSubmissionFor(state.cnfUser.code);
     if(!sub) return;
     const report = buildDetailedReportRows(sub);
-    const wb = buildXlsxWorkbook({
+    const wb = await buildXlsxWorkbook({
       title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
       subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-      headers: report.headers, rows: report.rows,
+      headers: report.headers, rows: report.rows, statusColIndex: report.statusColIndex,
     });
     await saveOrDownloadRealXlsx(report.filename, wb);
   };
@@ -4386,17 +4515,17 @@ function bindGlobal(){
     catch(e){ showToast((e&&e.message)||'Could not access that folder'); }
   };
   // Export any past submission by date, from History
-  document.querySelectorAll('[data-exportsub]').forEach(el=>el.onclick=()=>{
+  document.querySelectorAll('[data-exportsub]').forEach(el=>el.onclick=async ()=>{
     const sub = state.submissions.find(s=>s.id===el.dataset.exportsub && s.cnfCode===state.cnfUser.code);
     if(!sub) return;
     const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason'];
-    const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
-    const wb = buildXlsxWorkbook({
+    const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
+    const wb = await buildXlsxWorkbook({
       title: `${state.cnfUser.name} (${state.cnfUser.code}) — Stock Submission`,
       subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
       headers, rows,
     });
-    downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
+    await downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
   });
 
   // Submit screen interactions — stock is ALWAYS current/today's physical
@@ -4462,7 +4591,17 @@ function bindGlobal(){
     showToast('Draft saved');
   };
   const btnFinal = document.getElementById('btnFinalReview');
-  if(btnFinal) btnFinal.onclick = ()=>{
+  if(btnFinal) btnFinal.onclick = async ()=>{
+    // Silently pull the freshest Product Master right before the numbers
+    // in this submission get locked in — a CNF's session can sit open for
+    // days, and without this, a conversion factor Admin fixed after they
+    // logged in would never reach them until their next login or manual
+    // Sync, meaning today's submission could still compute kg from a
+    // stale (possibly wrong) pcToKg/bagToKg without anyone noticing.
+    const originalLabel = btnFinal.textContent;
+    btnFinal.disabled = true; btnFinal.textContent = 'Checking for updates…';
+    try{ await forceSyncMasters(); }catch(e){ /* offline or backend hiccup — proceed with whatever's cached rather than blocking them entirely */ }
+    btnFinal.disabled = false; btnFinal.textContent = originalLabel;
     const violations = findOpenBagViolations();
     if(violations.length){
       const names = violations.slice(0,3).map(v=>v.name).join(', ');
@@ -4529,12 +4668,11 @@ function bindGlobal(){
       // Detailed report, every time — every submission, successful or not,
       // leaves the CNF with an immediate local copy of exactly what was sent.
       const detailedReport = buildDetailedReportRows(sub);
-      const detailedWb = buildXlsxWorkbook({
+      buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: detailedReport.headers, rows: detailedReport.rows,
-      });
-      saveOrDownloadRealXlsx(detailedReport.filename, detailedWb);
+        headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
+      }).then(detailedWb=>saveOrDownloadRealXlsx(detailedReport.filename, detailedWb));
       const backendOn = !!getApiUrl();
       showToast(backendOn ? 'Stock submitted — syncing…' : 'Stock submitted successfully (local demo mode)');
       if(backendOn){
@@ -4761,7 +4899,8 @@ function bindGlobal(){
     render();
   };
   const btnEnableNotify = document.getElementById('btnEnableNotify');
-  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(); };
+  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ error code: 504
+(); };
   const btnTopbarSync = document.getElementById('btnTopbarSync');
   if(btnTopbarSync) btnTopbarSync.onclick = async ()=>{
     state.syncingNow = true; render();
