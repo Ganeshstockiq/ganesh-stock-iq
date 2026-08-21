@@ -835,7 +835,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.19';
+const APP_VERSION = '2026-08-21.21';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -878,6 +878,10 @@ function setApiUrl(url){
 // Fails fast instead of hanging the UI if the backend is slow/congested —
 // with 26 CNFs potentially hitting it at once, a request should either
 // succeed quickly or drop into the offline retry queue, never spin forever.
+// 25s (not 20s) specifically to comfortably cover a genuine cache-miss —
+// the one read that has to build the response straight from the Sheet
+// tabs instead of a warm cache, and the one case most likely to occasionally
+// need every bit of that room.
 function withTimeout(promise, ms){
   return Promise.race([
     promise,
@@ -888,19 +892,41 @@ async function apiGet(action, params){
   const apiUrl = getApiUrl();
   if(!apiUrl) return null;
   const qs = new URLSearchParams(Object.assign({action}, params||{})).toString();
-  const res = await withTimeout(fetch(apiUrl + (apiUrl.indexOf('?')>-1?'&':'?') + qs), 20000);
-  const data = await res.json();
-  if(data && data.error) throw new Error(data.error);
-  return data;
+  const url = apiUrl + (apiUrl.indexOf('?')>-1?'&':'?') + qs;
+  // One silent retry — reads have no side effects, so retrying is always
+  // safe, and a single retry quietly absorbs the most common real-world
+  // cause of a timeout here: the very first request after the backend's
+  // cache has expired (up to every 6 hours) or was just cleared, which has
+  // to rebuild from the Sheet tabs directly and is genuinely slower than
+  // every request after it. Rather than surface that as a hard failure and
+  // make someone manually retry, this gives it one more try automatically
+  // — by then the cache is usually warm.
+  try{
+    const res = await withTimeout(fetch(url), 25000);
+    const data = await res.json();
+    if(data && data.error) throw new Error(data.error);
+    return data;
+  }catch(e){
+    const res = await withTimeout(fetch(url), 25000);
+    const data = await res.json();
+    if(data && data.error) throw new Error(data.error);
+    return data;
+  }
 }
 async function apiPost(action, payload){
   const apiUrl = getApiUrl();
   if(!apiUrl) throw new Error('No backend configured');
+  // Deliberately NO automatic retry here, unlike apiGet — a POST can have a
+  // real side effect (saving a submission, sending an email); retrying one
+  // that actually succeeded server-side but timed out on the way back risks
+  // doing it twice, which is worse than surfacing the failure once and
+  // letting the existing offline-queue/manual-retry paths handle it
+  // deliberately instead.
   const res = await withTimeout(fetch(apiUrl, {
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids CORS preflight against Apps Script
     body: JSON.stringify(Object.assign({action}, payload||{}))
-  }), 20000);
+  }), 25000);
   const data = await res.json();
   if(data && data.error) throw new Error(data.error);
   return data;
@@ -1267,6 +1293,7 @@ async function saveDraft(cnfCode, draft){ lsSet('draft:'+cnfCode, draft); }
 
 /* ---------------- Domain logic ---------------- */
 function selfLifeFor(product){
+  if(!product) return 180; // orphaned/missing product reference — a safe generic fallback beats crashing the whole screen
   return product.selfLifeOverride || state.masters.categorySelfLife[product.category] || 180;
 }
 function ageDays(mfd){
@@ -1275,6 +1302,7 @@ function ageDays(mfd){
   return Math.max(0, Math.round(d));
 }
 function ageingStatus(product, mfd){
+  if(!product) return {label:'Unknown', cls:'normal', age:null, life:null, remaining:null}; // same defensive fallback as selfLifeFor, for the same reason
   if(!mfd) return {label:'No MFD', cls:'normal'};
   const life = selfLifeFor(product);
   const age = ageDays(mfd);
@@ -2139,6 +2167,13 @@ function CnfDashboard(){
   if(sub){
     sub.items.forEach(it=>{
       const p = state.masters.products.find(pp=>pp.code===it.code);
+      // A product a past submission references can genuinely no longer
+      // exist — most commonly after Admin does a full Product Master
+      // replace that doesn't include every old code. That's an orphaned
+      // reference, not a data-entry mistake to flag as ageing/safety risk;
+      // there's no product record left to judge it against, so it's
+      // simply skipped here rather than crashing the whole dashboard.
+      if(!p) return;
       const st = ageingStatus(p, it.mfd);
       if(['critical','expiring','expired'].includes(st.cls)) ageingAlerts++;
       if(it.kgQty < p.safetyStockKg) safetyAlerts++;
@@ -2182,6 +2217,7 @@ function CnfDashboard(){
   <div class="attn-panel">
     ${fifoOrder.map((it,i)=>{
       const p = state.masters.products.find(pp=>pp.code===it.code);
+      if(!p) return ''; // orphaned reference — product no longer in the master (e.g. after a full replace); skip rather than crash
       const st = ageingStatus(p, it.mfd);
       return `<div class="attn-row attn-${st.cls}"><div class="an"><b>#${i+1} ${it.name}</b><div class="am">${it.code} · MFD ${it.mfd} · ${it.kgQty.toFixed(1)}kg · ${st.age}d old</div></div><span class="badge ${st.cls}">${st.label}</span></div>`;
     }).join('')}
