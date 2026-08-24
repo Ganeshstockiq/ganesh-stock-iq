@@ -1579,7 +1579,12 @@ async function handleSapUpload(file){
     if(isBogusProductRow(r.code, r.name)) return; // a stray header row, not a real material — never auto-create a product from it
     if(!state.masters.products.some(p=>p.code===r.code)){
       const inferredCategory = inferCategoryFromName(r.name, wordMap) || 'OTHERS';
-      const np = { code:r.code, name:r.name, category:inferredCategory, defaultUOM:'KG', bagToKg:null, pcToKg:null, safetyStockKg:0, selfLifeOverride:null };
+      // pendingReview:true — this material has no real Product Master entry yet,
+      // it only exists so the CNF isn't blocked from recording its stock. It shows
+      // up in Admin → Product Master → "New Product Suggestions" until Admin fills
+      // in the real details; until then it can only be submitted in KG (see
+      // BatchRow's UOM restriction), never PC/BAG, since no conversion is trustworthy yet.
+      const np = { code:r.code, name:r.name, category:inferredCategory, defaultUOM:'KG', bagToKg:null, pcToKg:null, safetyStockKg:0, selfLifeOverride:null, ageingDaysOverride:null, pendingReview:true };
       state.masters.products.push(np); // reflect locally right away — this CNF's list must not wait on the network
       newProducts.push(np);
     }
@@ -2683,8 +2688,15 @@ function ddmmyyyy(iso){
 }
 
 function BatchRow(p,b,i,total){
-  const uom = b.uom || p.defaultUOM || 'KG';
-  const noConversion = (uom==='BAG' && !p.bagToKg) || (uom==='PC' && !p.pcToKg);
+  // A product still pending Admin review (auto-created from an unmapped SAP
+  // material — see the SAP-upload handler) can ONLY be entered in KG. There's
+  // no trustworthy PC/BAG conversion for it yet, and unlike a normal product
+  // with a merely-missing conversion, we don't want to silently accept an
+  // unconverted PC/BAG number here — force KG until Admin fills it in.
+  const pending = !!p.pendingReview;
+  const uom = pending ? 'KG' : (b.uom || p.defaultUOM || 'KG');
+  const noConversion = !pending && ((uom==='BAG' && !p.bagToKg) || (uom==='PC' && !p.pcToKg));
+  const uomOptions = pending ? ['KG'] : ['KG','PC','BAG'];
   return `
   <div class="batchrow" data-batchrow="${p.code}:${i}">
     ${total>1?`<div class="batch-badge">${i+1}</div>`:''}
@@ -2702,12 +2714,12 @@ function BatchRow(p,b,i,total){
     <div class="pinputs">
       <input type="number" min="0" class="qty" data-qtycode="${p.code}" data-batch="${i}" placeholder="0" value="${b.qty!==undefined?b.qty:''}">
 
-      <select class="uom" data-uomcode="${p.code}" data-batch="${i}">
-        ${['KG','PC','BAG'].map(u=>`<option value="${u}" ${uom===u?'selected':''}>${u}</option>`).join('')}
+      <select class="uom" data-uomcode="${p.code}" data-batch="${i}" ${pending?'disabled title="New product — pending Admin review. KG only until Admin sets it up."':''}>
+        ${uomOptions.map(u=>`<option value="${u}" ${uom===u?'selected':''}>${u}</option>`).join('')}
       </select>
       ${total>1?`<button type="button" class="rmbatch-btn" data-removebatch="${p.code}:${i}" title="Remove this batch">✕</button>`:''}
     </div>
-    <div class="uom-warn" data-uomwarn="${p.code}:${i}" style="${noConversion?'':'display:none;'}">⚠ No ${uom} size set for this product yet — Admin can add it in Product Master or via UOM Converter import. Until then, this ${uom} quantity is <b>not converted</b>, it's used as-is.</div>
+    <div class="uom-warn" data-uomwarn="${p.code}:${i}" style="${(pending||noConversion)?'':'display:none;'}">${pending ? `⚠ New product, not yet set up by Admin — you can only enter this in <b>KG</b> for now. It's queued in Admin → Product Master → New Product Suggestions.` : `⚠ No ${uom} size set for this product yet — Admin can add it in Product Master or via UOM Converter import. Until then, this ${uom} quantity is <b>not converted</b>, it's used as-is.`}</div>
     </div>
   </div>`;
 }
@@ -3178,9 +3190,11 @@ function AdminCnfs(){
 function AdminProducts(){
   const uncategorized = state.masters.products.filter(p=>p.category==='OTHERS');
   const likelySwapped = state.masters.products.filter(p=>p.bagToKg && p.pcToKg && p.bagToKg < p.pcToKg);
+  const pendingReview = state.masters.products.filter(p=>p.pendingReview);
   const filterOn = state.adminProductFilter==='uncategorized';
   const swapFilterOn = state.adminProductFilter==='swapped';
-  const visibleProducts = filterOn ? uncategorized : swapFilterOn ? likelySwapped : state.masters.products;
+  const pendingFilterOn = state.adminProductFilter==='pending';
+  const visibleProducts = filterOn ? uncategorized : swapFilterOn ? likelySwapped : pendingFilterOn ? pendingReview : state.masters.products;
   const selectedCount = state.selectedProductCodes.length;
   return `
   <div class="panel-card">
@@ -3196,6 +3210,10 @@ function AdminProducts(){
     <input type="file" id="importProductFile" accept=".csv,.xlsx,.xls" style="display:none;">
     <input type="file" id="replaceMasterFile" accept=".csv,.xlsx,.xls" style="display:none;">
     <p style="color:var(--ink-soft);font-size:12px;margin:-6px 0 12px;">"Import CSV" only updates the columns your file actually has, leaving everything else untouched — good for small fixes. If a product's data has been wrong for a while from an earlier bad import, <b>Replace Entire Master</b> rebuilds every product fresh from one trusted file instead, so nothing old can quietly survive.</p>
+    ${pendingReview.length ? `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;background:var(--amber-bg);">
+      <span>🆕 <b>${pendingReview.length} New Product Suggestion${pendingReview.length!==1?'s':''}</b> — CNF${pendingReview.length!==1?'s':''} uploaded SAP stock for material${pendingReview.length!==1?'s':''} not yet in your Product Master. They can only submit in <b>KG</b> until you fill in Category / Self-Life / Ageing / Safety Stock / UOM conversions below.</span>
+      <button class="btn btn-dark btn-sm" data-pendingfilter="${pendingFilterOn?'off':'on'}">${pendingFilterOn?'Show All Products':`Review These ${pendingReview.length}`}</button>
+    </div>` : ''}
     ${likelySwapped.length ? `<div class="cadence-banner overdue" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
       <span>⚠ <b>${likelySwapped.length} product${likelySwapped.length!==1?'s':''}</b> ha${likelySwapped.length!==1?'ve':'s'} a BAG size smaller than the PC size — almost certainly swapped (a bag should be much bigger than one piece).</span>
       <button class="btn btn-dark btn-sm" data-swapfilter="${swapFilterOn?'off':'on'}">${swapFilterOn?'Show All Products':`Show Only These ${likelySwapped.length}`}</button>
@@ -3217,7 +3235,7 @@ function AdminProducts(){
     <div class="tablewrap"><table class="dtable">
       <thead><tr><th><input type="checkbox" id="chkSelectAllProducts" ${visibleProducts.length && visibleProducts.every(p=>state.selectedProductCodes.includes(p.code))?'checked':''}></th><th>Code</th><th>Name</th><th>Pack Size</th><th>Category</th><th>Default UOM</th><th class="mono">1 BAG = kg</th><th class="mono">1 PC = kg</th><th class="mono">PC per Bag</th><th class="mono">Self-Life Override</th><th class="mono">Ageing Override</th><th class="mono">Safety (kg)</th><th></th></tr></thead>
       <tbody>
-        ${visibleProducts.map(p=>`<tr ${p.category==='OTHERS'?'style="background:var(--amber-bg);"':''}>
+        ${visibleProducts.map(p=> p.pendingReview ? PendingProductRow_(p) : `<tr ${p.category==='OTHERS'?'style="background:var(--amber-bg);"':''}>
           <td><input type="checkbox" class="prod-select" data-prodcode="${p.code}" ${state.selectedProductCodes.includes(p.code)?'checked':''}></td>
           <td class="mono">${p.code}</td><td>${p.name}</td><td class="mono">${p.packSize||'—'}</td><td>${p.category==='OTHERS'?'<span class="badge low">OTHERS — uncategorized</span>':p.category}</td><td class="mono">${p.defaultUOM}</td>
           <td class="mono">${p.bagToKg??'—'}</td><td class="mono">${p.pcToKg??'—'}</td><td class="mono">${pcPerBag(p)??'—'}</td>
@@ -3225,10 +3243,38 @@ function AdminProducts(){
           <td class="mono">${p.ageingDaysOverride? p.ageingDaysOverride+'d remaining' : `<span style="color:var(--ink-soft)">category default</span>`}</td>
           <td class="mono">${p.safetyStockKg}</td>
           <td><span data-removeproduct="${p.code}" title="Remove this product" style="cursor:pointer;color:var(--red);font-weight:700;">✕</span></td>
-        </tr>`).join('') || `<tr><td colspan="13" style="text-align:center;padding:20px;">Nothing uncategorized 🎉</td></tr>`}
+        </tr>`).join('') || `<tr><td colspan="13" style="text-align:center;padding:20px;">Nothing here 🎉</td></tr>`}
       </tbody>
     </table></div>
   </div>`;
+}
+
+// One editable row for a pendingReview product inside the same Product Master
+// table — Admin fills Category/BAG-kg/PC-kg/Self-Life/Ageing/Safety Stock right
+// here and hits "✓ Approve" (data-approveproduct), which clears pendingReview
+// and saves. Kept as its own function so the normal read-only row above stays
+// simple and unchanged for everything that ISN'T pending.
+function PendingProductRow_(p){
+  return `<tr data-pendingrow="${p.code}" style="background:var(--amber-bg);">
+    <td></td>
+    <td class="mono">${p.code}</td>
+    <td>${p.name}</td>
+    <td class="mono">${p.packSize||'—'}</td>
+    <td><select data-pf="category" data-pcode="${p.code}" style="padding:4px 6px;border-radius:6px;border:1px solid var(--line);">
+      ${state.masters.categories.map(c=>`<option value="${c}" ${p.category===c?'selected':''}>${c}</option>`).join('')}
+    </select></td>
+    <td class="mono">KG <span style="color:var(--ink-soft);font-size:10px;">(locked)</span></td>
+    <td><input type="number" min="0" step="0.001" data-pf="bagToKg" data-pcode="${p.code}" value="${p.bagToKg??''}" placeholder="e.g. 25" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);"></td>
+    <td><input type="number" min="0" step="0.001" data-pf="pcToKg" data-pcode="${p.code}" value="${p.pcToKg??''}" placeholder="e.g. 0.5" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);"></td>
+    <td class="mono">${pcPerBag(p)??'—'}</td>
+    <td><input type="number" min="0" data-pf="selfLifeOverride" data-pcode="${p.code}" value="${p.selfLifeOverride??''}" placeholder="days" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);"></td>
+    <td><input type="number" min="0" data-pf="ageingDaysOverride" data-pcode="${p.code}" value="${p.ageingDaysOverride??''}" placeholder="days" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);"></td>
+    <td><input type="number" min="0" data-pf="safetyStockKg" data-pcode="${p.code}" value="${p.safetyStockKg??0}" style="width:64px;padding:4px 6px;border-radius:6px;border:1px solid var(--line);"></td>
+    <td class="small-btn-row">
+      <button class="btn btn-dark btn-sm" data-approveproduct="${p.code}" title="Save these details and let this product be submitted normally">✓ Approve</button>
+      <span data-removeproduct="${p.code}" title="Remove this product" style="cursor:pointer;color:var(--red);font-weight:700;">✕</span>
+    </td>
+  </tr>`;
 }
 
 function AdminSelfLife(){
@@ -3714,6 +3760,7 @@ function buildFreshProductFromRow_(o, wordMap, newCategories, warnings, rowNum){
     safetyStockKg: o.safetystockkg ? Number(o.safetystockkg)||0 : 0,
     selfLifeOverride: o.selflifeoverride ? Number(o.selflifeoverride)||null : null,
     ageingDaysOverride: o.ageing ? Number(o.ageing)||null : null,
+    pendingReview: false, // a file Admin trusted enough to build the whole master from is never "pending"
   };
 }
 // A full rebuild, not a merge: every code in the file becomes a fresh
@@ -3806,7 +3853,7 @@ function validateProductRows(rawObjs){
       const safetyStockKg = o.safetystockkg ? Number(o.safetystockkg)||0 : 0;
       const selfLifeOverride = o.selflifeoverride ? Number(o.selflifeoverride)||null : null;
       const ageingDaysOverride = o.ageing ? Number(o.ageing)||null : null;
-      valid.push({action:'create', code, name, category, packSize, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride, ageingDaysOverride});
+      valid.push({action:'create', code, name, category, packSize, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride, ageingDaysOverride, pendingReview:false});
       return;
     }
 
@@ -3815,6 +3862,11 @@ function validateProductRows(rawObjs){
     // out data that's already correct.
     const patch = {};
     const changed = [];
+    // If this code was sitting in "New Product Suggestions" (auto-created from
+    // an unmapped SAP material), an Admin explicitly importing data for it is
+    // exactly the review it was waiting on — clear the flag so it stops being
+    // KG-locked for the CNF, same as clicking "Approve" would.
+    if(existing.pendingReview){ patch.pendingReview = false; changed.push('pendingReview'); }
     if(o.name){ patch.name = o.name; changed.push('name'); }
     if(o.packsize){ patch.packSize = o.packsize; changed.push('packSize'); }
     if(o.category){
@@ -3837,7 +3889,7 @@ function validateProductRows(rawObjs){
     if(o.selflifeoverride!==''){ patch.selfLifeOverride = Number(o.selflifeoverride)||null; changed.push('selfLifeOverride'); }
     if(o.ageing!==''){ patch.ageingDaysOverride = Number(o.ageing)||null; changed.push('ageingDaysOverride'); }
     if(!changed.length){ warnings.push(`Row ${rowNum} (${code}): matches an existing product but no fields to update — skipped.`); return; }
-    valid.push({action:'update', code, name: existing.name, category: existing.category, packSize: patch.packSize!==undefined?patch.packSize:existing.packSize, defaultUOM: patch.defaultUOM||existing.defaultUOM, bagToKg: patch.bagToKg!==undefined?patch.bagToKg:existing.bagToKg, pcToKg: patch.pcToKg!==undefined?patch.pcToKg:existing.pcToKg, safetyStockKg: patch.safetyStockKg!==undefined?patch.safetyStockKg:existing.safetyStockKg, selfLifeOverride: patch.selfLifeOverride!==undefined?patch.selfLifeOverride:existing.selfLifeOverride, ageingDaysOverride: patch.ageingDaysOverride!==undefined?patch.ageingDaysOverride:existing.ageingDaysOverride, patch, changed});
+    valid.push({action:'update', code, name: existing.name, category: existing.category, packSize: patch.packSize!==undefined?patch.packSize:existing.packSize, defaultUOM: patch.defaultUOM||existing.defaultUOM, bagToKg: patch.bagToKg!==undefined?patch.bagToKg:existing.bagToKg, pcToKg: patch.pcToKg!==undefined?patch.pcToKg:existing.pcToKg, safetyStockKg: patch.safetyStockKg!==undefined?patch.safetyStockKg:existing.safetyStockKg, selfLifeOverride: patch.selfLifeOverride!==undefined?patch.selfLifeOverride:existing.selfLifeOverride, ageingDaysOverride: patch.ageingDaysOverride!==undefined?patch.ageingDaysOverride:existing.ageingDaysOverride, pendingReview: patch.pendingReview!==undefined?patch.pendingReview:existing.pendingReview, patch, changed});
   });
   if(Object.keys(newCategories).length){
     warnings.unshift(`${Object.keys(newCategories).length} new categor${Object.keys(newCategories).length===1?'y':'ies'} will be added: ${Object.keys(newCategories).join(', ')} (180-day default self-life — adjust anytime in Self-Life & Thresholds).`);
@@ -5094,6 +5146,39 @@ function bindGlobal(){
     state.adminProductFilter = btnSwapFilter.dataset.swapfilter==='on' ? 'swapped' : 'all';
     render();
   };
+  const btnPendingFilter = document.querySelector('[data-pendingfilter]');
+  if(btnPendingFilter) btnPendingFilter.onclick = ()=>{
+    state.adminProductFilter = btnPendingFilter.dataset.pendingfilter==='on' ? 'pending' : 'all';
+    render();
+  };
+  // New Product Suggestions — Approve button: reads this row's edited fields,
+  // patches the product, clears pendingReview so the CNF can now use PC/BAG
+  // too (once a real conversion is set), and saves. Existing Ageing/Safety/
+  // reports read product master fields live at render time, so they reflect
+  // this the moment the save completes — no separate "recalculate" step needed.
+  document.querySelectorAll('[data-approveproduct]').forEach(el=>el.onclick=async ()=>{
+    const code = el.dataset.approveproduct;
+    const p = state.masters.products.find(pp=>pp.code===code);
+    if(!p) return;
+    const row = document.querySelector(`[data-pendingrow="${code}"]`);
+    const val = (field)=>{ const inp = row.querySelector(`[data-pf="${field}"]`); return inp ? inp.value : ''; };
+    const category = val('category');
+    if(!category){ showToast('⚠ Pick a category first'); return; }
+    const bagToKg = val('bagToKg') ? Number(val('bagToKg')) : null;
+    const pcToKg = val('pcToKg') ? Number(val('pcToKg')) : null;
+    const selfLifeOverride = val('selfLifeOverride') ? Number(val('selfLifeOverride')) : null;
+    const ageingDaysOverride = val('ageingDaysOverride') ? Number(val('ageingDaysOverride')) : null;
+    const safetyStockKg = val('safetyStockKg') ? Number(val('safetyStockKg')) : 0;
+    el.disabled = true; el.textContent = 'Saving…';
+    Object.assign(p, {category, bagToKg, pcToKg, selfLifeOverride, ageingDaysOverride, safetyStockKg, pendingReview:false});
+    try{
+      await saveMasters();
+      showToast(`✓ "${p.name}" approved — now a normal product, reports updated`);
+    }catch(e){
+      showToast('⚠ Saved on this device but could not sync to the server — check connection');
+    }
+    render();
+  });
   // Product Master — bulk category assign, per-row delete, export for bulk edit
   document.querySelectorAll('[data-prodcode]').forEach(el=>el.onchange=()=>{
     const code = el.dataset.prodcode;
