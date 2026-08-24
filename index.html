@@ -835,7 +835,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-22.1';
+const APP_VERSION = '2026-08-22.3';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -2231,9 +2231,24 @@ function CnfMessages(){
 
 function CnfDashboard(){
   const sub = latestSubmissionFor(state.cnfUser.code);
-  const total = state.masters.products.length;
-  const submittedCount = sub ? new Set(sub.items.map(i=>i.code)).size : 0;
-  const pending = total - submittedCount;
+  // While an SAP file is loaded this session, "required" and "pending"
+  // mirror the Submit Stock screen exactly (same functions: SAP rows with
+  // stock>0, and whatever's actually in the draft) — so Pending here
+  // updates the INSTANT something is entered or a Partial Submit happens,
+  // no server round-trip needed, and never disagrees with what Submit
+  // Stock itself shows. Falls back to "total catalog vs last submission"
+  // only when no SAP file is loaded this session (e.g. right after login,
+  // before today's file has been uploaded yet) — the closest available
+  // approximation without knowing today's actual required list yet.
+  let total, pending;
+  if(state.sapUpload && state.sapUpload.rows){
+    total = state.sapUpload.rows.filter(r=>r.currentStockKg>0).length;
+    pending = missingRequiredCodes().length;
+  } else {
+    total = state.masters.products.length;
+    const submittedCount = sub ? new Set(sub.items.map(i=>i.code)).size : 0;
+    pending = total - submittedCount;
+  }
   const cadence = cnfSubmissionStatus(state.cnfUser);
   const pendingQueue = (lsGet('pendingSubmissions') || []).filter(s=>s.cnfCode===state.cnfUser.code);
   let ageingAlerts=0, safetyAlerts=0;
@@ -2274,7 +2289,7 @@ function CnfDashboard(){
   </div>
   <div class="kpi-row four">
     <div class="kpi"><div class="lbl">Products</div><div class="val">${total}</div></div>
-    <div class="kpi"><div class="lbl">Pending</div><div class="val ${pending>0?'warn':''}">${pending}</div></div>
+    <button class="kpi" id="btnGoPending" style="cursor:${pending>0&&state.sapUpload?'pointer':'default'};text-align:left;font-family:inherit;border:none;background:transparent;padding:0;"><div class="lbl">Pending</div><div class="val ${pending>0?'warn':''}">${pending}</div>${pending>0&&state.sapUpload?'<div style="font-family:var(--mono);font-size:8.5px;color:var(--wheat-dim);margin-top:2px;">tap to fill →</div>':''}</button>
     <div class="kpi"><div class="lbl">Ageing Alerts</div><div class="val ${ageingAlerts?'alert':''}">${ageingAlerts}</div></div>
     <div class="kpi"><div class="lbl">Below Safety</div><div class="val ${safetyAlerts?'alert':''}">${safetyAlerts}</div></div>
   </div>
@@ -2400,6 +2415,7 @@ function CnfSubmit(){
     <div class="row">
       <div class="prog">${requiredDone}/${requiredTotal} required entered${varianceCodes.length?` · ${varianceCodes.length} unresolved`:''}</div>
       <button class="btn btn-ghost btn-sm" id="btnSaveDraft">Save Draft</button>
+      <button class="btn btn-ghost btn-sm" id="btnSubmitPartial" title="Send what's filled so far to the office now — keep filling the rest after">Submit Partial</button>
       <button class="btn btn-primary btn-sm" id="btnFinalReview">Final Submit</button>
     </div>
   </div>
@@ -4679,6 +4695,13 @@ function bindGlobal(){
     state.cnfScreen=el.dataset.cnfnav; render();
     if(state.cnfScreen==='history'){ await ensureCnfHistory(state.cnfUser.code); render(); }
   });
+  const btnGoPending = document.getElementById('btnGoPending');
+  if(btnGoPending) btnGoPending.onclick = ()=>{
+    if(!state.sapUpload) return; // nothing to filter to without a SAP upload loaded
+    state.cnfScreen = 'submit';
+    state.sapMissingOnlyFilter = true; // jump straight to only what's left to fill
+    render();
+  };
 
   // CNF Reports — click any breached/stock row for full detail
   document.querySelectorAll('[data-attn]').forEach(el=>el.onclick=()=>{
@@ -4785,6 +4808,47 @@ function bindGlobal(){
   if(btnSaveDraft) btnSaveDraft.onclick = async ()=>{
     await saveDraft(state.cnfUser.code, {date: state.submitDate, items: state.draftItems, sapUpload: state.sapUpload, varianceReasons: state.varianceReasons});
     showToast('Draft saved');
+  };
+  const btnSubmitPartial = document.getElementById('btnSubmitPartial');
+  if(btnSubmitPartial) btnSubmitPartial.onclick = async ()=>{
+    // Deliberately does NOT run the "every required item must be filled"
+    // check Final Submit uses — the whole point of a partial checkpoint is
+    // to send today's progress on a large catalog without having to
+    // finish it in one sitting. It still enforces the two integrity rules
+    // that matter regardless of how much is done: no open-bag/fractional-
+    // PC entries, and no unresolved variance on whatever HAS been entered.
+    const violations = findOpenBagViolations();
+    if(violations.length){
+      const names = violations.slice(0,3).map(v=>v.name).join(', ');
+      showToast(`⚠️ Bag opened or PC not whole for ${names} — submit in KG instead.`);
+      return;
+    }
+    const filledCodes = new Set(Object.keys(state.draftItems).filter(code => (state.draftItems[code]||[]).some(b=>b.qty!==undefined && b.qty!=='')));
+    const unresolved = state.sapUpload ? state.sapUpload.rows.filter(r=>filledCodes.has(r.code) && hasUnresolvedVariance(r.code)) : [];
+    if(unresolved.length){ showToast(`${unresolved.length} item(s) already entered still need a difference reason`); return; }
+    const items = buildSubmissionItems();
+    if(!items.length){ showToast('Nothing entered yet to send'); return; }
+    const distinctCodes = new Set(items.map(i=>i.code));
+    const zeroCodes = [...distinctCodes].filter(code => items.filter(i=>i.code===code).reduce((s,i)=>s+i.qty,0)===0);
+    const sub = {
+      id: 'SUB'+Math.random().toString(36).slice(2,9).toUpperCase(),
+      cnfCode: state.cnfUser.code, cnfName: state.cnfUser.name,
+      date: state.submitDate, timestamp: new Date().toISOString(),
+      items, productsUpdated: distinctCodes.size, productsZero: zeroCodes.length,
+      submittedBy: state.cnfUser.userId, status:'Partial',
+      sapFileName: state.sapUpload ? state.sapUpload.fileName : '',
+      sapUploadedAt: state.sapUpload ? state.sapUpload.uploadedAt : ''
+    };
+    // Same optimistic, offline-safe pattern as Final Submit: recorded
+    // locally and shown as sent immediately, actual sync happens in the
+    // background (queues and retries automatically if offline) — but
+    // deliberately does NOT clear the draft or navigate away, since this
+    // is a checkpoint, not a finish. Filling in the rest continues right
+    // where it was.
+    state.submissions.unshift(sub);
+    showToast(`✓ ${distinctCodes.size} product(s) sent to the office — keep going, or Final Submit when everything's in.`);
+    render();
+    syncSubmission(sub);
   };
   const btnFinal = document.getElementById('btnFinalReview');
   if(btnFinal) btnFinal.onclick = async ()=>{
