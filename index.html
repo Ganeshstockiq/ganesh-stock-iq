@@ -835,7 +835,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-22.3';
+const APP_VERSION = '2026-08-24.4';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1137,12 +1137,23 @@ function downloadSubmissionBackup(sub){
   exportGenericCsv(`UNSYNCED-${sub.id}-${sub.date}.csv`, headers, rows);
 }
 
-// Shared across every CNF/MIS export: does this line's ageing status mean
-// a fresh order should be placed? Matches the same bucket MIS Overview
-// already highlights as "Ageing / Critical Lines" — Ageing, Critical, Near
-// Expiry, and Expired all mean "don't wait, reorder."
-const REORDER_STATUSES = ['ageing','critical','expiring','expired'];
-function reorderSuggested(cls){ return REORDER_STATUSES.includes(cls) ? 'Yes' : 'No'; }
+// One column, one concrete task — this looks at BOTH signals a line can
+// carry (ageing status AND safety-stock status) instead of two separate
+// generic Yes/No flags, so the report tells someone what to actually DO,
+// not just what's true. Priority order matters when more than one applies
+// at once: Expired always wins — a batch already past its shelf life is a
+// quality/write-off question ("why is this still here, unsold, past
+// expiry") that ordering more stock does nothing to fix, so it needs
+// investigating before anything else. Below-safety-norm comes next (a
+// genuine ordering need). Ageing/Critical/Near-Expiry (still sellable, but
+// getting old) comes last — needs attention, but isn't as urgent as the
+// other two.
+function recommendedAction(ageingCls, isBelowSafety){
+  if(ageingCls==='expired') return 'Check Reason';
+  if(isBelowSafety) return 'Order Required';
+  if(['ageing','critical','expiring'].includes(ageingCls)) return 'Needs Movement';
+  return '—';
+}
 // The action-oriented label for a below-safety-norm line — this is what
 // actually needs to happen (place an order for this CNF), not just a
 // passive description of the state, so it reads as a task rather than a
@@ -1165,13 +1176,13 @@ function safeUomLabel(uom){
   return ['KG','PC','BAG'].includes(uom) ? uom : `${uom} (unrecognised — check Product Master)`;
 }
 function buildDetailedReportRows(sub){
-  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Reorder Suggested','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
+  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Recommended Action','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
   const rows = sub.items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
     const bagEquiv = p && p.bagToKg ? bagEquivDisplay(it.kgQty, p) : '';
     const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', safetyStatusLabel((p&&it.kgQty<p.safetyStockKg)?'low':'ok'), it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, !!(p&&it.kgQty<p.safetyStockKg)), p?p.safetyStockKg:'', safetyStatusLabel((p&&it.kgQty<p.safetyStockKg)?'low':'ok'), it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
@@ -1347,19 +1358,47 @@ function ageingStatus(product, mfd){
   // actually decides the "Ageing" label's cutoff below (pct <= t.normal ->
   // "Ageing") — despite the similar name, t.ageing is a different tier's
   // boundary (the one for "Critical").
-  if(product.ageingDaysOverride){
-    const ageingPct = Math.max(0, Math.min(100, ((life - product.ageingDaysOverride) / life) * 100));
+  const ageingOverrideDays = product.ageingDaysOverride || null;
+  if(ageingOverrideDays){
+    const ageingPct = Math.max(0, Math.min(100, ((life - ageingOverrideDays) / life) * 100));
     // Never let the override end up BELOW the category's own Critical cutoff
     // (t.ageing) — that would invert the tiers and make "Ageing" literally
     // unreachable (pct would hit the Critical check first, every time).
     t = Object.assign({}, t, {normal: Math.max(ageingPct, t.ageing)});
   }
-  if(remaining <= 0) return {label:'Expired', cls:'expired', pct, remaining, age, life};
-  if(pct <= t.critical) return {label:'Near Expiry', cls:'expiring', pct, remaining, age, life};
-  if(pct <= t.ageing) return {label:'Critical', cls:'critical', pct, remaining, age, life};
-  if(pct <= t.normal) return {label:'Ageing', cls:'ageing', pct, remaining, age, life};
-  if(pct <= t.fresh) return {label:'Normal', cls:'normal', pct, remaining, age, life};
-  return {label:'Fresh', cls:'fresh', pct, remaining, age, life};
+  const base = {pct, remaining, age, life, thresholds:t, ageingOverrideDays};
+  if(remaining <= 0) return Object.assign({label:'Expired', cls:'expired'}, base);
+  if(pct <= t.critical) return Object.assign({label:'Near Expiry', cls:'expiring'}, base);
+  if(pct <= t.ageing) return Object.assign({label:'Critical', cls:'critical'}, base);
+  if(pct <= t.normal) return Object.assign({label:'Ageing', cls:'ageing'}, base);
+  if(pct <= t.fresh) return Object.assign({label:'Normal', cls:'normal'}, base);
+  return Object.assign({label:'Fresh', cls:'fresh'}, base);
+}
+// Plain-language "why" for the Status column — merged directly into that
+// same cell (not a separate column) so the report doesn't keep growing
+// wider every time something needs explaining. Deliberately doesn't repeat
+// the label itself (that's the part right before this in the combined
+// cell) — just the supporting number(s) that produced it, so it reads as
+// one phrase: "Ageing — 31d old, past 30d threshold (self-life 90d)".
+function ageingStatusReason(status){
+  if(status.cls==='expired') return `${Math.abs(status.remaining)}d past expiry (self-life ${status.life}d)`;
+  if(!status.thresholds) return status.label==='No MFD' ? 'no MFD entered' : '';
+  const t = status.thresholds;
+  if(status.ageingOverrideDays && status.cls==='ageing'){
+    return `${status.age}d old, past ${status.ageingOverrideDays}d threshold (self-life ${status.life}d)`;
+  }
+  const pct = Math.round(status.pct);
+  const rangeFor = {
+    fresh: `>${t.fresh}%`, normal: `${t.normal}–${t.fresh}%`, ageing: `${t.ageing}–${t.normal}%`,
+    critical: `${t.critical}–${t.ageing}%`, expiring: `≤${t.critical}%`
+  }[status.cls] || '';
+  return `${pct}% remaining (range ${rangeFor})`;
+}
+// The single combined cell for the Status column — label plus its reason,
+// one phrase, one column.
+function ageingStatusCell(status){
+  const reason = ageingStatusReason(status);
+  return reason ? `${status.label} — ${reason}` : status.label;
 }
 
 // Shared "act on this now" ranking used by both the CNF Dashboard (own
@@ -2469,15 +2508,37 @@ function enteredKgFor(code){
   const batches = state.draftItems[code] || [];
   return batches.filter(b=>b.qty!==undefined && b.qty!=='').reduce((s,b)=>s+convertToKg(p,b.qty,b.uom||p.defaultUOM),0);
 }
+// A batch only counts as genuinely "filled" once it has BOTH a quantity
+// AND an MFD — a quantity with no manufacturing date is an incomplete
+// entry (ageing can't be judged, and it shouldn't count toward progress),
+// not a finished one. This is the single place that decision is made, so
+// progress counts (Pending, category-complete, required-remaining) and
+// the actual submit-blocking check below always agree with each other.
 function batchFilled(code){
   const batches = state.draftItems[code] || [];
-  return batches.some(b=>b.qty!==undefined && b.qty!=='');
+  return batches.some(b=>b.qty!==undefined && b.qty!=='' && b.mfd);
 }
-// Is every SAP line in this category that actually needs entry (nonzero
-// current stock) filled in yet? Drives the tab auto-advance below — a
-// category with nothing to enter counts as trivially complete so it's
-// skipped over rather than stalling the flow.
+// Specifically the "typed a quantity but forgot the date" case — kept
+// separate from batchFilled so Final/Partial Submit can give a precise,
+// actionable message ("add the MFD") instead of the more generic "still
+// pending" a CNF would otherwise have to guess the reason for.
+function findMissingMfdBatches(){
+  const missing = [];
+  Object.keys(state.draftItems).forEach(code=>{
+    const p = state.masters.products.find(pp=>pp.code===code);
+    (state.draftItems[code]||[]).forEach((b,idx)=>{
+      if(b.qty!==undefined && b.qty!=='' && !b.mfd){
+        missing.push({code, idx, name: p?p.name:code});
+      }
+    });
+  });
+  return missing;
+}
 function categoryComplete(cat){
+  // Is every SAP line in this category that actually needs entry (nonzero
+  // current stock) filled in yet? Drives the tab auto-advance below — a
+  // category with nothing to enter counts as trivially complete so it's
+  // skipped over rather than stalling the flow.
   const group = sapCategoryGroups().find(g=>g.cat===cat);
   if(!group) return false;
   const required = group.rows.filter(r=>r.currentStockKg>0);
@@ -3514,8 +3575,12 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
       const cell = row.getCell(i+1);
       cell.value = val;
       cell.font = {size:10};
+      // Status now reads "Ageing — 31d old, past 30d threshold" rather
+      // than a bare label, so an exact-match lookup would miss every row —
+      // matching on which known label the cell STARTS WITH keeps the
+      // colour-coding working against the combined text.
       const isStatus = statusColIndex!=null && i===statusColIndex;
-      const c = isStatus ? AGEING_STATUS_COLORS[val] : null;
+      const c = isStatus ? Object.keys(AGEING_STATUS_COLORS).map(k=>AGEING_STATUS_COLORS[String(val).startsWith(k)?k:null]).find(Boolean) : null;
       if(c){ cell.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+c.bg.replace('#','')}}; cell.font = {bold:true, size:10, color:{argb:'FF'+c.fg.replace('#','')}}; }
     });
     r++;
@@ -4486,11 +4551,11 @@ function MisExport(){
 // function, so there's no risk of the two ever silently disagreeing on a
 // number. Only the presentation differs downstream.
 function buildMisExportRows(rows){
-  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Reorder Suggested','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
+  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, safetyStatusLabel(r.safetyStatus), r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), r.product.safetyStockKg, safetyStatusLabel(r.safetyStatus), r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
@@ -4823,6 +4888,12 @@ function bindGlobal(){
       showToast(`⚠️ Bag opened or PC not whole for ${names} — submit in KG instead.`);
       return;
     }
+    const missingMfd = findMissingMfdBatches();
+    if(missingMfd.length){
+      const names = missingMfd.slice(0,3).map(v=>v.name).join(', ');
+      showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing.`);
+      return;
+    }
     const filledCodes = new Set(Object.keys(state.draftItems).filter(code => (state.draftItems[code]||[]).some(b=>b.qty!==undefined && b.qty!=='')));
     const unresolved = state.sapUpload ? state.sapUpload.rows.filter(r=>filledCodes.has(r.code) && hasUnresolvedVariance(r.code)) : [];
     if(unresolved.length){ showToast(`${unresolved.length} item(s) already entered still need a difference reason`); return; }
@@ -4882,6 +4953,12 @@ function bindGlobal(){
       showToast(`⚠️ ${kind} for ${names}${violations.length>3?` and ${violations.length-3} more`:''} — submit stock in KG instead.`);
       return;
     }
+    const missingMfd = findMissingMfdBatches();
+    if(missingMfd.length){
+      const names = missingMfd.slice(0,3).map(v=>v.name).join(', ');
+      showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing.`);
+      return;
+    }
     state.cnfModal = CnfFinalModal();
     render();
   };
@@ -4913,6 +4990,12 @@ function bindGlobal(){
       }
       const unresolved = state.sapUpload ? state.sapUpload.rows.filter(r=>hasUnresolvedVariance(r.code)) : [];
       if(unresolved.length){ showToast(`${unresolved.length} item(s) still need a difference reason`); return; }
+      const missingMfd = findMissingMfdBatches();
+      if(missingMfd.length){
+        const names = missingMfd.slice(0,3).map(v=>v.name).join(', ');
+        showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing.`);
+        return;
+      }
       const missing = missingRequiredCodes();
       if(missing.length){ showToast(`${missing.length} item(s) with SAP stock still need entry`); return; }
       const items = buildSubmissionItems();
@@ -5579,8 +5662,8 @@ function bindGlobal(){
   const btnExportStockTable = document.getElementById('btnExportStockTable');
   if(btnExportStockTable) btnExportStockTable.onclick = ()=>{
     const rows = filteredRows();
-    exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Reorder Suggested','Safety','Approved Order','Pending Order'],
-      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,reorderSuggested(r.ageStatus.cls),safetyStatusLabel(r.safetyStatus),r.item.approvedOrder??'',r.item.pendingOrder??'']));
+    exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Recommended Action','Safety','Approved Order','Pending Order'],
+      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',ageingStatusCell(r.ageStatus),recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'),safetyStatusLabel(r.safetyStatus),r.item.approvedOrder??'',r.item.pendingOrder??'']));
   };
   const btnExportFifo = document.getElementById('btnExportFifo');
   if(btnExportFifo) btnExportFifo.onclick = ()=>{
