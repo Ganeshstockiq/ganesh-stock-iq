@@ -835,7 +835,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-21.21';
+const APP_VERSION = '2026-08-22.1';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -971,16 +971,27 @@ async function loadAll(){
   const cachedMasters = lsGet('masters');
   if(cachedMasters){
     // FAST PATH — the cached copy is already good enough to work from, so
-    // the only real wait left is restoring who's logged in (which itself
-    // does a live sync) — animate that instead of a static "Loading…".
+    // there's no real reason to make anyone wait on the network just to
+    // SEE their dashboard: restoring which account is logged in is pure
+    // local state (no network), so the loading screen can release the
+    // moment that's done, while the actual masters/messages refresh
+    // happens after, quietly, re-rendering once it lands. The difference
+    // is real — a login that used to wait on two Apps Script round-trips
+    // before showing anything now shows the (already-cached) dashboard
+    // immediately and gets it slightly fresher a moment later, instead of
+    // making that freshness a precondition for seeing anything at all.
     state.masters = normalizeMasters(cachedMasters);
     state.submissions = normalizeSubmissionList(lsGet('submissions') || []);
     state.loaded = true;
-    startFakeProgress(['Restoring your session…','Syncing latest stock…','Loading dashboard…']);
-    try{ await tryRestoreSession(); }catch(e){ /* never leave the progress bar stuck — worst case they land on the login screen and can try again */ }
+    startFakeProgress(['Restoring your session…']);
+    let restored = null;
+    try{ restored = tryRestoreSessionFast_(); }catch(e){ /* never leave the progress bar stuck — worst case they land on the login screen and can try again */ }
     finishFakeProgress('Ready');
     render();
     flushPendingQueue();
+    if(restored){
+      tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored).then(()=>render()).catch(()=>{});
+    }
     if(apiUrl) maybeBackgroundSyncMasters(); // silent, throttled, never blocks the UI
     if(state.role) checkForNewVersion(); // fire-and-forget — "sync" for the app's own code, not just its data
     return;
@@ -1016,11 +1027,22 @@ async function loadAll(){
     lsSet('masters', state.masters);
     lsSet('submissions', state.submissions);
   }
-  try{ await tryRestoreSession(); }catch(e){ /* never leave the progress bar stuck — worst case they land on the login screen and can try again */ }
+  // Same "show first, sync after" split as the fast path above — the
+  // masters fetch just above already got everything fresh in this cold-
+  // start case, so tryRestoreSessionFast_() only needs to restore WHICH
+  // account is logged in (pure local state), and only messages still need
+  // a network call, done in the background rather than adding yet another
+  // blocking round-trip on top of the one just completed.
+  let restored = null;
+  try{ restored = tryRestoreSessionFast_(); }catch(e){ /* never leave the progress bar stuck — worst case they land on the login screen and can try again */ }
   state.loaded = true;
   finishFakeProgress('Ready');
   render();
   flushPendingQueue();
+  if(restored){
+    const msgPromise = restored.role==='cnf' ? loadMessagesForCnf(restored.cnf.code) : loadAllMessages();
+    msgPromise.then(()=>render()).catch(()=>{});
+  }
   if(state.role) checkForNewVersion();
 }
 
@@ -1121,6 +1143,11 @@ function downloadSubmissionBackup(sub){
 // Expiry, and Expired all mean "don't wait, reorder."
 const REORDER_STATUSES = ['ageing','critical','expiring','expired'];
 function reorderSuggested(cls){ return REORDER_STATUSES.includes(cls) ? 'Yes' : 'No'; }
+// The action-oriented label for a below-safety-norm line — this is what
+// actually needs to happen (place an order for this CNF), not just a
+// passive description of the state, so it reads as a task rather than a
+// status.
+function safetyStatusLabel(safetyStatus){ return safetyStatus==='low' ? 'Book Order' : 'OK'; }
 
 // The full, detailed per-line report for one submission — every product,
 // its ageing status, self-life, remaining shelf life, and safety-stock
@@ -1144,7 +1171,7 @@ function buildDetailedReportRows(sub){
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
     const bagEquiv = p && p.bagToKg ? bagEquivDisplay(it.kgQty, p) : '';
     const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', (p&&it.kgQty<p.safetyStockKg)?'Below':'OK', it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', st.label||'', reorderSuggested(st.cls), p?p.safetyStockKg:'', safetyStatusLabel((p&&it.kgQty<p.safetyStockKg)?'low':'ok'), it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
@@ -1338,16 +1365,37 @@ function ageingStatus(product, mfd){
 // Shared "act on this now" ranking used by both the CNF Dashboard (own
 // latest submission) and the MIS Overview (across all CNFs) — worst ageing
 // first (Expired > Near Expiry > Critical > Ageing), ties broken by whoever
-// has the least shelf life left. "Slow Moving" is a heuristic (no sales feed
-// to compute real velocity from): ageing-or-worse AND still holding more
-// than the safety-stock norm, i.e. it's not just old, it's sitting there.
+// has the least shelf life left.
 const ATTENTION_ORDER = {expired:0, expiring:1, critical:2, ageing:3, normal:4, fresh:5};
-function buildAttentionList(items, limit){
+// "Slow Moving" — genuinely checked against this CNF's OWN submission
+// history now, not guessed from a single snapshot. There's no sales feed
+// this app has access to (no POS/dispatch tracking), so actual SALE
+// velocity isn't a signal it can compute — but MOVEMENT is: comparing
+// this product's quantity between the two most recent submissions tells
+// whether it's genuinely being drawn down (real movement, even without
+// knowing WHY — dispatch, sale, whatever) or sitting flat/growing while
+// ageing (genuinely stuck). Only falls back to the old "still above
+// safety norm" snapshot guess when there's no prior submission for this
+// CNF to compare against yet (e.g. their very first entry).
+function isSlowMoving(cnfCode, code, currentKgQty, safetyStockKg){
+  const cnfSubs = state.submissions.filter(s=>s.cnfCode===cnfCode).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  if(cnfSubs.length >= 2){
+    const previous = cnfSubs[1];
+    const hadPrevData = previous.items.some(it=>it.code===code);
+    if(hadPrevData){
+      const prevKg = previous.items.filter(it=>it.code===code).reduce((s,it)=>s+it.kgQty,0);
+      return currentKgQty >= prevKg; // flat or grown while ageing = genuinely not moving
+    }
+  }
+  return currentKgQty > (safetyStockKg||0); // no comparable history yet — best available guess
+}
+function buildAttentionList(items, limit, cnfCode){
   const rows = items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
     if(!p) return null;
     const st = ageingStatus(p, it.mfd);
-    const slowMoving = ['ageing','critical','expiring','expired'].includes(st.cls) && it.kgQty > (p.safetyStockKg||0);
+    const isAgeingOrWorse = ['ageing','critical','expiring','expired'].includes(st.cls);
+    const slowMoving = isAgeingOrWorse && cnfCode && isSlowMoving(cnfCode, it.code, it.kgQty, p.safetyStockKg);
     return {code:it.code, name:p.name, category:p.category, kgQty:it.kgQty, mfd:it.mfd, status:st, slowMoving};
   }).filter(Boolean);
   const flagged = rows.filter(r=>['ageing','critical','expiring','expired'].includes(r.status.cls));
@@ -1772,7 +1820,7 @@ function Topbar(){
   return `
   <div class="topbar">
     <div class="brand"><div class="mark">${Mark()}</div><div><div class="name">Ganesh&nbsp;Stock&nbsp;IQ</div><div class="sub">Manage Stock · Reduce Ageing · Improve Planning</div></div></div>
-    ${loggedIn ? `<div class="roletabs"><span class="roletab active" style="cursor:default;">${roleLabel}</span></div>` : ''}
+    ${loggedIn ? `<div class="roletabs"><span class="roletab active" style="cursor:default;">${roleLabel} <span style="font-family:var(--mono);font-size:9.5px;opacity:.65;font-weight:400;">v${APP_VERSION}</span></span></div>` : ''}
     <div class="spacer"></div>
     <div class="whoami">${state.role==='cnf' && state.cnfUser ? `CNF <b>${state.cnfUser.code}</b> · ${state.cnfUser.name}` : state.role==='admin' && state.adminUser ? `Admin · <b>${state.adminUser.name}</b>` : state.role==='mis' && state.misUser ? `MIS · <b>${state.misUser.name}</b>` : ''}</div>
     ${loggedIn ? NotifyPermissionButton() : ''}
@@ -1906,17 +1954,32 @@ function saveRememberedSession(role, id){ try{ localStorage.setItem('gsi:session
 function clearRememberedSession(){ try{ localStorage.removeItem('gsi:session'); }catch(e){} }
 function getRememberedSession(){ try{ const v = localStorage.getItem('gsi:session'); return v ? JSON.parse(v) : null; }catch(e){ return null; } }
 
-async function restoreCnfSession(cnf){
+// Split deliberately: the FAST part (role/user/draft — all local, no
+// network) runs first and is all that's needed to actually SHOW the
+// dashboard. The SYNC part (masters refresh + messages) used to be
+// awaited before the loading screen would release — meaning every login
+// waited on two Apps Script round-trips just to show data that was
+// usually already sitting in localStorage from last time. Now the
+// dashboard appears immediately from cache, and the sync happens after,
+// re-rendering quietly once it lands — the difference between waiting on
+// the network to SEE anything, and waiting on it only to see it get
+// slightly fresher a moment later.
+function restoreCnfSessionFast_(cnf){
   state.role = 'cnf'; state.cnfUser = cnf; state.cnfScreen = 'dashboard'; state.submitDate = todayISO(); state.submitDateManuallySet = false;
   try{
-    const draft = await loadDraft(cnf.code);
+    const draft = lsGet('draft:'+cnf.code);
     const draftMatchesToday = draft && draft.date===state.submitDate;
     state.draftItems = draftMatchesToday ? draft.items : {};
     state.sapUpload = draftMatchesToday ? (draft.sapUpload||null) : null;
     state.varianceReasons = draftMatchesToday ? (draft.varianceReasons||{}) : {};
-  }catch(e){ /* corrupt/unreadable local draft — start clean rather than blocking login entirely */ state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {}; }
-  try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // e.g. submitted from a different phone earlier — dashboard shouldn't show a stale "Pending"
-  try{ await loadMessagesForCnf(cnf.code); }catch(e){ /* not critical to getting them logged in */ }
+  }catch(e){ state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {}; }
+}
+async function syncCnfSessionInBackground_(cnf){
+  await Promise.allSettled([forceSyncMasters(), loadMessagesForCnf(cnf.code)]);
+}
+async function restoreCnfSession(cnf){
+  restoreCnfSessionFast_(cnf);
+  await syncCnfSessionInBackground_(cnf);
 }
 
 /* ---------------- Messages (rates, schemes — Admin/MIS -> CNF) ---------------- */
@@ -2015,70 +2078,80 @@ function showDesktopNotification(title, body){
 // remembered session exists on this device, so a Remember-Me login survives
 // a page reload without asking again. If the remembered account no longer
 // exists or was deactivated since, the stale session is discarded quietly.
-async function tryRestoreSession(){
+// Split the same way as restoreCnfSession above: FAST restores which
+// account is logged in from what's already cached/remembered (no
+// network), BACKGROUND does the actual masters/messages refresh after.
+// Returns the role restored (or null) so the caller knows what to
+// background-sync.
+function tryRestoreSessionFast_(){
   const remembered = getRememberedSession();
-  if(!remembered) return;
+  if(!remembered) return null;
   if(remembered.role==='cnf'){
     const cnf = state.masters.cnfs.find(c=>c.code===remembered.id);
-    if(cnf && cnf.status==='Active'){ await restoreCnfSession(cnf); return; }
+    if(cnf && cnf.status==='Active'){ restoreCnfSessionFast_(cnf); return {role:'cnf', cnf}; }
   } else if(remembered.role==='admin'){
     const u = state.masters.adminUsers.find(a=>a.userId===remembered.id);
-    if(u && u.status==='Active'){
-      state.role='admin'; state.adminUser=u;
-      try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ }
-      try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
-      return;
-    }
+    if(u && u.status==='Active'){ state.role='admin'; state.adminUser=u; return {role:'admin'}; }
   } else if(remembered.role==='mis'){
     const u = state.masters.misUsers.find(a=>a.userId===remembered.id);
     if(u && u.status==='Active'){
       state.role='mis'; state.misUser=u;
       if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now());
-      try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // Remember Me shouldn't mean "stuck on whatever was cached at last login"
-      try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
-      return;
+      return {role:'mis'};
     }
   }
   clearRememberedSession(); // account gone/deactivated since — don't keep trying
+  return null;
+}
+async function tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored){
+  if(!restored) return;
+  if(restored.role==='cnf') await syncCnfSessionInBackground_(restored.cnf);
+  else await Promise.allSettled([forceSyncMasters(), loadAllMessages()]);
+}
+async function tryRestoreSession(){
+  const restored = tryRestoreSessionFast_();
+  await tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored);
 }
 
+// Returns {ok, syncPromise} rather than blocking on the full sync itself —
+// same reasoning as the fast-path boot restructure above: credential
+// checks and restoring local state are instant (no network), so the
+// caller can show the dashboard right away and only needs syncPromise to
+// know when to re-render with freshly-synced data, not to know whether
+// login itself succeeded.
 async function tryLogin(userId, password, remember){
   userId = (userId||'').trim();
   // CNF — matched by CNF code (their User ID is their code, e.g. 3100)
   const cnf = state.masters.cnfs.find(c=>c.code===userId || c.userId===userId);
   if(cnf){
-    if(cnf.status==='Inactive'){ state.loginError = 'This CNF is inactive. Contact Admin.'; return false; }
-    if(password !== cnf.password){ state.loginError = 'Incorrect User ID or Password.'; return false; }
-    await restoreCnfSession(cnf);
+    if(cnf.status==='Inactive'){ state.loginError = 'This CNF is inactive. Contact Admin.'; return {ok:false}; }
+    if(password !== cnf.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false}; }
+    restoreCnfSessionFast_(cnf);
     state.loginError = null;
     if(remember) saveRememberedSession('cnf', cnf.code); else clearRememberedSession();
-    return true;
+    return {ok:true, syncPromise: syncCnfSessionInBackground_(cnf)};
   }
   // Admin
   const admin = state.masters.adminUsers.find(a=>a.userId===userId);
   if(admin){
-    if(admin.status==='Inactive'){ state.loginError = 'This account is inactive.'; return false; }
-    if(password !== admin.password){ state.loginError = 'Incorrect User ID or Password.'; return false; }
+    if(admin.status==='Inactive'){ state.loginError = 'This account is inactive.'; return {ok:false}; }
+    if(password !== admin.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false}; }
     state.role = 'admin'; state.adminUser = admin; state.loginError = null;
     if(remember) saveRememberedSession('admin', admin.userId); else clearRememberedSession();
-    try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ }
-    try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
-    return true;
+    return {ok:true, syncPromise: Promise.allSettled([forceSyncMasters(), loadAllMessages()])};
   }
   // MIS / Back Office
   const mis = state.masters.misUsers.find(u=>u.userId===userId);
   if(mis){
-    if(mis.status==='Inactive'){ state.loginError = 'This account is inactive.'; return false; }
-    if(password !== mis.password){ state.loginError = 'Incorrect User ID or Password.'; return false; }
+    if(mis.status==='Inactive'){ state.loginError = 'This account is inactive.'; return {ok:false}; }
+    if(password !== mis.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false}; }
     state.role = 'mis'; state.misUser = mis; state.loginError = null;
     if(remember) saveRememberedSession('mis', mis.userId); else clearRememberedSession();
     if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now()); // first-ever login: don't dump the whole existing history into "new"
-    try{ await forceSyncMasters(); }catch(e){ /* keep cached data if this fails, still lets them in */ } // pull every CNF's latest submission fresh the moment MIS opens, not whatever was cached last
-    try{ await loadAllMessages(); }catch(e){ /* not critical to getting them logged in */ }
-    return true;
+    return {ok:true, syncPromise: Promise.allSettled([forceSyncMasters(), loadAllMessages()])};
   }
   state.loginError = 'Unknown User ID or Password.';
-  return false;
+  return {ok:false};
 }
 
 function doLogout(){
@@ -2179,8 +2252,8 @@ function CnfDashboard(){
       if(it.kgQty < p.safetyStockKg) safetyAlerts++;
     });
   }
-  const attention = sub ? buildAttentionList(sub.items, 6) : [];
-  const totalFlagged = sub ? buildAttentionList(sub.items).length : 0;
+  const attention = sub ? buildAttentionList(sub.items, 6, state.cnfUser.code) : [];
+  const totalFlagged = sub ? buildAttentionList(sub.items, null, state.cnfUser.code).length : 0;
   const fifoOrder = sub ? sub.items.filter(i=>i.mfd).slice().sort((a,b)=>new Date(a.mfd)-new Date(b.mfd)).slice(0,4) : [];
 
   return `
@@ -2588,7 +2661,7 @@ function CnfReports(){
   const sub = latestSubmissionFor(state.cnfUser.code);
   if(!sub) return `<div class="section-title">Reports &amp; Analytics</div><div class="empty"><div class="big">No submission yet</div>Submit stock at least once to see your ageing, near-expiry and safety analytics here.</div>`;
 
-  const allFlagged = buildAttentionList(sub.items); // uncapped — every breach, not just top 6
+  const allFlagged = buildAttentionList(sub.items, null, state.cnfUser.code); // uncapped — every breach, not just top 6
   const expiredCount = allFlagged.filter(a=>a.status.cls==='expired').length;
   const nearExpiryCount = allFlagged.filter(a=>a.status.cls==='expiring').length;
   const criticalCount = allFlagged.filter(a=>a.status.cls==='critical').length;
@@ -2679,7 +2752,7 @@ function CnfLineDetailModal(){
     <div class="drow"><span>Status</span><b><span class="badge ${st.cls}">${st.label}</span></b></div>
     <div class="dgrp">Safety Stock</div>
     <div class="drow"><span>Safety Norm</span><b>${p.safetyStockKg} kg</b></div>
-    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':'inherit'}">${safetyStatus==='low'?'Below by '+(p.safetyStockKg-item.kgQty).toFixed(1)+' kg':'OK'}</b></div>
+    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':'inherit'}">${safetyStatus==='low'?'Book Order — short by '+(p.safetyStockKg-item.kgQty).toFixed(1)+' kg':'OK'}</b></div>
     ${item.sapQtyKg!=null ? `<div class="dgrp">SAP Validation</div><div class="drow"><span>SAP Current Stock</span><b>${item.sapQtyKg.toFixed(2)} kg</b></div>${item.varianceReason?`<div class="drow"><span>Difference Reason</span><b style="color:var(--orange);">${item.varianceReason}</b></div>`:''}` : ''}
     <button class="btn btn-dark modal-close" id="btnCloseCnfLineDetail">Close</button>
   </div></div>`;
@@ -3250,7 +3323,7 @@ function buildReportRows(){
     cnfName:r.cnf.name, cnfCode:r.cnf.code, productCode:r.product.code, productName:r.product.name, category:r.product.category,
     enteredQty:r.item.qty, enteredUom:r.item.uom, kg:r.item.kgQty.toFixed(2), mfd:r.item.mfd||'', age:r.ageStatus.age??'',
     selfLife:r.ageStatus.life??'', remaining:r.ageStatus.remaining??'', ageStatus:r.ageStatus.label,
-    safetyNorm:r.product.safetyStockKg, safetyStatus:r.safetyStatus==='ok'?'OK':'Below',
+    safetyNorm:r.product.safetyStockKg, safetyStatus:safetyStatusLabel(r.safetyStatus),
     sapQtyKg:r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', varianceReason:r.item.varianceReason||'',
     stockDate:r.sub.date, submissionId:r.sub.id, submittedBy:r.sub.submittedBy
   }));
@@ -4137,7 +4210,7 @@ function MisStockTable(){
         <td>${!hasSap ? '—' : withinTolerance(diff) ? '<span class="badge ok">Matches</span>' : `<span style="color:var(--red);font-size:11.5px;">${r.item.varianceReason||'(no reason given)'}</span>`}</td>
         <td class="mono">${r.item.mfd||'—'}</td><td class="mono">${r.ageStatus.age??'—'}</td>
         <td><span class="badge ${r.ageStatus.cls}">${r.ageStatus.label}</span></td>
-        <td><span class="badge ${r.safetyStatus==='ok'?'ok':'low'}">${r.safetyStatus==='ok'?'OK':'Below'}</span></td>
+        <td><span class="badge ${r.safetyStatus==='ok'?'ok':'low'}">${safetyStatusLabel(r.safetyStatus)}</span></td>
       </tr>`;
       }).join('') || `<tr><td colspan="14" style="text-align:center;padding:24px;">No rows match current filters.</td></tr>`}
       </tbody>
@@ -4254,7 +4327,7 @@ function StockLineDetailModal(subId, itemIdx){
 
     <div class="dgrp">Safety Stock</div>
     <div class="drow"><span>Safety Norm</span><b>${product.safetyStockKg} kg</b></div>
-    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':'inherit'}">${safetyStatus==='low' ? 'Below by '+(product.safetyStockKg-item.kgQty).toFixed(1)+' kg' : 'OK'}</b></div>
+    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':'inherit'}">${safetyStatus==='low' ? 'Book Order — short by '+(product.safetyStockKg-item.kgQty).toFixed(1)+' kg' : 'OK'}</b></div>
 
     <div class="dgrp">Submission</div>
     <div class="drow"><span>Submission ID</span><b>${sub.id}</b></div>
@@ -4401,7 +4474,7 @@ function buildMisExportRows(rows){
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, r.safetyStatus, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', r.ageStatus.label, reorderSuggested(r.ageStatus.cls), r.product.safetyStockKg, safetyStatusLabel(r.safetyStatus), r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
@@ -4537,22 +4610,30 @@ function bindGlobal(){
     const rememberEl = document.getElementById('loginRemember');
     const remember = rememberEl ? rememberEl.checked : false;
     if(!userId || !pw){ showToast('Enter your User ID and Password'); return; }
-    startFakeProgress(['Checking your details…','Loading your data…','Almost there…']);
+    startFakeProgress(['Checking your details…']);
     // Safety net: no matter what throws inside tryLogin (a network hiccup,
     // an unexpected data shape, anything not already caught deeper in),
     // finishFakeProgress() below is GUARANTEED to run — the one thing that
     // must never happen is the progress bar freezing partway with no way
     // forward. A failed login should show an error and let them retry, not
     // trap them on a stuck loading screen.
-    let ok = false;
+    let ok = false, syncPromise = null;
     try{
-      ok = await tryLogin(userId, pw, remember);
+      const result = await tryLogin(userId, pw, remember);
+      ok = result.ok; syncPromise = result.syncPromise;
     }catch(e){
       state.loginError = 'Something went wrong — please try again.';
     }
     finishFakeProgress(ok ? 'Welcome!' : null);
     render();
-    if(ok) checkForNewVersion();
+    if(ok){
+      checkForNewVersion();
+      // Dashboard is already showing from local/cached data at this point
+      // — this just quietly re-renders once the real sync (masters +
+      // messages) actually lands, instead of making that sync a
+      // precondition for seeing anything at all.
+      if(syncPromise) syncPromise.then(()=>render()).catch(()=>{});
+    }
   };
   const loginPwEnter = document.getElementById('loginPw');
   if(loginPwEnter) loginPwEnter.onkeydown = (e)=>{ if(e.key==='Enter'){ const btn = document.getElementById('btnUnifiedLogin'); if(btn) btn.click(); } };
@@ -4713,10 +4794,23 @@ function bindGlobal(){
     // logged in would never reach them until their next login or manual
     // Sync, meaning today's submission could still compute kg from a
     // stale (possibly wrong) pcToKg/bagToKg without anyone noticing.
-    const originalLabel = btnFinal.textContent;
-    btnFinal.disabled = true; btnFinal.textContent = 'Checking for updates…';
-    try{ await forceSyncMasters(); }catch(e){ /* offline or backend hiccup — proceed with whatever's cached rather than blocking them entirely */ }
-    btnFinal.disabled = false; btnFinal.textContent = originalLabel;
+    //
+    // Deliberately NOT a full forceSyncMasters() call here: that carries
+    // apiGet's 25s timeout AND its automatic retry-once, meaning a CNF who
+    // is genuinely offline or on a weak field connection could wait up to
+    // ~50s on THIS click alone before Final Submit even opens — directly
+    // working against the one thing offline submission exists to guarantee
+    // (that entering and submitting stock stays fast and reliable with no
+    // connection at all). navigator.onLine skips the attempt outright when
+    // the browser already knows there's no connection; a short 6s race
+    // covers the "reports online but connection is actually poor" case
+    // without ever meaningfully delaying the submit flow either way.
+    if(navigator.onLine){
+      const originalLabel = btnFinal.textContent;
+      btnFinal.disabled = true; btnFinal.textContent = 'Checking for updates…';
+      try{ await Promise.race([forceSyncMasters(), new Promise(r=>setTimeout(r,6000))]); }catch(e){ /* offline or backend hiccup — proceed with whatever's cached rather than blocking them entirely */ }
+      btnFinal.disabled = false; btnFinal.textContent = originalLabel;
+    }
     const violations = findOpenBagViolations();
     if(violations.length){
       const names = violations.slice(0,3).map(v=>v.name).join(', ');
@@ -5422,7 +5516,7 @@ function bindGlobal(){
   if(btnExportStockTable) btnExportStockTable.onclick = ()=>{
     const rows = filteredRows();
     exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Reorder Suggested','Safety','Approved Order','Pending Order'],
-      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,reorderSuggested(r.ageStatus.cls),r.safetyStatus==='ok'?'OK':'Below',r.item.approvedOrder??'',r.item.pendingOrder??'']));
+      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',r.ageStatus.label,reorderSuggested(r.ageStatus.cls),safetyStatusLabel(r.safetyStatus),r.item.approvedOrder??'',r.item.pendingOrder??'']));
   };
   const btnExportFifo = document.getElementById('btnExportFifo');
   if(btnExportFifo) btnExportFifo.onclick = ()=>{
