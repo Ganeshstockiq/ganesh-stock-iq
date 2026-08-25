@@ -316,6 +316,7 @@ main{flex:1;}
 .badge.expired{background:#3a1f19;color:#e7a08e;}
 .badge.ok{background:var(--green-bg);color:var(--green);}
 .badge.low{background:var(--red-bg);color:var(--red);}
+.badge.unknown{background:#eee7d4;color:#8a7d54;}
 
 .hist-item{background:#fff;border:1px solid #ecdfbe;border-radius:11px;padding:12px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;}
 .attn-panel{margin-bottom:16px;}
@@ -833,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.8';
+const APP_VERSION = '2026-08-24.11';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1152,11 +1153,16 @@ function recommendedAction(ageingCls, isBelowSafety){
   if(['ageing','critical','expiring'].includes(ageingCls)) return 'Needs Movement';
   return '—';
 }
-// The action-oriented label for a below-safety-norm line — this is what
-// actually needs to happen (place an order for this CNF), not just a
-// passive description of the state, so it reads as a task rather than a
-// status.
-function safetyStatusLabel(safetyStatus){ return safetyStatus==='low' ? 'Book Order' : 'OK'; }
+// The action-oriented label for a safety-status value — 'low' is what
+// actually needs to happen (place an order for this CNF), 'no-norm' is a
+// data gap that needs Admin/the CNF's file to actually set a figure (very
+// different from a verified-healthy 'ok'), and everything else is genuinely
+// fine.
+function safetyStatusLabel(safetyStatus){
+  if(safetyStatus==='low') return 'Book Order';
+  if(safetyStatus==='no-norm') return 'No Safety Norm Set';
+  return 'OK';
+}
 
 // Single source of truth for "what's this line's safety norm" — Safety
 // Stock is CNF × product-code specific (Column M of the SAP Current Stock
@@ -1172,6 +1178,33 @@ function safetyNormFor(item, product){
   if(item && item.safetyStockKg!=null) return item.safetyStockKg;
   return product ? (product.safetyStockKg||0) : 0;
 }
+
+// Three-way, not just low/ok — a product that has genuinely never been
+// given a Safety Stock figure (no value on this item's own SAP file AND no
+// Product Master fallback either) is a data gap, not a clean bill of
+// health. Showing it as a plain green "OK" would hide that nobody has
+// actually told the system what this product's safety norm even is,
+// behind the exact same label as stock that was checked and found fine.
+// Every screen/report showing a safety verdict should go through this
+// (or safetyStatusLabel for the text) rather than hand-rolling its own
+// `kgQty < norm ? 'low' : 'ok'` comparison, so "no norm set" can never
+// quietly get counted as, or displayed as, "OK".
+function safetyStatusFor(item, product){
+  const norm = safetyNormFor(item, product);
+  if(!norm || norm<=0) return 'no-norm';
+  return item.kgQty < norm ? 'low' : 'ok';
+}
+
+// Maps a safetyStatusFor() value to its badge CSS class — 'no-norm' (the
+// status string) needs the 'unknown' class (the CSS name), so this is the
+// one place that translation happens rather than repeating a ternary at
+// every badge.
+function safetyBadgeClass(safetyStatus){
+  if(safetyStatus==='low') return 'low';
+  if(safetyStatus==='no-norm') return 'unknown';
+  return 'ok';
+}
+
 
 // The full, detailed per-line report for one submission — every product,
 // its ageing status, self-life, remaining shelf life, and safety-stock
@@ -1195,7 +1228,8 @@ function buildDetailedReportRows(sub){
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
     const bagEquiv = p && p.bagToKg ? bagEquivDisplay(it.kgQty, p) : '';
     const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, it.kgQty<safetyNormFor(it,p)), safetyNormFor(it,p), safetyStatusLabel(it.kgQty<safetyNormFor(it,p)?'low':'ok'), it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    const safetyStat = safetyStatusFor(it, p);
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNormFor(it,p), safetyStatusLabel(safetyStat), it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
@@ -1691,7 +1725,7 @@ function allCurrentStockRows(cnfFilterList){
       const product = state.masters.products.find(p=>p.code===it.code);
       if(!product) return;
       const st = ageingStatus(product, it.mfd);
-      const safetyStatus = it.kgQty < safetyNormFor(it, product) ? 'low' : 'ok';
+      const safetyStatus = safetyStatusFor(it, product);
       rows.push({cnf, sub, item:it, product, ageStatus:st, safetyStatus});
     });
   });
@@ -2324,7 +2358,7 @@ function CnfDashboard(){
       if(!p) return;
       const st = ageingStatus(p, it.mfd);
       if(['critical','expiring','expired'].includes(st.cls)) ageingAlerts++;
-      if(it.kgQty < safetyNormFor(it, p)) safetyAlerts++;
+      if(safetyStatusFor(it, p)==='low') safetyAlerts++;
     });
   }
   const attention = sub ? buildAttentionList(sub.items, 6, state.cnfUser.code) : [];
@@ -2711,7 +2745,8 @@ function SapProductRow(sapRow){
   // figure; safetyNormFor's Product Master fallback only matters for a
   // file with no Safety Stock column at all.
   const safetyNorm = safetyNormFor(sapRow, p);
-  const belowSafety = filled && totalKg < safetyNorm;
+  const hasSafetyNorm = safetyNorm>0;
+  const belowSafety = filled && hasSafetyNorm && totalKg < safetyNorm;
   return `
   <div class="prow ${filled?'filled':''} ${needsReason && !reasonFilled?'needs-reason':''}" data-prow="${p.code}">
     <div class="pinfo">
@@ -2719,7 +2754,7 @@ function SapProductRow(sapRow){
       <div class="pmeta">${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
         ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}
       </div>
-      <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Safety Norm <b>${safetyNorm}kg</b>${belowSafety?` · <span class="badge low">Below Safety — short ${(safetyNorm-totalKg).toFixed(1)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}</div>
+      <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${(safetyNorm-totalKg).toFixed(1)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}</div>
     </div>
     <div class="batchlist">
       ${batches.map((b,i)=>BatchRow(p,b,i,batches.length)).join('')}
@@ -2808,7 +2843,7 @@ function CnfReports(){
   const ageingCount = allFlagged.filter(a=>a.status.cls==='ageing').length;
   const belowSafety = sub.items.filter(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
-    return it.kgQty < safetyNormFor(it, p);
+    return safetyStatusFor(it, p)==='low';
   });
   const totalKg = sub.items.reduce((s,it)=>s+it.kgQty,0);
 
@@ -2878,7 +2913,7 @@ function CnfLineDetailModal(){
   if(!item || !p) return '';
   const st = ageingStatus(p, item.mfd);
   const safetyNorm = safetyNormFor(item, p);
-  const safetyStatus = item.kgQty < safetyNorm ? 'low' : 'ok';
+  const safetyStatus = safetyStatusFor(item, p);
   const otherBatches = sub.items.filter(it=>it.code===code && (it.mfd||'')!==mfd);
   return `<div class="modal-bg dark" id="cnfLineDetailBg"><div class="modal-dark">
     <h3>${p.name}</h3>
@@ -2893,8 +2928,8 @@ function CnfLineDetailModal(){
     <div class="drow"><span>Remaining Shelf Life</span><b style="color:${(st.remaining??0)<0?'var(--red)':'inherit'}">${st.remaining??'—'} days</b></div>
     <div class="drow"><span>Status</span><b><span class="badge ${st.cls}">${st.label}</span></b></div>
     <div class="dgrp">Safety Stock</div>
-    <div class="drow"><span>Safety Norm</span><b>${safetyNorm} kg${item.safetyStockKg==null?` <span style="color:var(--ink-soft);font-size:11px;">(Product Master default — this submission's file had no Safety Stock figure)</span>`:''}</b></div>
-    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':'inherit'}">${safetyStatus==='low'?'Book Order — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg':'OK'}</b></div>
+    <div class="drow"><span>Safety Norm</span><b>${safetyStatus==='no-norm' ? `<span style="color:var(--ink-soft);">Not set for this line</span>` : `${safetyNorm} kg${item.safetyStockKg==null?` <span style="color:var(--ink-soft);font-size:11px;">(Product Master default — this submission's file had no Safety Stock figure)</span>`:''}`}</b></div>
+    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':safetyStatus==='no-norm'?'#8a7d54':'inherit'}">${safetyStatus==='low'?'Book Order — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg':safetyStatus==='no-norm'?'No Safety Norm Set — cannot evaluate':'OK'}</b></div>
     ${item.sapQtyKg!=null ? `<div class="dgrp">SAP Validation</div><div class="drow"><span>SAP Current Stock</span><b>${item.sapQtyKg.toFixed(2)} kg</b></div>${item.varianceReason?`<div class="drow"><span>Difference Reason</span><b style="color:var(--orange);">${item.varianceReason}</b></div>`:''}` : ''}
     <button class="btn btn-dark modal-close" id="btnCloseCnfLineDetail">Close</button>
   </div></div>`;
@@ -4484,7 +4519,7 @@ function MisStockTable(){
         <td>${!hasSap ? '—' : withinTolerance(diff) ? '<span class="badge ok">Matches</span>' : `<span style="color:var(--red);font-size:11.5px;">${r.item.varianceReason||'(no reason given)'}</span>`}</td>
         <td class="mono">${r.item.mfd||'—'}</td><td class="mono">${r.ageStatus.age??'—'}</td>
         <td><span class="badge ${r.ageStatus.cls}">${r.ageStatus.label}</span></td>
-        <td><span class="badge ${r.safetyStatus==='ok'?'ok':'low'}">${safetyStatusLabel(r.safetyStatus)}</span></td>
+        <td><span class="badge ${safetyBadgeClass(r.safetyStatus)}">${safetyStatusLabel(r.safetyStatus)}</span></td>
       </tr>`;
       }).join('') || `<tr><td colspan="14" style="text-align:center;padding:24px;">No rows match current filters.</td></tr>`}
       </tbody>
@@ -4570,7 +4605,7 @@ function StockLineDetailModal(subId, itemIdx){
   if(!cnf || !product) return '';
   const ageStatus = ageingStatus(product, item.mfd);
   const safetyNorm = safetyNormFor(item, product);
-  const safetyStatus = item.kgQty < safetyNorm ? 'low' : 'ok';
+  const safetyStatus = safetyStatusFor(item, product);
   const otherBatches = sub.items.filter((it,idx)=> it.code===item.code && idx!==itemIdx);
 
   return `<div class="modal-bg dark" id="misDetailBg"><div class="modal-dark">
@@ -4601,8 +4636,8 @@ function StockLineDetailModal(subId, itemIdx){
     <div class="drow"><span>Status</span><b><span class="badge ${ageStatus.cls}">${ageStatus.label}</span></b></div>
 
     <div class="dgrp">Safety Stock</div>
-    <div class="drow"><span>Safety Norm</span><b>${safetyNorm} kg${item.safetyStockKg==null?` <span style="color:var(--ink-soft);font-size:11px;">(Product Master default — this submission's file had no Safety Stock figure)</span>`:''}</b></div>
-    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':'inherit'}">${safetyStatus==='low' ? 'Book Order — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg' : 'OK'}</b></div>
+    <div class="drow"><span>Safety Norm</span><b>${safetyStatus==='no-norm' ? `<span style="color:var(--ink-soft);">Not set for this line</span>` : `${safetyNorm} kg${item.safetyStockKg==null?` <span style="color:var(--ink-soft);font-size:11px;">(Product Master default — this submission's file had no Safety Stock figure)</span>`:''}`}</b></div>
+    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':safetyStatus==='no-norm'?'#8a7d54':'inherit'}">${safetyStatus==='low' ? 'Book Order — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg' : safetyStatus==='no-norm' ? 'No Safety Norm Set — cannot evaluate' : 'OK'}</b></div>
 
     <div class="dgrp">Submission</div>
     <div class="drow"><span>Submission ID</span><b>${sub.id}</b></div>
@@ -4961,6 +4996,12 @@ function bindGlobal(){
   document.querySelectorAll('[data-cnfnav]').forEach(el=>el.onclick=async ()=>{
     state.cnfScreen=el.dataset.cnfnav; render();
     if(state.cnfScreen==='history'){ await ensureCnfHistory(state.cnfUser.code); render(); }
+    // Stepping into Stock Upload is exactly the moment an out-of-date tab
+    // matters most (about to enter numbers against possibly-stale logic) —
+    // so it doubles as a version-check point too, silently, on top of the
+    // existing periodic one. If nothing's newer, this does nothing visible
+    // at all; if something is, the usual forced NewVersionBanner appears.
+    if(state.cnfScreen==='submit') checkForNewVersion().catch(()=>{});
   });
   const btnGoPending = document.getElementById('btnGoPending');
   if(btnGoPending) btnGoPending.onclick = ()=>{
@@ -4968,6 +5009,7 @@ function bindGlobal(){
     state.cnfScreen = 'submit';
     state.sapMissingOnlyFilter = true; // jump straight to only what's left to fill
     render();
+    checkForNewVersion().catch(()=>{});
   };
 
   // CNF Reports — click any breached/stock row for full detail
@@ -5023,7 +5065,10 @@ function bindGlobal(){
 
   // SAP Current Stock upload gate
   const btnChooseSapFile = document.getElementById('btnChooseSapFile');
-  if(btnChooseSapFile) btnChooseSapFile.onclick = ()=>document.getElementById('sapFileInput').click();
+  if(btnChooseSapFile) btnChooseSapFile.onclick = ()=>{
+    document.getElementById('sapFileInput').click();
+    checkForNewVersion().catch(()=>{}); // silent — the click into the file picker is another good moment to catch a stale tab
+  };
   const sapFileInput = document.getElementById('sapFileInput');
   if(sapFileInput) sapFileInput.onchange = async ()=>{
     const file = sapFileInput.files[0];
