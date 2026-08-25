@@ -834,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.14';
+const APP_VERSION = '2026-08-24.16';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1137,19 +1137,18 @@ function downloadSubmissionBackup(sub){
 }
 
 // One column, one concrete task — this looks at BOTH signals a line can
-// carry (ageing status AND safety-stock status) instead of two separate
-// generic Yes/No flags, so the report tells someone what to actually DO,
-// not just what's true. Priority order matters when more than one applies
-// at once: Expired always wins — a batch already past its shelf life is a
-// quality/write-off question ("why is this still here, unsold, past
-// expiry") that ordering more stock does nothing to fix, so it needs
-// investigating before anything else. Below-safety-norm comes next (a
-// genuine ordering need). Ageing/Critical/Near-Expiry (still sellable, but
-// getting old) comes last — needs attention, but isn't as urgent as the
-// other two.
+// carry (ageing status), so the report tells someone what to actually DO
+// about ageing/expiry — not just what's true. This deliberately does NOT
+// recommend ordering more stock, even when a line is below its Safety
+// Stock norm — that breach is already fully visible in the separate
+// Safety Status and Shortfall (kg) columns on every row, and turning it
+// into an instruction here ("Order Required") would read as this app
+// directing a purchase decision, which isn't something it should ever
+// tell someone to do. Expired always wins — a batch already past its
+// shelf life is a quality/write-off question ("why is this still here,
+// unsold, past expiry") that needs investigating before anything else.
 function recommendedAction(ageingCls, isBelowSafety){
   if(ageingCls==='expired') return 'Check Reason';
-  if(isBelowSafety) return 'Order Required';
   if(['ageing','critical','expiring'].includes(ageingCls)) return 'Needs Movement';
   return '—';
 }
