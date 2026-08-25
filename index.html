@@ -834,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.11';
+const APP_VERSION = '2026-08-24.13';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1159,7 +1159,7 @@ function recommendedAction(ageingCls, isBelowSafety){
 // different from a verified-healthy 'ok'), and everything else is genuinely
 // fine.
 function safetyStatusLabel(safetyStatus){
-  if(safetyStatus==='low') return 'Book Order';
+  if(safetyStatus==='low') return 'Replenishment Needed';
   if(safetyStatus==='no-norm') return 'No Safety Norm Set';
   return 'OK';
 }
@@ -1222,14 +1222,16 @@ function safeUomLabel(uom){
   return ['KG','PC','BAG'].includes(uom) ? uom : `${uom} (unrecognised — check Product Master)`;
 }
 function buildDetailedReportRows(sub){
-  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Recommended Action','Safety Norm (kg)','Safety Status','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
+  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Recommended Action','Safety Norm (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
   const rows = sub.items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
     const bagEquiv = p && p.bagToKg ? bagEquivDisplay(it.kgQty, p) : '';
     const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
     const safetyStat = safetyStatusFor(it, p);
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNormFor(it,p), safetyStatusLabel(safetyStat), it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    const safetyNorm = safetyNormFor(it, p);
+    const shortfall = safetyStat==='low' ? (safetyNorm - it.kgQty).toFixed(1) : '';
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
@@ -2929,7 +2931,7 @@ function CnfLineDetailModal(){
     <div class="drow"><span>Status</span><b><span class="badge ${st.cls}">${st.label}</span></b></div>
     <div class="dgrp">Safety Stock</div>
     <div class="drow"><span>Safety Norm</span><b>${safetyStatus==='no-norm' ? `<span style="color:var(--ink-soft);">Not set for this line</span>` : `${safetyNorm} kg${item.safetyStockKg==null?` <span style="color:var(--ink-soft);font-size:11px;">(Product Master default — this submission's file had no Safety Stock figure)</span>`:''}`}</b></div>
-    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':safetyStatus==='no-norm'?'#8a7d54':'inherit'}">${safetyStatus==='low'?'Book Order — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg':safetyStatus==='no-norm'?'No Safety Norm Set — cannot evaluate':'OK'}</b></div>
+    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':safetyStatus==='no-norm'?'#8a7d54':'inherit'}">${safetyStatus==='low'?'Replenishment Needed — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg':safetyStatus==='no-norm'?'No Safety Norm Set — cannot evaluate':'OK'}</b></div>
     ${item.sapQtyKg!=null ? `<div class="dgrp">SAP Validation</div><div class="drow"><span>SAP Current Stock</span><b>${item.sapQtyKg.toFixed(2)} kg</b></div>${item.varianceReason?`<div class="drow"><span>Difference Reason</span><b style="color:var(--orange);">${item.varianceReason}</b></div>`:''}` : ''}
     <button class="btn btn-dark modal-close" id="btnCloseCnfLineDetail">Close</button>
   </div></div>`;
@@ -3564,7 +3566,7 @@ const REPORT_COLUMNS = [
   {key:'productCode', label:'Product Code'}, {key:'productName', label:'Product Name'}, {key:'category', label:'Category'},
   {key:'enteredQty', label:'Entered Qty'}, {key:'enteredUom', label:'Entered UOM'}, {key:'kg', label:'KG'},
   {key:'mfd', label:'MFD'}, {key:'age', label:'Stock Age (d)'}, {key:'selfLife', label:'Self-Life (d)'}, {key:'remaining', label:'Remaining Shelf Life (d)'},
-  {key:'ageStatus', label:'Ageing Status'}, {key:'safetyNorm', label:'Safety Norm (kg)'}, {key:'safetyStatus', label:'Safety Status'},
+  {key:'ageStatus', label:'Ageing Status'}, {key:'safetyNorm', label:'Safety Norm (kg)'}, {key:'safetyStatus', label:'Safety Status'}, {key:'safetyShortfall', label:'Shortfall (kg)'},
   {key:'sapQtyKg', label:'SAP Qty (kg)'}, {key:'varianceReason', label:'Difference Reason'},
   {key:'stockDate', label:'Stock Date'}, {key:'submissionId', label:'Submission ID'}, {key:'submittedBy', label:'Submitted By'},
 ];
@@ -3623,6 +3625,7 @@ function buildReportRows(){
     enteredQty:r.item.qty, enteredUom:r.item.uom, kg:r.item.kgQty.toFixed(2), mfd:r.item.mfd||'', age:r.ageStatus.age??'',
     selfLife:r.ageStatus.life??'', remaining:r.ageStatus.remaining??'', ageStatus:r.ageStatus.label,
     safetyNorm:safetyNormFor(r.item, r.product), safetyStatus:safetyStatusLabel(r.safetyStatus),
+    safetyShortfall: r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : '',
     sapQtyKg:r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', varianceReason:r.item.varianceReason||'',
     stockDate:r.sub.date, submissionId:r.sub.id, submittedBy:r.sub.submittedBy
   }));
@@ -4637,7 +4640,7 @@ function StockLineDetailModal(subId, itemIdx){
 
     <div class="dgrp">Safety Stock</div>
     <div class="drow"><span>Safety Norm</span><b>${safetyStatus==='no-norm' ? `<span style="color:var(--ink-soft);">Not set for this line</span>` : `${safetyNorm} kg${item.safetyStockKg==null?` <span style="color:var(--ink-soft);font-size:11px;">(Product Master default — this submission's file had no Safety Stock figure)</span>`:''}`}</b></div>
-    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':safetyStatus==='no-norm'?'#8a7d54':'inherit'}">${safetyStatus==='low' ? 'Book Order — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg' : safetyStatus==='no-norm' ? 'No Safety Norm Set — cannot evaluate' : 'OK'}</b></div>
+    <div class="drow"><span>Current vs Norm</span><b style="color:${safetyStatus==='low'?'var(--red)':safetyStatus==='no-norm'?'#8a7d54':'inherit'}">${safetyStatus==='low' ? 'Replenishment Needed — short by '+(safetyNorm-item.kgQty).toFixed(1)+' kg' : safetyStatus==='no-norm' ? 'No Safety Norm Set — cannot evaluate' : 'OK'}</b></div>
 
     <div class="dgrp">Submission</div>
     <div class="drow"><span>Submission ID</span><b>${sub.id}</b></div>
@@ -4780,11 +4783,13 @@ function MisExport(){
 // function, so there's no risk of the two ever silently disagreeing on a
 // number. Only the presentation differs downstream.
 function buildMisExportRows(rows){
-  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Approved Order','Pending Order','Submission ID'];
+  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Shortfall (kg)','Approved Order','Pending Order','Submission ID'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNormFor(r.item,r.product), safetyStatusLabel(r.safetyStatus), r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    const safetyNorm = safetyNormFor(r.item,r.product);
+    const shortfall = r.safetyStatus==='low' ? (safetyNorm - r.item.kgQty).toFixed(1) : '';
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
@@ -5996,8 +6001,11 @@ function bindGlobal(){
   const btnExportStockTable = document.getElementById('btnExportStockTable');
   if(btnExportStockTable) btnExportStockTable.onclick = ()=>{
     const rows = filteredRows();
-    exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Recommended Action','Safety','Approved Order','Pending Order'],
-      rows.map(r=>[r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',ageingStatusCell(r.ageStatus),recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'),safetyStatusLabel(r.safetyStatus),r.item.approvedOrder??'',r.item.pendingOrder??'']));
+    exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Recommended Action','Safety','Shortfall (kg)','Approved Order','Pending Order'],
+      rows.map(r=>{
+        const shortfall = r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : '';
+        return [r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',ageingStatusCell(r.ageStatus),recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'),safetyStatusLabel(r.safetyStatus),shortfall,r.item.approvedOrder??'',r.item.pendingOrder??''];
+      }));
   };
   const btnExportFifo = document.getElementById('btnExportFifo');
   if(btnExportFifo) btnExportFifo.onclick = ()=>{
@@ -6402,6 +6410,21 @@ function updateRowMeta(code){
   if(meta){
     meta.innerHTML = `${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
       ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}`;
+  }
+
+  // The Safety Norm / Below-Safety badge lives on the SECOND meta line
+  // (.pmeta2), not the one above — it was being left stale while typing
+  // (only refreshed on a full re-render, e.g. switching category), so a
+  // breach wouldn't show the red badge until well after the number that
+  // caused it was actually entered. Keeping this in sync live, on every
+  // keystroke, matters here specifically because it's a stock-risk signal
+  // the CNF should see the moment it becomes true, not several actions later.
+  const meta2 = row.querySelector('.pmeta2');
+  if(meta2){
+    const safetyNorm = safetyNormFor(sapRow, p);
+    const hasSafetyNorm = safetyNorm>0;
+    const belowSafety = filled && hasSafetyNorm && totalKg < safetyNorm;
+    meta2.innerHTML = `Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${(safetyNorm-totalKg).toFixed(1)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}`;
   }
 
   let reasonRow = row.querySelector('.reason-row');
