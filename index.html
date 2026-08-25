@@ -834,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.13';
+const APP_VERSION = '2026-08-24.14';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1230,7 +1230,7 @@ function buildDetailedReportRows(sub){
     const pcEquiv = p && p.pcToKg ? pcEquivDisplay(it.kgQty, p) : '';
     const safetyStat = safetyStatusFor(it, p);
     const safetyNorm = safetyNormFor(it, p);
-    const shortfall = safetyStat==='low' ? (safetyNorm - it.kgQty).toFixed(1) : '';
+    const shortfall = safetyStat==='low' ? (safetyNorm - it.kgQty).toFixed(1) : safetyStat==='ok' ? 'No Shortfall' : '';
     return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
@@ -3625,7 +3625,7 @@ function buildReportRows(){
     enteredQty:r.item.qty, enteredUom:r.item.uom, kg:r.item.kgQty.toFixed(2), mfd:r.item.mfd||'', age:r.ageStatus.age??'',
     selfLife:r.ageStatus.life??'', remaining:r.ageStatus.remaining??'', ageStatus:r.ageStatus.label,
     safetyNorm:safetyNormFor(r.item, r.product), safetyStatus:safetyStatusLabel(r.safetyStatus),
-    safetyShortfall: r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : '',
+    safetyShortfall: r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '',
     sapQtyKg:r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', varianceReason:r.item.varianceReason||'',
     stockDate:r.sub.date, submissionId:r.sub.id, submittedBy:r.sub.submittedBy
   }));
@@ -4788,7 +4788,7 @@ function buildMisExportRows(rows){
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
     const safetyNorm = safetyNormFor(r.item,r.product);
-    const shortfall = r.safetyStatus==='low' ? (safetyNorm - r.item.kgQty).toFixed(1) : '';
+    const shortfall = r.safetyStatus==='low' ? (safetyNorm - r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '';
     return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
@@ -6003,7 +6003,7 @@ function bindGlobal(){
     const rows = filteredRows();
     exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Recommended Action','Safety','Shortfall (kg)','Approved Order','Pending Order'],
       rows.map(r=>{
-        const shortfall = r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : '';
+        const shortfall = r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '';
         return [r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',ageingStatusCell(r.ageStatus),recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'),safetyStatusLabel(r.safetyStatus),shortfall,r.item.approvedOrder??'',r.item.pendingOrder??''];
       }));
   };
