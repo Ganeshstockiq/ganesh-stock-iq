@@ -834,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.20';
+const APP_VERSION = '2026-08-24.21';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -5672,6 +5672,21 @@ function bindGlobal(){
     }catch(e){ showToast('Could not save — check connection'); }
     btnSaveEmailConfig.disabled = false; btnSaveEmailConfig.textContent = 'Save Email Configuration';
     render();
+  };
+  // Was never wired up — the button and input existed in the markup but
+  // had no click handler at all, so clicking it did visibly nothing (no
+  // error either, since nothing ever ran). This is that missing wiring.
+  const btnSendTestEmail = document.getElementById('btnSendTestEmail');
+  if(btnSendTestEmail) btnSendTestEmail.onclick = async ()=>{
+    const toAddress = (document.getElementById('cfgTestEmailTo')||{}).value || '';
+    if(!toAddress.trim()){ showToast('⚠ Enter an email address first'); return; }
+    btnSendTestEmail.disabled = true; btnSendTestEmail.textContent = 'Sending…';
+    try{
+      const result = await apiPost('sendTestEmail', {toAddress: toAddress.trim()});
+      if(result && result.ok) showToast(`✓ Test email sent to ${toAddress.trim()}`);
+      else showToast(`⚠ ${(result && result.error) || 'Send failed — check Email Log below'}`);
+    }catch(e){ showToast(`⚠ ${(e&&e.message)||'Could not reach the server — check connection'}`); }
+    btnSendTestEmail.disabled = false; btnSendTestEmail.textContent = '✉ Send Test Email';
   };
   const btnMisRefresh = document.getElementById('btnMisRefresh');
   if(btnMisRefresh) btnMisRefresh.onclick = async ()=>{
