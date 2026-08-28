@@ -834,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.16';
+const APP_VERSION = '2026-08-24.19';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -911,6 +911,21 @@ async function apiGet(action, params){
     if(data && data.error) throw new Error(data.error);
     return data;
   }
+}
+// Converts a binary ArrayBuffer (an in-memory .xlsx, in this app's case)
+// to a base64 string for JSON transport to Apps Script, which expects
+// Utilities.base64Decode() on the other end. Chunked to avoid blowing the
+// call-stack limit String.fromCharCode.apply() hits on large buffers —
+// a multi-hundred-product detailed report can be tens of KB, comfortably
+// past that limit if done in one call.
+function arrayBufferToBase64(buffer){
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  for(let i=0; i<bytes.length; i+=chunkSize){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunkSize));
+  }
+  return btoa(binary);
 }
 async function apiPost(action, payload){
   const apiUrl = getApiUrl();
@@ -3093,8 +3108,9 @@ function EmailConfigScreen(){
   return `
   <div class="panel-card">
     <h4>Sender</h4>
-    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;">Apps Script can only send from the Google account it's authorized under (with this display name) — it can't forge crm@ganeshconsumer.com as the actual From address unless that's set up as a "Send As" alias on that account in Gmail Settings, by whoever administers it. This name is what recipients see either way.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;">Apps Script can only send through the Google account it's authorized under — it can't natively send as a Microsoft 365/Outlook mailbox like mis@ganeshconsumer.com. To send AS that address anyway, set it up as a verified "Send As" alias in that Google account's Gmail Settings → Accounts and Import → "Send mail as" (Gmail will send a verification code to mis@ganeshconsumer.com's actual inbox to confirm you own it — enter that code once, then it's done). Once verified, enter it below. Leave it blank to just send from whatever Google account is running the script, under this display name.</p>
     <div class="fg" style="margin-bottom:10px;"><label>Sender Display Name</label><input type="text" id="cfgSenderName" value="${cfg.senderName||''}" placeholder="Ganesh Consumer — Stock Team"></div>
+    <div class="fg" style="margin-bottom:10px;"><label>Sender Email (must be a verified "Send As" alias on the Google account running this script — see above)</label><input type="email" id="cfgSenderEmail" value="${cfg.senderEmail||''}" placeholder="mis@ganeshconsumer.com"></div>
     <div class="fg" style="margin-bottom:10px;"><label>Reply-To (optional)</label><input type="email" id="cfgReplyTo" value="${cfg.replyTo||''}" placeholder="crm@ganeshconsumer.com"></div>
     <div class="fg" style="margin-bottom:14px;"><label>Default CC List (comma-separated — always CC'd when enabled below, on top of any mapped employees)</label><input type="text" id="cfgDefaultCc" value="${cfg.defaultCc||''}" placeholder="manager@ganeshconsumer.com, ops@ganeshconsumer.com"></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -3136,6 +3152,16 @@ function EmailConfigScreen(){
     <div>${checkbox('safetyEmbedTable','Show the breached items as a table inside the email body')}</div>
     <div style="margin-top:6px;">${checkbox('safetyAttachReport','Attach the breached items as a CSV file')}</div>
     <button class="btn btn-ghost btn-sm" style="margin-top:10px;" data-previewemail="safety">👁 Preview Email</button>
+  </div>
+
+  <div class="panel-card">
+    <h4>Rule: Full Submission Report ${checkbox('reportEnabled','Enabled')}</h4>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;">Sent once, right after a Final submission, with the CNF's complete detailed report attached as a real .xlsx — every line, not just flagged ones. Built entirely on the CNF's own device from the exact data they just submitted, so it stays correct even if MIS's own sync/display of this submission has an issue.</p>
+    <div style="margin-bottom:10px;"><b style="font-size:11px;">To:</b><br>${checkbox('reportToCnf','CNF Email')}${checkbox('reportToEmployees','Mapped Employee(s)')}</div>
+    <div style="margin-bottom:14px;"><b style="font-size:11px;">Cc:</b><br>${checkbox('reportCcEmployees','Mapped Employee(s)')}${checkbox('reportCcDefault','Default CC List')}</div>
+    <div class="fg" style="margin-bottom:10px;"><label>Subject</label><input type="text" id="cfgReportSubject" value="${(cfg.reportSubject||'').replace(/"/g,'&quot;')}"></div>
+    <div class="fg"><label>Body</label><textarea id="cfgReportBody" rows="4">${cfg.reportBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DATE','ITEM_COUNT'])}</div>
+    <p style="color:var(--ink-soft);font-size:11.5px;margin:8px 0 0;">No "attach" toggle here — the whole point of this rule is the attachment, so it's always included.</p>
   </div>
 
   <button class="btn btn-primary" id="btnSaveEmailConfig">Save Email Configuration</button>
@@ -4782,13 +4808,13 @@ function MisExport(){
 // function, so there's no risk of the two ever silently disagreeing on a
 // number. Only the presentation differs downstream.
 function buildMisExportRows(rows){
-  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Shortfall (kg)','Approved Order','Pending Order','Submission ID'];
+  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Variance Reason','Approved Order','Pending Order','Submission ID'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
     const safetyNorm = safetyNormFor(r.item,r.product);
     const shortfall = r.safetyStatus==='low' ? (safetyNorm - r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', r.item.varianceReason||'', r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
@@ -5298,11 +5324,12 @@ function bindGlobal(){
       // Detailed report, every time — every submission, successful or not,
       // leaves the CNF with an immediate local copy of exactly what was sent.
       const detailedReport = buildDetailedReportRows(sub);
-      buildXlsxWorkbook({
+      const detailedWbPromise = buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
         headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
-      }).then(detailedWb=>saveOrDownloadRealXlsx(detailedReport.filename, detailedWb));
+      });
+      detailedWbPromise.then(detailedWb=>saveOrDownloadRealXlsx(detailedReport.filename, detailedWb));
       const backendOn = !!getApiUrl();
       showToast(backendOn ? 'Stock submitted — syncing…' : 'Stock submitted successfully (local demo mode)');
       if(backendOn){
@@ -5315,6 +5342,25 @@ function bindGlobal(){
             render();
           }
         });
+        // Emails this exact .xlsx (the same one just downloaded to this
+        // device) as an attachment — built from the CNF's own on-device
+        // data, not recomputed server-side, so it stays correct even if
+        // MIS's own sync/display of this submission has an issue. Sent
+        // independently of syncSubmission above (not chained after it, and
+        // never blocking or reporting failure to the CNF) — this is a
+        // best-effort convenience email, not a data-integrity guarantee;
+        // the actual submission already safely reached the server via
+        // syncSubmission regardless of whether this email goes out.
+        detailedWbPromise.then(detailedWb=>detailedWb.xlsx.writeBuffer()).then(buffer=>{
+          const xlsxBase64 = arrayBufferToBase64(buffer);
+          return apiPost('sendSubmissionReport', {
+            report: {
+              cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: sub.date,
+              itemCount: sub.items.length, fileName: detailedReport.filename,
+              xlsxBase64
+            }
+          });
+        }).catch(()=>{}); // best-effort — email config, quota, etc. is Admin's concern, never the CNF's
       }
     };
   }
@@ -5572,10 +5618,11 @@ function bindGlobal(){
   if(btnSaveEmailConfig) btnSaveEmailConfig.onclick = async ()=>{
     const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
     const cfg = Object.assign({}, state.emailConfig, {
-      senderName: val('cfgSenderName'), replyTo: val('cfgReplyTo'), defaultCc: val('cfgDefaultCc'),
+      senderName: val('cfgSenderName'), senderEmail: val('cfgSenderEmail'), replyTo: val('cfgReplyTo'), defaultCc: val('cfgDefaultCc'),
       overdueSubject: val('cfgOverdueSubject'), overdueBody: val('cfgOverdueBody'),
       ageingSubject: val('cfgAgeingSubject'), ageingBody: val('cfgAgeingBody'),
       safetySubject: val('cfgSafetySubject'), safetyBody: val('cfgSafetyBody'),
+      reportSubject: val('cfgReportSubject'), reportBody: val('cfgReportBody'),
     });
     btnSaveEmailConfig.disabled = true; btnSaveEmailConfig.textContent = 'Saving…';
     try{
@@ -5599,6 +5646,16 @@ function bindGlobal(){
     state.syncingNow = true; render();
     try{
       await forceSyncMasters();
+      // forceSyncMasters() only pulls each CNF's LATEST snapshot (fast,
+      // used everywhere for speed) — it does NOT refresh full submission
+      // history. Without this, "Sync" could look complete while MIS/Admin
+      // reports that filter across a date range (Export Center, Audit,
+      // etc.) were still quietly working off an older, incomplete history
+      // list loaded earlier in the session. The whole point of a manual
+      // Sync tap is "make everything current right now," so it has to
+      // cover both.
+      await ensureAllHistory();
+      state.allHistoryLoaded = true;
       if(state.cnfUser) await loadMessagesForCnf(state.cnfUser.code);
       else if(state.adminUser || state.misUser) await loadAllMessages();
       state.backendError = null; showToast('✓ Synced — showing the latest data');
