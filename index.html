@@ -834,7 +834,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.19';
+const APP_VERSION = '2026-08-24.20';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1248,6 +1248,45 @@ function buildDetailedReportRows(sub){
     return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
   return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
+}
+
+// Builds an HTML table of just the ageing-flagged lines (Ageing/Critical/
+// Near-Expiry/Expired — never Fresh/Normal) from a submission, colour-coded
+// like a highlighted Excel sheet, for embedding directly in the Full
+// Submission Report email's body. Deliberately reuses ageingStatus() — the
+// exact same function that drives every ageing badge/report elsewhere in
+// the app — rather than having the backend recompute a simplified version
+// of its own; that's what keeps this table showing exactly what the CNF's
+// own attached report and screen already show, with no drift between the
+// two. Returns {html, count} — html is '' (and count 0) when nothing is
+// flagged, so the caller can skip embedding an empty table entirely.
+function buildAgeingHighlightTableHtml(sub){
+  const flagged = [];
+  sub.items.forEach(it=>{
+    const p = state.masters.products.find(pp=>pp.code===it.code);
+    if(!p || !it.mfd) return;
+    const st = ageingStatus(p, it.mfd);
+    if(['ageing','critical','expiring','expired'].includes(st.cls)) flagged.push({it, st});
+  });
+  if(!flagged.length) return {html:'', count:0};
+  // Same visual language as the app's own badges — Expired is the darkest/
+  // most severe, Near Expiry next, then Critical, then Ageing lightest —
+  // just recoloured for a white email background instead of the dark UI.
+  const colorFor = cls => cls==='expired' ? '#7a1f1f' : cls==='expiring' ? '#c0392b' : cls==='critical' ? '#e67e22' : '#d9a441';
+  const rowsHtml = flagged.map(({it,st})=>
+    `<tr><td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.code}</td>` +
+    `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.name}</td>` +
+    `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.mfd||''}</td>` +
+    `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.kgQty.toFixed(1)} kg</td>` +
+    `<td style="padding:5px 8px;border:1px solid #e0d5bd;background:${colorFor(st.cls)};color:#fff;font-weight:bold;">${st.label} (${st.remaining}d left)</td></tr>`
+  ).join('');
+  const html = `<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:12px;width:100%;">` +
+    `<tr><th style="padding:6px 8px;background:#cc8f3f;color:#fff;border:1px solid #a97a30;">Code</th>` +
+    `<th style="padding:6px 8px;background:#cc8f3f;color:#fff;border:1px solid #a97a30;">Product</th>` +
+    `<th style="padding:6px 8px;background:#cc8f3f;color:#fff;border:1px solid #a97a30;">MFD</th>` +
+    `<th style="padding:6px 8px;background:#cc8f3f;color:#fff;border:1px solid #a97a30;">Qty</th>` +
+    `<th style="padding:6px 8px;background:#cc8f3f;color:#fff;border:1px solid #a97a30;">Status</th></tr>${rowsHtml}</table>`;
+  return {html, count: flagged.length};
 }
 
 /* ---------------- Optional: save reports directly to a chosen folder ----------------
@@ -3156,11 +3195,11 @@ function EmailConfigScreen(){
 
   <div class="panel-card">
     <h4>Rule: Full Submission Report ${checkbox('reportEnabled','Enabled')}</h4>
-    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;">Sent once, right after a Final submission, with the CNF's complete detailed report attached as a real .xlsx — every line, not just flagged ones. Built entirely on the CNF's own device from the exact data they just submitted, so it stays correct even if MIS's own sync/display of this submission has an issue.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;">Sent once, right after a Final submission, with the CNF's complete detailed report attached as a real .xlsx — every line, not just flagged ones — exactly matching what the CNF's own device would download. If anything in the submission is Ageing/Critical/Near-Expiry/Expired, a colour-highlighted table of just those lines is added to the email body below your message (nothing to configure — it's automatic whenever there's something to flag).</p>
     <div style="margin-bottom:10px;"><b style="font-size:11px;">To:</b><br>${checkbox('reportToCnf','CNF Email')}${checkbox('reportToEmployees','Mapped Employee(s)')}</div>
     <div style="margin-bottom:14px;"><b style="font-size:11px;">Cc:</b><br>${checkbox('reportCcEmployees','Mapped Employee(s)')}${checkbox('reportCcDefault','Default CC List')}</div>
     <div class="fg" style="margin-bottom:10px;"><label>Subject</label><input type="text" id="cfgReportSubject" value="${(cfg.reportSubject||'').replace(/"/g,'&quot;')}"></div>
-    <div class="fg"><label>Body</label><textarea id="cfgReportBody" rows="4">${cfg.reportBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DATE','ITEM_COUNT'])}</div>
+    <div class="fg"><label>Body</label><textarea id="cfgReportBody" rows="4">${cfg.reportBody||''}</textarea>${placeholderHint(['CNF_CODE','CNF_NAME','DATE','ITEM_COUNT','AGEING_COUNT'])}</div>
     <p style="color:var(--ink-soft);font-size:11.5px;margin:8px 0 0;">No "attach" toggle here — the whole point of this rule is the attachment, so it's always included.</p>
   </div>
 
@@ -5353,11 +5392,13 @@ function bindGlobal(){
         // syncSubmission regardless of whether this email goes out.
         detailedWbPromise.then(detailedWb=>detailedWb.xlsx.writeBuffer()).then(buffer=>{
           const xlsxBase64 = arrayBufferToBase64(buffer);
+          const ageingTable = buildAgeingHighlightTableHtml(sub);
           return apiPost('sendSubmissionReport', {
             report: {
               cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: sub.date,
               itemCount: sub.items.length, fileName: detailedReport.filename,
-              xlsxBase64
+              xlsxBase64,
+              ageingTableHtml: ageingTable.html, ageingCount: ageingTable.count
             }
           });
         }).catch(()=>{}); // best-effort — email config, quota, etc. is Admin's concern, never the CNF's
