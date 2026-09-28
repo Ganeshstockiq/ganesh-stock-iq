@@ -836,7 +836,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.23';
+const APP_VERSION = '2026-08-24.24';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1006,7 +1006,7 @@ async function loadAll(){
     render();
     flushPendingQueue();
     if(restored){
-      tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored).then(()=>render()).catch(()=>{});
+      tryRestoreSessionBackgroundSync_(restored).then(()=>render()).catch(()=>{});
     }
     if(apiUrl) maybeBackgroundSyncMasters(); // silent, throttled, never blocks the UI
     if(state.role) checkForNewVersion(); // fire-and-forget — "sync" for the app's own code, not just its data
@@ -1879,7 +1879,7 @@ function NewVersionBanner(){
 // genuine backend error, everyone — CNF, Admin, MIS — sees this, with the
 // actual technical reason, not just "something's wrong."
 function BackendErrorBanner(){
-  if(!state.backendError || !(state.cnfUser || state.adminUser || state.misUser)) return '';
+  if(!state.backendError) return '';
   return `<div style="background:#3a1f19;border-bottom:1px solid #6b3a2f;color:#f0c9c0;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
     ⚠ Backend connection failed — showing local/demo data, not live Sheet data. <span style="opacity:.85;">${state.backendError}</span>
     ${state.role==='admin' ? ' · <span class="linklike" data-adminnav="api" style="cursor:pointer;">Check API Connection →</span>' : ''}
@@ -2213,7 +2213,7 @@ async function saveEmailConfigToServer(config){
 // Desktop notifications — entirely optional, and only ever fired for
 // something the person would actually want interrupted for (a new
 // message), never for routine background syncs.
-async function r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(){
+async function requestNotificationPermission(){
   if(typeof Notification==='undefined'){ showToast('This browser does not support desktop notifications.'); return; }
   const perm = await Notification.requestPermission();
   state.notifyPermission = perm;
@@ -2254,14 +2254,14 @@ function tryRestoreSessionFast_(){
   clearRememberedSession(); // account gone/deactivated since — don't keep trying
   return null;
 }
-async function tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored){
+async function tryRestoreSessionBackgroundSync_(restored){
   if(!restored) return;
   if(restored.role==='cnf') await syncCnfSessionInBackground_(restored.cnf);
   else await Promise.allSettled([forceSyncMasters(), loadAllMessages()]);
 }
 async function tryRestoreSession(){
   const restored = tryRestoreSessionFast_();
-  await tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored);
+  await tryRestoreSessionBackgroundSync_(restored);
 }
 
 // Returns {ok, syncPromise} rather than blocking on the full sync itself —
@@ -2270,13 +2270,13 @@ async function tryRestoreSession(){
 // caller can show the dashboard right away and only needs syncPromise to
 // know when to re-render with freshly-synced data, not to know whether
 // login itself succeeded.
-async function tryLogin(userId, password, remember){
+async function tryLoginOnce_(userId, password, remember){
   userId = (userId||'').trim();
   // CNF — matched by CNF code (their User ID is their code, e.g. 3100)
   const cnf = state.masters.cnfs.find(c=>c.code===userId || c.userId===userId);
   if(cnf){
     if(cnf.status==='Inactive'){ state.loginError = 'This CNF is inactive. Contact Admin.'; return {ok:false}; }
-    if(password !== cnf.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false}; }
+    if(password !== cnf.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false, credentialFailure:true}; }
     restoreCnfSessionFast_(cnf);
     state.loginError = null;
     if(remember) saveRememberedSession('cnf', cnf.code); else clearRememberedSession();
@@ -2286,7 +2286,7 @@ async function tryLogin(userId, password, remember){
   const admin = state.masters.adminUsers.find(a=>a.userId===userId);
   if(admin){
     if(admin.status==='Inactive'){ state.loginError = 'This account is inactive.'; return {ok:false}; }
-    if(password !== admin.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false}; }
+    if(password !== admin.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false, credentialFailure:true}; }
     state.role = 'admin'; state.adminUser = admin; state.loginError = null;
     if(remember) saveRememberedSession('admin', admin.userId); else clearRememberedSession();
     return {ok:true, syncPromise: Promise.allSettled([forceSyncMasters(), loadAllMessages()])};
@@ -2295,14 +2295,38 @@ async function tryLogin(userId, password, remember){
   const mis = state.masters.misUsers.find(u=>u.userId===userId);
   if(mis){
     if(mis.status==='Inactive'){ state.loginError = 'This account is inactive.'; return {ok:false}; }
-    if(password !== mis.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false}; }
+    if(password !== mis.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false, credentialFailure:true}; }
     state.role = 'mis'; state.misUser = mis; state.loginError = null;
     if(remember) saveRememberedSession('mis', mis.userId); else clearRememberedSession();
     if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now()); // first-ever login: don't dump the whole existing history into "new"
     return {ok:true, syncPromise: Promise.allSettled([forceSyncMasters(), loadAllMessages()])};
   }
   state.loginError = 'Unknown User ID or Password.';
-  return {ok:false};
+  return {ok:false, credentialFailure:true};
+}
+
+// A password mismatch is not always a wrong password. Login is checked
+// against the CNF/Admin/MIS lists this device is holding, and when the
+// backend can't be reached that list is either stale or just the built-in
+// demo data — so the right password from the real Sheet "doesn't match" and
+// the person is told it's incorrect, with nothing pointing at the real
+// cause. So before ever saying "incorrect", refresh from the live Sheet once
+// and check again; and if that refresh itself fails, say so plainly (with
+// the actual reason) instead of blaming the password.
+async function tryLogin(userId, password, remember){
+  const first = await tryLoginOnce_(userId, password, remember);
+  if(first.ok || !first.credentialFailure || !getApiUrl()) return first;
+  try{
+    await forceSyncMasters();
+    state.backendConnected = true;
+    state.backendError = null;
+  }catch(e){
+    state.backendConnected = false;
+    state.backendError = String((e&&e.message)||e);
+    state.loginError = `Backend connection failed, so your password can't be checked against the live Sheet right now — this may not be a wrong password. Reason: ${state.backendError}`;
+    return {ok:false};
+  }
+  return tryLoginOnce_(userId, password, remember);
 }
 
 function doLogout(){
@@ -3220,9 +3244,9 @@ function EmailConfigScreen(){
   return `
   <div class="panel-card">
     <h4>Sender</h4>
-    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;"><b>Leave "Sender Email" below blank</b> unless you specifically need mail to appear from a different address than the Google account running this script — that's all most setups need, and it works immediately with no extra setup. Filling it in sends through a different, heavier path (Gmail's "Send As" alias feature) that also needs a broader Google permission — for an unverified app, that permission requires either a Google Workspace-internal setup or manually adding this Google account as a "Test user" in that project's OAuth consent screen (Google Cloud Console → APIs & Services → OAuth consent screen → Audience). Only worth it if the custom sender address genuinely matters to you.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;"><b>Simple setup (works right away, no extra Google permissions):</b> leave "Sender Email" blank, set "Sender Display Name" to what recipients should see (e.g. Ganesh Consumer CRM), and put your company address in "Reply-To" (e.g. crm@ganeshconsumer.com). Mail is sent by the Google account running this script, and when someone hits Reply it goes to the Reply-To address. The technical From address stays that Google account's own.<br><br><b>To change the From address itself:</b> fill "Sender Email". That address must first be a verified "Send mail as" alias on the Google account running this script, and it needs a broader Gmail permission (for a Google Workspace account, its admin has to allow outside "Send mail as" addresses). Only worth it if the From address genuinely has to be the company one.</p>
     <div class="fg" style="margin-bottom:10px;"><label>Sender Display Name</label><input type="text" id="cfgSenderName" value="${cfg.senderName||''}" placeholder="Ganesh Consumer — Stock Team"></div>
-    <div class="fg" style="margin-bottom:10px;"><label>Sender Email (must be a verified "Send As" alias on the Google account running this script — see above)</label><input type="email" id="cfgSenderEmail" value="${cfg.senderEmail||''}" placeholder="mis@ganeshconsumer.com"></div>
+    <div class="fg" style="margin-bottom:10px;"><label>Sender Email (must be a verified "Send As" alias on the Google account running this script — see above)</label><input type="email" id="cfgSenderEmail" value="${cfg.senderEmail||''}" placeholder="crm@ganeshconsumer.com"></div>
     <div class="fg" style="margin-bottom:10px;"><label>Reply-To (optional)</label><input type="email" id="cfgReplyTo" value="${cfg.replyTo||''}" placeholder="crm@ganeshconsumer.com"></div>
     <div class="fg" style="margin-bottom:14px;"><label>Default CC List (comma-separated — always CC'd when enabled below, on top of any mapped employees)</label><input type="text" id="cfgDefaultCc" value="${cfg.defaultCc||''}" placeholder="manager@ganeshconsumer.com, ops@ganeshconsumer.com"></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -5792,7 +5816,7 @@ function bindGlobal(){
     render();
   };
   const btnEnableNotify = document.getElementById('btnEnableNotify');
-  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(); };
+  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ requestNotificationPermission(); };
   const btnTopbarSync = document.getElementById('btnTopbarSync');
   if(btnTopbarSync) btnTopbarSync.onclick = async ()=>{
     state.syncingNow = true; render();
