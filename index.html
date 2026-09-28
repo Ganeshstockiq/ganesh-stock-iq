@@ -250,6 +250,8 @@ main{flex:1;}
 .prow{background:#fff;border:1px solid #ecdfbe;border-radius:11px;padding:0 12px 10px;margin-bottom:8px;display:flex;flex-direction:column;gap:2px;border-left:3px solid #ecdfbe;transition:border-color .15s ease;}
 .prow.filled{border-left-color:var(--wheat);background:#fffaf0;}
 .prow.needs-reason{border-left-color:var(--red);background:var(--red-bg);}
+.prow.prow-flash{border-left-color:var(--red);background:var(--red-bg);box-shadow:0 0 0 3px rgba(192,57,43,.35);animation:prowflash 0.9s ease-in-out 3;}
+@keyframes prowflash{0%,100%{box-shadow:0 0 0 3px rgba(192,57,43,.15);}50%{box-shadow:0 0 0 6px rgba(192,57,43,.45);}}
 .prow .pinfo{min-width:0;position:sticky;top:178px;background:inherit;z-index:8;padding:10px 0 6px;box-shadow:0 4px 6px -4px rgba(60,45,15,.1);}
 .prow .pname{font-size:13.5px;font-weight:600;color:var(--ink);}
 .cat-pill{display:inline-block;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.3px;color:var(--wheat-dim);background:var(--amber-bg);border-radius:20px;padding:2px 8px;margin-left:6px;vertical-align:middle;white-space:nowrap;}
@@ -834,7 +836,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.21';
+const APP_VERSION = '2026-08-24.23';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -2473,6 +2475,12 @@ function CnfSubmit(){
   const catGroups = sapCategoryGroups();
   if(!catGroups.find(g=>g.cat===state.submitCat)) state.submitCat = catGroups.length ? catGroups[0].cat : null;
   const missing = missingRequiredCodes();
+  // "Only what's still missing" is a filtered view — the moment nothing is
+  // missing any more it has nothing left to show, and (since the chip that
+  // switches it off only appears while something IS missing) it would strand
+  // the CNF on an empty page with the category tabs hidden and no way back.
+  // Switch it off automatically instead, so the normal view always returns.
+  if(state.sapMissingOnlyFilter && !missing.length) state.sapMissingOnlyFilter = false;
 
   let baseRows;
   if(state.sapMissingOnlyFilter){
@@ -2635,6 +2643,65 @@ function findMissingMfdBatches(){
   });
   return missing;
 }
+// A Manufacturing Date can be today or any day in the past — never even
+// one day ahead of today, since stock cannot have been produced in the
+// future. YYYY-MM-DD strings compare correctly as plain text, so this is
+// an exact "is it after today" check with no timezone edge cases.
+function isFutureMfd(iso){
+  return !!iso && iso > todayISO();
+}
+// Safety net at submit time: the entry fields already refuse a future date
+// as it's typed/picked, but a draft saved earlier (or restored from an
+// older app version) could still be carrying one — this makes sure none
+// can ever reach a submission regardless of how it got into the draft.
+function findFutureMfdBatches(){
+  const bad = [];
+  Object.keys(state.draftItems).forEach(code=>{
+    const p = state.masters.products.find(pp=>pp.code===code);
+    (state.draftItems[code]||[]).forEach((b,idx)=>{
+      if(isFutureMfd(b.mfd)) bad.push({code, idx, name: p?p.name:code, mfd: b.mfd});
+    });
+  });
+  return bad;
+}
+// Shows a kg figure at its real precision (up to 2 decimals, trailing
+// zeros dropped) — 208.08 must read 208.08, not a rounded 208.1.
+function fmtKg(n){
+  const v = Math.round((Number(n)||0)*100)/100;
+  return String(v);
+}
+// Takes the CNF straight to the exact product card an error is about,
+// instead of leaving them to hunt for it: opens the right category,
+// clears any filter/search that could hide that card, scrolls it into the
+// middle of the screen, flashes it, and puts the cursor in the field that
+// needs attention (field: 'mfd' | 'qty'). Used by every submit-time error.
+function goToProductCard(code, idx, field){
+  const p = state.masters.products.find(pp=>pp.code===code);
+  const sapRow = state.sapUpload ? state.sapUpload.rows.find(r=>r.code===code) : null;
+  state.cnfModal = null;
+  state.varianceReasonModal = false;
+  state.cnfScreen = 'submit';
+  state.sapMissingOnlyFilter = false;
+  state.sapSearch = '';
+  if(p && p.category) state.submitCat = p.category;
+  // A card with zero SAP stock is hidden under "Stocked only" — show all
+  // so the card we're sending them to is actually on screen.
+  if(sapRow && !(sapRow.currentStockKg>0)) state.sapShowZero = true;
+  render();
+  const focusIt = ()=>{
+    const row = document.querySelector(`[data-prow="${code}"]`);
+    if(!row) return;
+    row.scrollIntoView({behavior:'smooth', block:'center'});
+    row.classList.add('prow-flash');
+    setTimeout(()=>row.classList.remove('prow-flash'), 2800);
+    const sel = field==='mfd'
+      ? `[data-mfdcode="${code}"][data-batch="${idx||0}"]`
+      : `[data-qtycode="${code}"][data-batch="${idx||0}"]`;
+    const inp = row.querySelector(sel) || row.querySelector('input');
+    if(inp){ try{ inp.focus({preventScroll:true}); }catch(e){ inp.focus(); } }
+  };
+  setTimeout(focusIt, 60);
+}
 function categoryComplete(cat){
   // Is every SAP line in this category that actually needs entry (nonzero
   // current stock) filled in yet? Drives the tab auto-advance below — a
@@ -2683,7 +2750,13 @@ function sapCategoryGroups(){
 // entered before Final Submit — this is the mandatory-coverage rule.
 function missingRequiredCodes(){
   if(!state.sapUpload) return [];
-  return state.sapUpload.rows.filter(r=>r.currentStockKg>0 && !batchFilled(r.code)).map(r=>r.code);
+  // Only rows that actually have a product card to fill in count as
+  // "missing" — a SAP line whose product isn't in Product Master renders no
+  // card at all (SapProductRow skips it) and can't be submitted, so
+  // demanding it would block Final Submit on something no one could reach.
+  return state.sapUpload.rows
+    .filter(r=>r.currentStockKg>0 && !batchFilled(r.code) && state.masters.products.some(pp=>pp.code===r.code))
+    .map(r=>r.code);
 }
 // Sub-50g gaps between entered and SAP stock are floating-point/unit-
 // conversion rounding noise (e.g. converting BAG/PC to kg with a
@@ -2735,7 +2808,7 @@ function VarianceReasonModal_(){
         const diff = roundedDiffKg(entered, r.currentStockKg);
         return `<div style="padding:10px 4px;border-bottom:1px solid rgba(255,255,255,.08);">
           <div style="font-size:13px;font-weight:600;">${r.name || (p&&p.name) || r.code} <span style="font-family:var(--mono);font-size:10.5px;font-weight:400;color:var(--wheat-dim);">${r.code}${p?' · '+p.category:''}</span></div>
-          <div style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);margin:2px 0 6px;">SAP ${r.currentStockKg.toFixed(1)}kg · Entered ${entered.toFixed(1)}kg · Diff ${diff>0?'+':''}${diff.toFixed(1)}kg</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);margin:2px 0 6px;">SAP ${fmtKg(r.currentStockKg)}kg · Entered ${fmtKg(entered)}kg · Diff ${diff>0?'+':''}${fmtKg(diff)}kg</div>
           <input type="text" data-modalreasoncode="${r.code}" placeholder="e.g. Damage, unrecorded dispatch, counting error…" value="${state.varianceReasons[r.code]||''}" style="width:100%;padding:8px 10px;border-radius:7px;border:1px solid var(--line);box-sizing:border-box;">
         </div>`;
       }).join('') || `<div style="padding:16px 4px;text-align:center;color:var(--wheat-dim);">✓ All resolved — you can close this and submit.</div>`}
@@ -2806,10 +2879,10 @@ function SapProductRow(sapRow){
   <div class="prow ${filled?'filled':''} ${needsReason && !reasonFilled?'needs-reason':''}" data-prow="${p.code}">
     <div class="pinfo">
       <div class="pname">${p.name} <span class="cat-pill">${p.category}</span></div>
-      <div class="pmeta">${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
-        ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}
+      <div class="pmeta">${p.code} · SAP Current Stock <b>${fmtKg(sapRow.currentStockKg)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${fmtKg(totalKg)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
+        ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${fmtKg(diff)}kg vs SAP</span>`) : ''}
       </div>
-      <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${(safetyNorm-totalKg).toFixed(1)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}</div>
+      <div class="pmeta2">Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${fmtKg(safetyNorm-totalKg)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}</div>
     </div>
     <div class="batchlist">
       ${batches.map((b,i)=>BatchRow(p,b,i,batches.length)).join('')}
@@ -2847,13 +2920,13 @@ function BatchRow(p,b,i,total){
       <div class="mfd-input-wrap">
         <input type="text" class="mfd-text" data-mfdcode="${p.code}" data-batch="${i}" value="${ddmmyyyy(b.mfd)}" placeholder="DD-MM-YYYY" inputmode="numeric" autocomplete="off">
         <button type="button" class="mfd-cal-btn" data-mfdcal="${p.code}:${i}" tabindex="-1" title="Pick from calendar instead">📅</button>
-        <input type="date" class="mfd-picker-hidden" data-mfdpicker="${p.code}:${i}" value="${b.mfd||''}" tabindex="-1">
+        <input type="date" class="mfd-picker-hidden" data-mfdpicker="${p.code}:${i}" value="${b.mfd||''}" max="${todayISO()}" tabindex="-1">
       </div>
       ${i===0 && total>1 ? `<button type="button" class="mfd-copyall-btn" data-copymfd="${p.code}" title="Fill every batch below with this same date — then just fix the few that differ">Same date for all ${total}</button>` : ''}
     </div>
     <div class="mfd-error" data-mfderror="${p.code}:${i}" style="display:none;"></div>
     <div class="pinputs">
-      <input type="number" min="0" class="qty" data-qtycode="${p.code}" data-batch="${i}" placeholder="0" value="${b.qty!==undefined?b.qty:''}">
+      <input type="number" min="0" step="any" inputmode="decimal" class="qty" data-qtycode="${p.code}" data-batch="${i}" placeholder="0" value="${b.qty!==undefined?b.qty:''}">
 
       <select class="uom" data-uomcode="${p.code}" data-batch="${i}" ${pending?'disabled title="New product — pending Admin review. KG only until Admin sets it up."':''}>
         ${uomOptions.map(u=>`<option value="${u}" ${uom===u?'selected':''}>${u}</option>`).join('')}
@@ -3147,7 +3220,7 @@ function EmailConfigScreen(){
   return `
   <div class="panel-card">
     <h4>Sender</h4>
-    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;">Apps Script can only send through the Google account it's authorized under — it can't natively send as a Microsoft 365/Outlook mailbox like mis@ganeshconsumer.com. To send AS that address anyway, set it up as a verified "Send As" alias in that Google account's Gmail Settings → Accounts and Import → "Send mail as" (Gmail will send a verification code to mis@ganeshconsumer.com's actual inbox to confirm you own it — enter that code once, then it's done). Once verified, enter it below. Leave it blank to just send from whatever Google account is running the script, under this display name.</p>
+    <p style="color:var(--ink-soft);font-size:12.5px;margin-top:0;line-height:1.6;"><b>Leave "Sender Email" below blank</b> unless you specifically need mail to appear from a different address than the Google account running this script — that's all most setups need, and it works immediately with no extra setup. Filling it in sends through a different, heavier path (Gmail's "Send As" alias feature) that also needs a broader Google permission — for an unverified app, that permission requires either a Google Workspace-internal setup or manually adding this Google account as a "Test user" in that project's OAuth consent screen (Google Cloud Console → APIs & Services → OAuth consent screen → Audience). Only worth it if the custom sender address genuinely matters to you.</p>
     <div class="fg" style="margin-bottom:10px;"><label>Sender Display Name</label><input type="text" id="cfgSenderName" value="${cfg.senderName||''}" placeholder="Ganesh Consumer — Stock Team"></div>
     <div class="fg" style="margin-bottom:10px;"><label>Sender Email (must be a verified "Send As" alias on the Google account running this script — see above)</label><input type="email" id="cfgSenderEmail" value="${cfg.senderEmail||''}" placeholder="mis@ganeshconsumer.com"></div>
     <div class="fg" style="margin-bottom:10px;"><label>Reply-To (optional)</label><input type="email" id="cfgReplyTo" value="${cfg.replyTo||''}" placeholder="crm@ganeshconsumer.com"></div>
@@ -5204,13 +5277,18 @@ function bindGlobal(){
     const violations = findOpenBagViolations();
     if(violations.length){
       const names = violations.slice(0,3).map(v=>v.name).join(', ');
-      showToast(`⚠️ Bag opened or PC not whole for ${names} — submit in KG instead.`);
+      showToast(`⚠️ Bag opened or PC not whole for ${names} — submit in KG instead. Tap to go there.`, ()=>goToProductCard(violations[0].code, violations[0].idx, 'qty'));
+      return;
+    }
+    const futureMfd = findFutureMfdBatches();
+    if(futureMfd.length){
+      showToast(`⚠️ ${futureMfd[0].name}: MFD is in the future — fix it to today or earlier. Tap to go there.`, ()=>goToProductCard(futureMfd[0].code, futureMfd[0].idx, 'mfd'));
       return;
     }
     const missingMfd = findMissingMfdBatches();
     if(missingMfd.length){
       const names = missingMfd.slice(0,3).map(v=>v.name).join(', ');
-      showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing.`);
+      showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing. Tap to go there.`, ()=>goToProductCard(missingMfd[0].code, missingMfd[0].idx, 'mfd'));
       return;
     }
     const filledCodes = new Set(Object.keys(state.draftItems).filter(code => (state.draftItems[code]||[]).some(b=>b.qty!==undefined && b.qty!=='')));
@@ -5287,13 +5365,23 @@ function bindGlobal(){
     if(violations.length){
       const names = violations.slice(0,3).map(v=>v.name).join(', ');
       const kind = violations.some(v=>v.uom==='BAG') && violations.some(v=>v.uom==='PC') ? 'Bag opened / PC not whole' : violations[0].uom==='BAG' ? 'Bag opened' : 'PC must be a whole number';
-      showToast(`⚠️ ${kind} for ${names}${violations.length>3?` and ${violations.length-3} more`:''} — submit stock in KG instead.`);
+      showToast(`⚠️ ${kind} for ${names}${violations.length>3?` and ${violations.length-3} more`:''} — submit stock in KG instead. Tap to go there.`, ()=>goToProductCard(violations[0].code, violations[0].idx, 'qty'));
+      return;
+    }
+    const futureMfd = findFutureMfdBatches();
+    if(futureMfd.length){
+      showToast(`⚠️ ${futureMfd[0].name}: MFD is in the future — fix it to today or earlier. Tap to go there.`, ()=>goToProductCard(futureMfd[0].code, futureMfd[0].idx, 'mfd'));
       return;
     }
     const missingMfd = findMissingMfdBatches();
     if(missingMfd.length){
       const names = missingMfd.slice(0,3).map(v=>v.name).join(', ');
-      showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing.`);
+      showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing. Tap to go there.`, ()=>goToProductCard(missingMfd[0].code, missingMfd[0].idx, 'mfd'));
+      return;
+    }
+    const stillMissing = missingRequiredCodes();
+    if(stillMissing.length){
+      showToast(`${stillMissing.length} item(s) with SAP stock still need entry. Tap to go to the first one.`, ()=>goToProductCard(stillMissing[0], 0, 'qty'));
       return;
     }
     state.cnfModal = CnfFinalModal();
@@ -5304,7 +5392,10 @@ function bindGlobal(){
     document.getElementById('btnCancelFinal').onclick = ()=>{ state.cnfModal=null; render(); };
     const btnConfirmFinal = document.getElementById('btnConfirmFinal');
     if(btnConfirmFinal) btnConfirmFinal.onclick = ()=>{
-      if(findOpenBagViolations().length){ showToast('⚠️ Bag opened or PC not whole for one or more items — submit stock in KG instead.'); state.cnfModal=null; render(); return; }
+      const openBag = findOpenBagViolations();
+      if(openBag.length){ state.cnfModal=null; render(); showToast('⚠️ Bag opened or PC not whole for one or more items — submit stock in KG instead. Tap to go there.', ()=>goToProductCard(openBag[0].code, openBag[0].idx, 'qty')); return; }
+      const futureMfdC = findFutureMfdBatches();
+      if(futureMfdC.length){ state.cnfModal=null; render(); showToast(`⚠️ ${futureMfdC[0].name}: MFD is in the future — fix it to today or earlier. Tap to go there.`, ()=>goToProductCard(futureMfdC[0].code, futureMfdC[0].idx, 'mfd')); return; }
       // Defensive re-check, fresh, at the actual moment of submission — the
       // Final Submit button click already caught a stale date before this
       // modal ever opened, but if enough time passed with the modal open
@@ -5332,11 +5423,16 @@ function bindGlobal(){
       const missingMfd = findMissingMfdBatches();
       if(missingMfd.length){
         const names = missingMfd.slice(0,3).map(v=>v.name).join(', ');
-        showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing.`);
+        state.cnfModal = null; render();
+        showToast(`${names}${missingMfd.length>3?` and ${missingMfd.length-3} more`:''} — quantity entered but MFD is missing. Tap to go there.`, ()=>goToProductCard(missingMfd[0].code, missingMfd[0].idx, 'mfd'));
         return;
       }
       const missing = missingRequiredCodes();
-      if(missing.length){ showToast(`${missing.length} item(s) with SAP stock still need entry`); return; }
+      if(missing.length){
+        state.cnfModal = null; render();
+        showToast(`${missing.length} item(s) with SAP stock still need entry. Tap to go to the first one.`, ()=>goToProductCard(missing[0], 0, 'qty'));
+        return;
+      }
       const items = buildSubmissionItems();
       const distinctCodes = new Set(items.map(i=>i.code));
       const zeroCodes = [...distinctCodes].filter(code => items.filter(i=>i.code===code).reduce((s,i)=>s+i.qty,0)===0);
@@ -6322,6 +6418,16 @@ function bindRowInputs(){
       return;
     }
     const parsed = parseFlexibleDate(raw);
+    if(parsed && isFutureMfd(parsed)){
+      // A batch cannot have been manufactured after today — today and any
+      // earlier date is fine, but even tomorrow is refused outright, and
+      // nothing is stored so a wrong date can never reach ageing/reports.
+      b.mfd = '';
+      inp.classList.add('mfd-error-state');
+      if(errEl){ errEl.style.display='block'; errEl.textContent = `⚠ MFD ${ddmmyyyy(parsed)} is in the future — manufacturing date can be today or earlier only.`; }
+      autoSaveDraft();
+      return;
+    }
     if(parsed){
       b.mfd = parsed;
       inp.value = ddmmyyyy(parsed);
@@ -6346,6 +6452,15 @@ function bindRowInputs(){
     const [code, idxStr] = picker.dataset.mfdpicker.split(':');
     const idx = Number(idxStr);
     const b = ensureBatch(code, idx);
+    if(isFutureMfd(picker.value)){
+      b.mfd = ''; picker.value = '';
+      const t = document.querySelector(`[data-mfdcode="${code}"][data-batch="${idx}"]`);
+      const e = document.querySelector(`[data-mfderror="${code}:${idx}"]`);
+      if(t){ t.value=''; t.classList.add('mfd-error-state'); }
+      if(e){ e.style.display='block'; e.textContent='⚠ MFD cannot be in the future — pick today or an earlier date.'; }
+      autoSaveDraft();
+      return;
+    }
     b.mfd = picker.value;
     const textInp = document.querySelector(`[data-mfdcode="${code}"][data-batch="${idx}"]`);
     if(textInp){ textInp.value = ddmmyyyy(picker.value); textInp.classList.remove('mfd-error-state'); }
@@ -6520,8 +6635,8 @@ function updateRowMeta(code){
 
   const meta = row.querySelector('.pmeta');
   if(meta){
-    meta.innerHTML = `${p.code} · SAP Current Stock <b>${sapRow.currentStockKg.toFixed(1)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${totalKg.toFixed(1)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
-      ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${diff.toFixed(1)}kg vs SAP</span>`) : ''}`;
+    meta.innerHTML = `${p.code} · SAP Current Stock <b>${fmtKg(sapRow.currentStockKg)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${fmtKg(totalKg)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
+      ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${fmtKg(diff)}kg vs SAP</span>`) : ''}`;
   }
 
   // The Safety Norm / Below-Safety badge lives on the SECOND meta line
@@ -6536,7 +6651,7 @@ function updateRowMeta(code){
     const safetyNorm = safetyNormFor(sapRow, p);
     const hasSafetyNorm = safetyNorm>0;
     const belowSafety = filled && hasSafetyNorm && totalKg < safetyNorm;
-    meta2.innerHTML = `Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${(safetyNorm-totalKg).toFixed(1)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}`;
+    meta2.innerHTML = `Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${fmtKg(safetyNorm-totalKg)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}`;
   }
 
   let reasonRow = row.querySelector('.reason-row');
@@ -6565,6 +6680,10 @@ function renderRowsOnly(){
   const wrap = document.getElementById('prodRows');
   if(!wrap || !state.sapUpload) return;
   const missing = missingRequiredCodes();
+  // Same guard as CnfSubmit(): nothing left missing means the filtered view
+  // has nothing to show — do a full render so the category tabs and the
+  // normal card list come back, rather than leaving an empty list behind.
+  if(state.sapMissingOnlyFilter && !missing.length){ state.sapMissingOnlyFilter = false; render(); return; }
   let baseRows;
   if(state.sapMissingOnlyFilter){
     baseRows = state.sapUpload.rows.filter(r=>missing.includes(r.code));
