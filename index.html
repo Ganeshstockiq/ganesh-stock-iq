@@ -648,6 +648,13 @@ const state = {
   overdueExpanded: false, // MIS Overview's "Overdue Stock Submissions" list — collapsed by default, toggled via the Overdue KPI card or its own header
   messages: [], // Admin/MIS -> CNF broadcasts (rates, schemes) — loaded per-role on login
   employeeMappings: [], // [{cnfCode, employeeName, employeeEmail}] — who gets CC'd on overdue/ageing emails for each CNF
+  // MIS's "Approved/Pending Orders — Merged Report" — a lookup built
+  // entirely client-side from an uploaded file, {count, fileName, lookup}.
+  // Deliberately NOT persisted anywhere (not saved to the Sheet, not even
+  // kept in localStorage) — it only exists in memory for this tab, for as
+  // long as it takes to hit Export; reloading the page clears it, same as
+  // any other in-progress export would be.
+  pendingOrdersOverride: null,
   emailLog: [], // sent-email follow-up history, loaded on demand
   emailConfig: null, // Admin's Email Configuration — sender, rules, templates; loaded on demand
   composerOpen: false, // Admin/MIS "Send Message" form visibility
@@ -836,7 +843,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.26';
+const APP_VERSION = '2026-08-24.28';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -934,7 +941,7 @@ function arrayBufferToBase64(buffer){
   }
   return btoa(binary);
 }
-async function apiPost(action, payload){
+async function apiPost(action, payload, timeoutMs){
   const apiUrl = getApiUrl();
   if(!apiUrl) throw new Error('No backend configured');
   // Deliberately NO automatic retry here, unlike apiGet — a POST can have a
@@ -947,7 +954,7 @@ async function apiPost(action, payload){
     method:'POST',
     headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids CORS preflight against Apps Script
     body: JSON.stringify(Object.assign({action}, payload||{}))
-  }), 25000);
+  }), timeoutMs||25000);
   // A "JSON fail"/parse-error here almost always means the response wasn't
   // JSON at all — most commonly an HTML error page from Apps Script itself
   // (a stale/broken deployment URL, an authorization page, or the script
@@ -4977,11 +4984,13 @@ function MisExport(){
   </div>
 
   <div class="panel-card">
-    <h4>Approved / Pending Orders — Bulk Upload</h4>
-    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Same file format each CNF uploads for their own stock — <b>Plant</b>, <b>Material</b>, <b>Approved Order</b>, <b>Unpproved Order</b> columns — except this one covers every CNF at once (the <b>Plant</b> column on each row says which CNF it belongs to). Only the Approved/Pending Order figures on each CNF's current stock are updated — nothing else about their submission changes.</p>
+    <h4>Approved / Pending Orders — Merged Report</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Same file format each CNF uploads for their own stock — <b>Plant</b>, <b>Material</b>, <b>Approved Order</b>, <b>Unpproved Order</b> columns — except this one covers every CNF at once (the <b>Plant</b> column on each row says which CNF it belongs to). This never touches the Google Sheet or anyone's actual submission — it only fills the Approved/Pending Order columns into a fresh copy of the same export "Export Filtered Stock" already produces, entirely in your browser, for you to save wherever you like. Nothing is uploaded to the server; close the tab and it's gone, same as any other export.</p>
     <input type="file" id="ordersUploadFile" accept=".xlsx,.xls" style="display:none;">
-    <button class="btn btn-primary" id="btnUploadOrders">⬆ Upload Approved/Pending Orders (All CNFs)</button>
+    <button class="btn btn-primary" id="btnUploadOrders">⬆ Upload Approved/Pending Orders File</button>
+    <span id="ordersLoadedHint" style="margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);${state.pendingOrdersOverride?'':'display:none;'}">${state.pendingOrdersOverride?`✓ ${state.pendingOrdersOverride.count} row(s) loaded from ${state.pendingOrdersOverride.fileName}`:''}</span>
     <div id="ordersUploadProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+    ${state.pendingOrdersOverride ? `<button class="btn btn-primary" id="btnExportMergedOrders" style="margin-top:14px;">⬇ Export Report (Approved/Pending filled)</button>` : ''}
   </div>
 
   <div class="panel-card">
@@ -5027,6 +5036,38 @@ async function parseOrdersBulkFile(file){
     }));
   if(!rows.length) throw new Error('No rows found in this file.');
   return rows;
+}
+// Turns the parsed rows into a {cnfCode+'||'+productCode: row} lookup —
+// what the merged export below actually reads from, keyed the same way
+// the export's own rows are matched against it.
+function buildOrdersLookup(rows){
+  const lookup = {};
+  rows.forEach(r=>{ lookup[r.cnfCode+'||'+r.productCode] = r; });
+  return lookup;
+}
+// The whole point of this feature: a plain export — same headers, same
+// builder (buildMisExportRows) as "Export Filtered Stock" already uses —
+// with Approved/Pending Order swapped out for whatever this CNF+product
+// combination has in the uploaded file, wherever it has one. A row this
+// file doesn't mention keeps its normal (usually 0/blank) figure exactly
+// as the plain export would show it — this only ever fills gaps, never
+// invents data for a combination the file didn't include.
+function buildMergedOrdersExportRows(rows, lookup){
+  const {headers, dataRows} = buildMisExportRows(rows);
+  const cnfCodeIdx = headers.indexOf('CNF Code');
+  const prodCodeIdx = headers.indexOf('Product Code');
+  const apprIdx = headers.indexOf('Approved Order');
+  const pendIdx = headers.indexOf('Pending Order');
+  const mergedRows = dataRows.map(row=>{
+    const key = String(row[cnfCodeIdx])+'||'+String(row[prodCodeIdx]);
+    const match = lookup[key];
+    if(!match) return row;
+    const copy = row.slice();
+    if(match.approvedOrder!=null) copy[apprIdx] = match.approvedOrder;
+    if(match.pendingOrder!=null) copy[pendIdx] = match.pendingOrder;
+    return copy;
+  });
+  return {headers, dataRows: mergedRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
 
 // Sends every active CNF's current report right now, on demand — the exact
@@ -6396,7 +6437,12 @@ function bindGlobal(){
   const btnExport = document.getElementById('btnExportCsv');
   if(btnExport) btnExport.onclick = runExport;
 
-  // Approved/Pending Orders — bulk upload (all CNFs at once)
+  // Approved/Pending Orders — Merged Report: purely client-side. Uploading
+  // only ever parses the file and builds an in-memory lookup — nothing is
+  // sent to the server here, nothing about it is saved anywhere. The
+  // actual output (a normal export, with Approved/Pending filled in) only
+  // gets built when Export is clicked, and that's a local file download
+  // like any other export, not a write to the Sheet.
   const btnUploadOrders = document.getElementById('btnUploadOrders');
   const ordersUploadFile = document.getElementById('ordersUploadFile');
   if(btnUploadOrders && ordersUploadFile){
@@ -6409,22 +6455,33 @@ function bindGlobal(){
       if(prog){ prog.style.display='block'; prog.textContent = 'Reading file…'; }
       try{
         const rows = await parseOrdersBulkFile(file);
-        if(prog) prog.textContent = `Updating ${rows.length} row(s) on the server…`;
-        const result = await apiPost('updateOrders', {rows});
+        state.pendingOrdersOverride = { count: rows.length, fileName: file.name, lookup: buildOrdersLookup(rows) };
         if(prog) prog.style.display='none';
-        if(result && result.ok){
-          showToast(`✓ Updated ${result.updated} item(s)${result.notFound?` — ${result.notFound} row(s) skipped (that CNF/product hasn't submitted stock yet)`:''}`);
-          await forceSyncMasters(); // pulls the updated Approved/Pending figures back into state.submissions
-          render();
-        } else {
-          showToast(`⚠ ${(result && result.error) || 'Update failed — check Email Log / try again'}`);
-        }
+        showToast(`✓ ${rows.length} row(s) loaded — click "Export Report" to download it with Approved/Pending filled in`);
+        render();
       }catch(e){
         if(prog) prog.style.display='none';
         showToast(`⚠ ${(e&&e.message)||'Could not read that file'}`);
       }
     };
   }
+  const btnExportMergedOrders = document.getElementById('btnExportMergedOrders');
+  if(btnExportMergedOrders) btnExportMergedOrders.onclick = async ()=>{
+    if(!state.pendingOrdersOverride) return;
+    try{
+      const rows = filteredRows();
+      const {headers, dataRows, statusColIndex} = buildMergedOrdersExportRows(rows, state.pendingOrdersOverride.lookup);
+      const summaryRows = buildMisPivotSummaryRows(rows);
+      const wb = await buildXlsxWorkbook({
+        title: 'CNF Stock Export — Approved/Pending Orders Filled',
+        subtitle: `Filtered view — ${rows.length} line(s) · orders from ${state.pendingOrdersOverride.fileName}`,
+        headers, rows: dataRows, summaryRows, statusColIndex,
+      });
+      await downloadRealXlsx(`cnf-stock-export-orders-filled-${todayISO()}`, wb);
+    }catch(e){
+      showToast(`⚠ Export failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
+  };
 
   // Email Broadcast — every active CNF's current report, sent now
   const btnEmailBroadcast = document.getElementById('btnEmailBroadcast');
