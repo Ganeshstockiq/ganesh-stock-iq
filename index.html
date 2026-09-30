@@ -253,14 +253,11 @@ main{flex:1;}
 .prow.prow-flash{border-left-color:var(--red);background:var(--red-bg);box-shadow:0 0 0 3px rgba(192,57,43,.35);animation:prowflash 0.9s ease-in-out 3;}
 @keyframes prowflash{0%,100%{box-shadow:0 0 0 3px rgba(192,57,43,.15);}50%{box-shadow:0 0 0 6px rgba(192,57,43,.45);}}
 .prow .pinfo{min-width:0;position:sticky;top:178px;background:inherit;z-index:8;padding:10px 0 6px;box-shadow:0 4px 6px -4px rgba(60,45,15,.1);}
-.prow .pname{font-size:15.5px;font-weight:700;color:var(--ink);}
+.prow .pname{font-size:13.5px;font-weight:600;color:var(--ink);}
 .cat-pill{display:inline-block;font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:.3px;color:var(--wheat-dim);background:var(--amber-bg);border-radius:20px;padding:2px 8px;margin-left:6px;vertical-align:middle;white-space:nowrap;}
 .uom-equiv{color:var(--ink-soft);font-weight:400;}
-.prow .pmeta{font-family:var(--mono);font-size:13px;line-height:1.5;color:var(--ink);margin-top:2px;}
-.prow .pmeta b{font-size:17px;font-weight:800;color:#000;}
-.prow .pmeta .uom-equiv{font-size:12.5px;}
-.prow .pmeta2{font-family:var(--mono);font-size:12px;line-height:1.5;color:var(--wheat-dim);margin-top:3px;}
-.prow .pmeta2 b{font-size:13px;}
+.prow .pmeta{font-family:var(--mono);font-size:13.5px;color:var(--ink-soft);margin-top:3px;line-height:1.5;}
+.prow .pmeta2{font-family:var(--mono);font-size:12.5px;color:var(--wheat-dim);margin-top:4px;line-height:1.5;}
 .prow .pinputs{display:flex;align-items:center;gap:6px;flex:none;}
 .prow input.qty{width:64px;padding:9px 6px;text-align:center;border-radius:7px;border:1px solid #ddceac;font-family:var(--mono);font-weight:700;font-size:14px;}
 .prow select.uom{padding:9px 4px;border-radius:7px;border:1px solid #ddceac;font-family:var(--mono);font-size:11px;background:#fbf6ea;}
@@ -312,7 +309,7 @@ main{flex:1;}
 .sticky-submit .row{display:flex;gap:8px;background:#fff;border:1px solid #ecdfbe;border-radius:12px;padding:10px;box-shadow:0 -6px 18px rgba(60,45,15,.1);max-width:720px;margin:0 auto;}
 .sticky-submit .prog{font-family:var(--mono);font-size:11px;color:var(--ink-soft);flex:1;align-self:center;}
 
-.badge{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:20px;letter-spacing:.3px;}
+.badge{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;letter-spacing:.3px;}
 .badge.fresh{background:var(--green-bg);color:var(--green);}
 .badge.normal{background:#eef1e4;color:#6b7a4a;}
 .badge.ageing{background:var(--amber-bg);color:var(--amber);}
@@ -839,7 +836,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-09-28.26';
+const APP_VERSION = '2026-08-24.25';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1629,24 +1626,17 @@ async function handleSapUpload(file){
   const sheet = wb.Sheets[wb.SheetNames[0]];
   const raw = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
   if(!raw.length) throw new Error('This file has no rows.');
-  let header = raw[0];
-  let headerIdx = 0;
-  // NEW (alternate format): SAP MB52 export. Used ONLY when the file has no
-  // "Current Stock" column (i.e. it is not the existing format). Reads
-  // Material, Material Description, Plant, Base Unit of Measure and
-  // "Unrestricted" (= current stock). Existing format is untouched.
-  const MB52_STOCK_NAMES = ['Unrestricted','Unrestricted Use','Unrestricted-Use Stock'];
-  let isMb52 = false;
-  if(findCol(header, ['Current Stock'])===-1){
-    for(let i=0;i<Math.min(raw.length,15);i++){
-      if(findCol(raw[i], ['Material'])>-1 && findCol(raw[i], MB52_STOCK_NAMES)>-1){ header = raw[i]; headerIdx = i; isMb52 = true; break; }
-    }
-  }
+  const header = raw[0];
   const cPlant = findCol(header, ['Plant']);
   const cMaterial = findCol(header, ['Material']);
   const cDesc = findCol(header, ['Material Description']);
+  // Second accepted format — SAP's MB52 (stock overview) export: "Base
+  // Unit of Measure" instead of "A UoM", "Unrestricted" instead of
+  // "Current Stock". MB52 has no Approved/Pending Order or Safety Stock
+  // columns at all, which is fine — those just come back null/0 below,
+  // same as any file missing them.
   const cUom = findCol(header, ['A UoM','UoM','UOM','Base Unit of Measure']);
-  const cStock = isMb52 ? findCol(header, MB52_STOCK_NAMES) : findCol(header, ['Current Stock']);
+  const cStock = findCol(header, ['Current Stock','Unrestricted']);
   const cApproved = findCol(header, ['Approved Order']);
   const cPending = findCol(header, ['Unpproved Order','Unapproved Order','Un-approved Order']);
   // Safety Stock (Column M in the standard export) — CNF × product-code
@@ -1656,16 +1646,16 @@ async function handleSapUpload(file){
   // rare item this column is blank/missing for.
   const cSafety = findCol(header, ['Safety Stock']);
   if(cMaterial===-1 || cDesc===-1 || cStock===-1){
-    throw new Error('Missing expected columns — need Material, Material Description and Current Stock (or, for SAP MB52 file: Material, Material Description, Unrestricted).');
+    throw new Error('Missing expected columns — need at least Material, Material Description, and Current Stock (or, in an MB52 export, Unrestricted).');
   }
-  let rows = raw.slice(headerIdx+1)
+  let rows = raw.slice(1)
     .filter(r=>r[cMaterial]!=='' && r[cMaterial]!==undefined)
     .map(r=>({
       plant: cPlant>-1 ? String(r[cPlant]).trim() : '',
       code: String(r[cMaterial]).trim(),
       name: String(r[cDesc]).trim() || ('Material '+r[cMaterial]),
       uom: cUom>-1 ? String(r[cUom]).trim() : '',
-      currentStockKg: isMb52 ? (Number(String(r[cStock]).replace(/,/g,''))||0) : (Number(r[cStock])||0),
+      currentStockKg: Number(r[cStock])||0,
       approvedOrder: cApproved>-1 ? (Number(r[cApproved])||0) : 0,
       pendingOrder: cPending>-1 ? (Number(r[cPending])||0) : 0,
       safetyStockKg: cSafety>-1 ? (Number(r[cSafety])||0) : null
@@ -1677,32 +1667,35 @@ async function handleSapUpload(file){
   // else: no rows tagged with this CNF's plant code — fall back to using every row in the file
   // rather than blocking the CNF, since plant coding can vary by export.
 
-  // MB52 only: the same material can appear on several lines (e.g. one line
-  // with Unrestricted stock and another with only Transit stock, or one per
-  // batch/storage location). Add up Unrestricted for the same material
-  // instead of dropping the later lines.
-  if(isMb52){
-    const merged = new Map();
-    rows.forEach(r=>{
-      if(merged.has(r.code)) merged.get(r.code).currentStockKg += r.currentStockKg;
-      else merged.set(r.code, {...r});
-    });
-    rows = Array.from(merged.values());
-  }
-
   // Material code is the single source of truth for what a row IS — if the
   // same code appears more than once in the export (a real, if uncommon,
   // SAP export data-quality issue), only the FIRST occurrence is kept.
   // Silently accepting duplicates would double-list the same product in
   // the entry screen and double-count it in the KPI totals.
-  const seenCodes = new Set();
-  const duplicateCodes = [];
-  rows = rows.filter(r=>{
-    if(seenCodes.has(r.code)){ duplicateCodes.push(r.code); return false; }
-    seenCodes.add(r.code);
-    return true;
+  const mergedByCode = {};
+  const codeOrder = [];
+  let duplicateLineCount = 0;
+  rows.forEach(r=>{
+    const existing = mergedByCode[r.code];
+    if(!existing){
+      mergedByCode[r.code] = Object.assign({}, r);
+      codeOrder.push(r.code);
+      return;
+    }
+    duplicateLineCount++;
+    // Quantities are additive across split lines for the same material —
+    // this is what makes a 0/3000 + 1980/0 pair correctly add up to 1980,
+    // not silently lose the 1980.
+    existing.currentStockKg += r.currentStockKg;
+    existing.approvedOrder += r.approvedOrder;
+    existing.pendingOrder += r.pendingOrder;
+    // Safety Stock is a NORM, not a quantity — never sum it. Whichever
+    // line actually had one wins; if neither did, it stays null (falls
+    // back to Product Master's default, same as any file lacking it).
+    if(existing.safetyStockKg==null && r.safetyStockKg!=null) existing.safetyStockKg = r.safetyStockKg;
   });
-  if(duplicateCodes.length) showToast(`⚠ ${duplicateCodes.length} duplicate material code(s) in this file — kept the first occurrence of each, ignored the rest.`);
+  rows = codeOrder.map(c=>mergedByCode[c]);
+  if(duplicateLineCount) showToast(`ℹ ${duplicateLineCount} material(s) appeared on more than one line in this file (common in SAP stock-overview exports) — combined into one total each.`);
 
   // Auto-create any material not already in the product master — no manual
   // mapping needed. Category is inferred from the Product Master you've
@@ -1909,7 +1902,7 @@ function NewVersionBanner(){
 function BackendErrorBanner(){
   if(!state.backendError) return '';
   return `<div style="background:#3a1f19;border-bottom:1px solid #6b3a2f;color:#f0c9c0;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
-    ⚠ Backend connection failed — showing local/demo data, not live Sheet data. <span style="opacity:.85;">${state.backendError}</span>
+    ⚠ Backend connection failed — showing local/demo data, not live Sheet data. <span style="opacity:.85;">${state.backendError}</span> · <b>If this persists, contact IT: 1800-121-0144</b>
     ${state.role==='admin' ? ' · <span class="linklike" data-adminnav="api" style="cursor:pointer;">Check API Connection →</span>' : ''}
   </div>`;
 }
@@ -2351,7 +2344,7 @@ async function tryLogin(userId, password, remember){
   }catch(e){
     state.backendConnected = false;
     state.backendError = String((e&&e.message)||e);
-    state.loginError = `Backend connection failed, so your password can't be checked against the live Sheet right now — this may not be a wrong password. Reason: ${state.backendError}`;
+    state.loginError = `Backend connection failed, so your password can't be checked against the live Sheet right now — this may not be a wrong password. Reason: ${state.backendError}. If this persists, contact IT: 1800-121-0144`;
     return {ok:false};
   }
   return tryLoginOnce_(userId, password, remember);
@@ -2384,7 +2377,7 @@ function SyncFailureModal(){
       <div class="confirm-row"><span>Submission ID</span><b>${info.subId}</b></div>
       <div class="confirm-row" style="border:none;"><span style="color:var(--red);">Reason</span></div>
       <p style="font-family:var(--mono);font-size:11.5px;background:var(--red-bg);color:var(--red);padding:8px 10px;border-radius:8px;margin:2px 0 12px;word-break:break-word;">${info.error}</p>
-      <p style="color:var(--ink-soft);font-size:12px;">It will retry automatically in the background and whenever you reopen the app. If this keeps happening, show this exact message to Admin — it usually means the backend connection needs attention.</p>
+      <p style="color:var(--ink-soft);font-size:12px;">It will retry automatically in the background and whenever you reopen the app. If this keeps happening, show this exact message to Admin — it usually means the backend connection needs attention. <b>Contact IT: 1800-121-0144</b></p>
       <div style="display:flex;gap:8px;margin-top:14px;">
         <button class="btn btn-ghost btn-block" id="btnDismissSyncFail">OK</button>
         <button class="btn btn-primary btn-block" id="btnRetrySyncNow">Retry Now</button>
@@ -2647,8 +2640,7 @@ function SapUploadGate(){
     <input type="file" id="sapFileInput" accept=".xlsx,.xls" style="display:none;">
     <button class="btn btn-primary" id="btnChooseSapFile">Choose SAP Current Stock file (.xlsx)</button>
     <div id="sapUploadErr" style="color:var(--red);font-size:12.5px;margin-top:10px;min-height:16px;"></div>
-    <div class="sap-gate-note">Expected columns: <b>Plant</b>, <b>Material</b>, <b>Material Description</b>, <b>A UoM</b>, <b>Current Stock</b> (kg), <b>Safety Stock</b> (kg, Column M) — same format as SAP's export. No manual mapping needed; products, and this CNF's own safety norms, are picked up automatically from the file.</div>
-    <div class="sap-gate-note" style="margin-top:6px;"><b>Or</b> upload the SAP <b>MB52</b> export — columns read: <b>Material</b>, <b>Material Description</b>, <b>Plant</b>, <b>Base Unit of Measure</b>, <b>Unrestricted</b> (= current stock). Same material on multiple lines is added up. This format has no Safety Stock column, so the Product Master fallback safety figure is used.</div>
+    <div class="sap-gate-note">Expected columns: <b>Plant</b>, <b>Material</b>, <b>Material Description</b>, <b>A UoM</b>/<b>Base Unit of Measure</b>, <b>Current Stock</b>/<b>Unrestricted</b> (kg), <b>Safety Stock</b> (kg, Column M, when present) — accepts either the standard SAP export or an MB52 stock-overview export. No manual mapping needed; products, and this CNF's own safety norms, are picked up automatically from the file.</div>
     <div class="sap-gate-note" style="margin-top:6px;">Safety Stock is specific to this CNF and product code — whatever's in Column M of this file is what every report will show for this submission, not a shared number across CNFs.</div>
   </div>
   `;
@@ -2861,7 +2853,7 @@ function VarianceReasonModal_(){
         const diff = roundedDiffKg(entered, r.currentStockKg);
         return `<div style="padding:10px 4px;border-bottom:1px solid rgba(255,255,255,.08);">
           <div style="font-size:13px;font-weight:600;">${r.name || (p&&p.name) || r.code} <span style="font-family:var(--mono);font-size:10.5px;font-weight:400;color:var(--wheat-dim);">${r.code}${p?' · '+p.category:''}</span></div>
-          <div style="font-family:var(--mono);font-size:13.5px;font-weight:600;color:var(--ink);margin:2px 0 6px;">SAP ${fmtKg(r.currentStockKg)}kg · Entered ${fmtKg(entered)}kg · Diff ${diff>0?'+':''}${fmtKg(diff)}kg</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);margin:2px 0 6px;">SAP ${fmtKg(r.currentStockKg)}kg · Entered ${fmtKg(entered)}kg · Diff ${diff>0?'+':''}${fmtKg(diff)}kg</div>
           <input type="text" data-modalreasoncode="${r.code}" placeholder="e.g. Damage, unrecorded dispatch, counting error…" value="${state.varianceReasons[r.code]||''}" style="width:100%;padding:8px 10px;border-radius:7px;border:1px solid var(--line);box-sizing:border-box;">
         </div>`;
       }).join('') || `<div style="padding:16px 4px;text-align:center;color:var(--wheat-dim);">✓ All resolved — you can close this and submit.</div>`}
@@ -4964,7 +4956,96 @@ function MisExport(){
     <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Exports the current filtered stock view (respects CNF / category / status filters above) as CSV — includes original UOM, converted kg, MFD, ageing status and safety stock status.</p>
     <button class="btn btn-primary" id="btnExportCsv">⬇ Export Filtered Stock (CSV)</button>
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Approved / Pending Orders — Bulk Upload</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Same file format each CNF uploads for their own stock — <b>Plant</b>, <b>Material</b>, <b>Approved Order</b>, <b>Unpproved Order</b> columns — except this one covers every CNF at once (the <b>Plant</b> column on each row says which CNF it belongs to). Only the Approved/Pending Order figures on each CNF's current stock are updated — nothing else about their submission changes.</p>
+    <input type="file" id="ordersUploadFile" accept=".xlsx,.xls" style="display:none;">
+    <button class="btn btn-primary" id="btnUploadOrders">⬆ Upload Approved/Pending Orders (All CNFs)</button>
+    <div id="ordersUploadProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Email Broadcast</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Sends every active CNF their own current-stock report right now — the same .xlsx attachment they'd get automatically at submission time, with any ageing-flagged lines highlighted in the body. Goes out under the "Full Submission Report" rule in Admin → Email Configuration, so its To/Cc settings there (e.g. always Cc a manager) apply here too.</p>
+    <button class="btn btn-primary" id="btnEmailBroadcast">📧 Email Broadcast — Send All CNF Reports Now</button>
+    <div id="broadcastProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>`;
+}
+
+// Parses the SAME file format each CNF's own SAP upload does (Plant,
+// Material, Approved Order, Unpproved Order) — the only difference is this
+// one is expected to carry rows for MANY CNFs (many different Plant
+// values) in a single file, whereas a CNF's own upload only ever has its
+// own. Only these two figures are ever pulled from it; anything else in
+// the file (Current Stock, Safety Stock, etc.) is irrelevant here and
+// ignored, since those still come only from each CNF's own submission.
+async function parseOrdersBulkFile(file){
+  if(typeof XLSX === 'undefined') throw new Error('Excel reader failed to load — check your internet connection and try again.');
+  const buf = await readFileAsArrayBuffer(file);
+  const wb = XLSX.read(buf, {type:'array'});
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json(sheet, {header:1, defval:''});
+  if(!raw.length) throw new Error('This file has no rows.');
+  const header = raw[0];
+  const cPlant = findCol(header, ['Plant']);
+  const cMaterial = findCol(header, ['Material']);
+  const cApproved = findCol(header, ['Approved Order']);
+  const cPending = findCol(header, ['Unpproved Order','Unapproved Order','Un-approved Order']);
+  if(cPlant===-1 || cMaterial===-1){
+    throw new Error('Missing expected columns — need at least Plant and Material.');
+  }
+  if(cApproved===-1 && cPending===-1){
+    throw new Error('Missing expected columns — need Approved Order and/or Unpproved Order to update anything.');
+  }
+  const rows = raw.slice(1)
+    .filter(r=>r[cMaterial]!=='' && r[cMaterial]!==undefined && r[cPlant]!=='' && r[cPlant]!==undefined)
+    .map(r=>({
+      cnfCode: String(r[cPlant]).trim(),
+      productCode: String(r[cMaterial]).trim(),
+      approvedOrder: cApproved>-1 ? (Number(r[cApproved])||0) : null,
+      pendingOrder: cPending>-1 ? (Number(r[cPending])||0) : null,
+    }));
+  if(!rows.length) throw new Error('No rows found in this file.');
+  return rows;
+}
+
+// Sends every active CNF's current report right now, on demand — the exact
+// same .xlsx-attachment + ageing-highlight email a CNF's own Final Submit
+// triggers automatically, just fired in a batch by MIS instead of waiting
+// for each CNF's next submission. Reuses the same builders (and the same
+// backend action) as that CNF-side flow so there is only ever one way this
+// report gets built, never a second, separately-computed version.
+async function broadcastReportsToAllCnfs(onProgress){
+  const activeCnfs = state.masters.cnfs.filter(c=>c.status==='Active');
+  const targets = activeCnfs.map(c=>({cnf:c, sub: latestSubmissionFor(c.code)})).filter(t=>t.sub);
+  if(!targets.length) return {sent:0, failed:0, skipped:0, total:0};
+  let sent=0, failed=0;
+  for(let i=0;i<targets.length;i++){
+    const {cnf, sub} = targets[i];
+    if(onProgress) onProgress(i+1, targets.length, cnf.name);
+    try{
+      const detailedReport = buildDetailedReportRows(sub);
+      const wb = await buildXlsxWorkbook({
+        title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
+        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
+      });
+      const buffer = await wb.xlsx.writeBuffer();
+      const xlsxBase64 = arrayBufferToBase64(buffer);
+      const ageingTable = buildAgeingHighlightTableHtml(sub);
+      const result = await apiPost('sendSubmissionReport', {
+        report: {
+          cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: sub.date,
+          itemCount: sub.items.length, fileName: detailedReport.filename, xlsxBase64,
+          ageingTableHtml: ageingTable.html, ageingCount: ageingTable.count,
+        },
+      });
+      if(result && result.ok) sent++; else failed++;
+    }catch(e){ failed++; }
+  }
+  return {sent, failed, skipped: activeCnfs.length-targets.length, total: targets.length};
 }
 
 /* ---------------- CSV export ---------------- */
@@ -6257,6 +6338,59 @@ function bindGlobal(){
   if(misStatus) misStatus.onchange = ()=>{ state.misFilters.status = misStatus.value; render(); };
   const btnExport = document.getElementById('btnExportCsv');
   if(btnExport) btnExport.onclick = runExport;
+
+  // Approved/Pending Orders — bulk upload (all CNFs at once)
+  const btnUploadOrders = document.getElementById('btnUploadOrders');
+  const ordersUploadFile = document.getElementById('ordersUploadFile');
+  if(btnUploadOrders && ordersUploadFile){
+    btnUploadOrders.onclick = ()=>ordersUploadFile.click();
+    ordersUploadFile.onchange = async ()=>{
+      const file = ordersUploadFile.files[0];
+      ordersUploadFile.value = '';
+      if(!file) return;
+      const prog = document.getElementById('ordersUploadProg');
+      if(prog){ prog.style.display='block'; prog.textContent = 'Reading file…'; }
+      try{
+        const rows = await parseOrdersBulkFile(file);
+        if(prog) prog.textContent = `Updating ${rows.length} row(s) on the server…`;
+        const result = await apiPost('updateOrders', {rows});
+        if(prog) prog.style.display='none';
+        if(result && result.ok){
+          showToast(`✓ Updated ${result.updated} item(s)${result.notFound?` — ${result.notFound} row(s) skipped (that CNF/product hasn't submitted stock yet)`:''}`);
+          await forceSyncMasters(); // pulls the updated Approved/Pending figures back into state.submissions
+          render();
+        } else {
+          showToast(`⚠ ${(result && result.error) || 'Update failed — check Email Log / try again'}`);
+        }
+      }catch(e){
+        if(prog) prog.style.display='none';
+        showToast(`⚠ ${(e&&e.message)||'Could not read that file'}`);
+      }
+    };
+  }
+
+  // Email Broadcast — every active CNF's current report, sent now
+  const btnEmailBroadcast = document.getElementById('btnEmailBroadcast');
+  if(btnEmailBroadcast) btnEmailBroadcast.onclick = async ()=>{
+    const activeCount = state.masters.cnfs.filter(c=>c.status==='Active').length;
+    if(!confirm(`Send every active CNF (${activeCount}) their current stock report by email now? This uses the "Full Submission Report" rule's To/Cc settings in Email Configuration.`)) return;
+    const prog = document.getElementById('broadcastProg');
+    btnEmailBroadcast.disabled = true;
+    if(prog) prog.style.display='block';
+    try{
+      const result = await broadcastReportsToAllCnfs((i,total,name)=>{
+        if(prog) prog.textContent = `Sending ${i}/${total} — ${name}…`;
+      });
+      if(prog) prog.style.display='none';
+      btnEmailBroadcast.disabled = false;
+      if(!result.total){ showToast('No CNF has a current submission to email yet'); return; }
+      showToast(`✓ Broadcast done — ${result.sent} sent${result.failed?`, ${result.failed} failed`:''}${result.skipped?`, ${result.skipped} CNF(s) skipped (no submission yet)`:''}`);
+    }catch(e){
+      if(prog) prog.style.display='none';
+      btnEmailBroadcast.disabled = false;
+      showToast(`⚠ ${(e&&e.message)||'Broadcast failed'}`);
+    }
+  };
 
   // Per-screen quick exports (respect current filters, no trip to Export Centre needed)
   const btnExportStockTable = document.getElementById('btnExportStockTable');
