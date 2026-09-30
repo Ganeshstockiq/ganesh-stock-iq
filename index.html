@@ -836,7 +836,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.25';
+const APP_VERSION = '2026-08-24.26';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -902,17 +902,22 @@ async function apiGet(action, params){
   // every request after it. Rather than surface that as a hard failure and
   // make someone manually retry, this gives it one more try automatically
   // — by then the cache is usually warm.
-  try{
+  const fetchAndParse = async ()=>{
     const res = await withTimeout(fetch(url), 25000);
-    const data = await res.json();
+    const rawText = await res.text();
+    let data;
+    // Same reasoning as apiPost: a parse failure here means the response
+    // wasn't JSON at all — an HTML error page from a stale/broken
+    // deployment, not anything doPost/doGet's own try/catch would produce.
+    try{ data = JSON.parse(rawText); }
+    catch(parseErr){
+      throw new Error(`Server did not return valid data (likely a stale or broken Apps Script deployment — redeploy Code.gs and re-check the API URL). Raw response: ${rawText.slice(0,200)}`);
+    }
     if(data && data.error) throw new Error(data.error);
     return data;
-  }catch(e){
-    const res = await withTimeout(fetch(url), 25000);
-    const data = await res.json();
-    if(data && data.error) throw new Error(data.error);
-    return data;
-  }
+  };
+  try{ return await fetchAndParse(); }
+  catch(e){ return await fetchAndParse(); }
 }
 // Converts a binary ArrayBuffer (an in-memory .xlsx, in this app's case)
 // to a base64 string for JSON transport to Apps Script, which expects
@@ -943,7 +948,20 @@ async function apiPost(action, payload){
     headers:{'Content-Type':'text/plain;charset=utf-8'}, // avoids CORS preflight against Apps Script
     body: JSON.stringify(Object.assign({action}, payload||{}))
   }), 25000);
-  const data = await res.json();
+  // A "JSON fail"/parse-error here almost always means the response wasn't
+  // JSON at all — most commonly an HTML error page from Apps Script itself
+  // (a stale/broken deployment URL, an authorization page, or the script
+  // failing to even start) rather than anything doPost's own try/catch
+  // could have produced, since that always returns real JSON. Surfacing
+  // the raw response text (not just "invalid JSON") turns an opaque
+  // browser parse error into something that immediately says "redeploy/
+  // reconnect the backend" instead of looking like a bug in this action.
+  const rawText = await res.text();
+  let data;
+  try{ data = JSON.parse(rawText); }
+  catch(parseErr){
+    throw new Error(`Server did not return valid data (likely a stale or broken Apps Script deployment — redeploy Code.gs and re-check the API URL). Raw response: ${rawText.slice(0,200)}`);
+  }
   if(data && data.error) throw new Error(data.error);
   return data;
 }
@@ -5108,20 +5126,29 @@ async function runExport(){
   const prog = document.getElementById('exportProg');
   const stages = ['Preparing Data…','Filtering…','Applying UOM Conversion…','Calculating Ageing…','Building Summary…','Formatting Report…'];
   prog.style.display='block';
-  for(let i=0;i<stages.length;i++){
-    prog.textContent = `${stages[i]}  ${Math.round((i+1)/stages.length*100)}%`;
-    await new Promise(r=>setTimeout(r, 220));
+  try{
+    for(let i=0;i<stages.length;i++){
+      prog.textContent = `${stages[i]}  ${Math.round((i+1)/stages.length*100)}%`;
+      await new Promise(r=>setTimeout(r, 220));
+    }
+    const rows = filteredRows();
+    const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
+    const summaryRows = buildMisPivotSummaryRows(rows);
+    const wb = await buildXlsxWorkbook({
+      title: 'CNF Stock Export',
+      subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}`,
+      headers, rows: dataRows,
+      summaryRows, statusColIndex
+    });
+    await downloadRealXlsx(`cnf-stock-export-${todayISO()}`, wb);
+    prog.style.display='none';
+  }catch(e){
+    // Same silent-failure class fixed on the CNF side — this used to leave
+    // the progress bar stuck at "Formatting Report… 100%" forever with no
+    // file and no explanation if the build ever threw.
+    prog.style.display='none';
+    showToast(`⚠ Export failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
   }
-  const rows = filteredRows();
-  const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
-  const summaryRows = buildMisPivotSummaryRows(rows);
-  const wb = await buildXlsxWorkbook({
-    title: 'CNF Stock Export',
-    subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}`,
-    headers, rows: dataRows,
-    summaryRows, statusColIndex
-  });
-  await downloadRealXlsx(`cnf-stock-export-${todayISO()}`, wb);
 }
 
 /* ---------------- Toast ---------------- */
@@ -5305,13 +5332,17 @@ function bindGlobal(){
   if(btnExportCnfReport) btnExportCnfReport.onclick = async ()=>{
     const sub = latestSubmissionFor(state.cnfUser.code);
     if(!sub) return;
-    const report = buildDetailedReportRows(sub);
-    const wb = await buildXlsxWorkbook({
-      title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
-      subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-      headers: report.headers, rows: report.rows, statusColIndex: report.statusColIndex,
-    });
-    await saveOrDownloadRealXlsx(report.filename, wb);
+    try{
+      const report = buildDetailedReportRows(sub);
+      const wb = await buildXlsxWorkbook({
+        title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
+        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        headers: report.headers, rows: report.rows, statusColIndex: report.statusColIndex,
+      });
+      await saveOrDownloadRealXlsx(report.filename, wb);
+    }catch(e){
+      showToast(`⚠ Could not build that report (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
   };
   const btnChooseFolder = document.getElementById('btnChooseFolder');
   if(btnChooseFolder) btnChooseFolder.onclick = async ()=>{
@@ -5322,14 +5353,20 @@ function bindGlobal(){
   document.querySelectorAll('[data-exportsub]').forEach(el=>el.onclick=async ()=>{
     const sub = state.submissions.find(s=>s.id===el.dataset.exportsub && s.cnfCode===state.cnfUser.code);
     if(!sub) return;
-    const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason'];
-    const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
-    const wb = await buildXlsxWorkbook({
-      title: `${state.cnfUser.name} (${state.cnfUser.code}) — Stock Submission`,
-      subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-      headers, rows,
-    });
-    await downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
+    try{
+      const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason'];
+      const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
+      const wb = await buildXlsxWorkbook({
+        title: `${state.cnfUser.name} (${state.cnfUser.code}) — Stock Submission`,
+        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        headers, rows,
+      });
+      await downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
+    }catch(e){
+      // Same silent-failure class as the auto-download after Final Submit —
+      // this used to throw with nothing shown to the CNF at all.
+      showToast(`⚠ Could not build that report (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
   });
 
   // Submit screen interactions — stock is ALWAYS today's physical stock.
@@ -5598,7 +5635,27 @@ function bindGlobal(){
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
         headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
       });
-      detailedWbPromise.then(detailedWb=>saveOrDownloadRealXlsx(detailedReport.filename, detailedWb));
+      // No .catch() here before was a real bug: if building this workbook
+      // ever threw (a bad value, a library hiccup, ExcelJS failing to load
+      // that moment), the failure was a silent, unhandled promise
+      // rejection — nothing shown to the CNF at all, so "the report just
+      // didn't download" had no visible reason and no way to retry short
+      // of re-submitting. The submission itself is never at risk either
+      // way (it's already saved before this even starts) — this only ever
+      // affects the LOCAL copy, so failing loudly here, with a retry, is
+      // pure upside.
+      detailedWbPromise
+        .then(detailedWb=>saveOrDownloadRealXlsx(detailedReport.filename, detailedWb))
+        .catch(e=>{
+          showToast(`⚠ Your local report couldn't be generated (${(e&&e.message)||e}) — the submission itself is safely saved. Tap to retry the download.`, ()=>{
+            buildXlsxWorkbook({
+              title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
+              subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+              headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
+            }).then(wb=>saveOrDownloadRealXlsx(detailedReport.filename, wb))
+              .catch(e2=>showToast(`⚠ Still failing (${(e2&&e2.message)||e2}) — contact IT: 1800-121-0144`));
+          });
+        });
       const backendOn = !!getApiUrl();
       showToast(backendOn ? 'Stock submitted — syncing…' : 'Stock submitted successfully (local demo mode)');
       if(backendOn){
