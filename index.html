@@ -843,7 +843,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.28';
+const APP_VERSION = '2026-08-24.29';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -4985,7 +4985,7 @@ function MisExport(){
 
   <div class="panel-card">
     <h4>Approved / Pending Orders — Merged Report</h4>
-    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Same file format each CNF uploads for their own stock — <b>Plant</b>, <b>Material</b>, <b>Approved Order</b>, <b>Unpproved Order</b> columns — except this one covers every CNF at once (the <b>Plant</b> column on each row says which CNF it belongs to). This never touches the Google Sheet or anyone's actual submission — it only fills the Approved/Pending Order columns into a fresh copy of the same export "Export Filtered Stock" already produces, entirely in your browser, for you to save wherever you like. Nothing is uploaded to the server; close the tab and it's gone, same as any other export.</p>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Same file format each CNF uploads for their own stock — <b>Plant</b>, <b>Material</b>, <b>Approved Order</b>, <b>Unpproved Order</b> columns — except this one covers every CNF at once (the <b>Plant</b> column on each row says which CNF it belongs to). Matching is by <b>Plant (CNF code) + Material</b>, ignoring the leading zeros SAP pads material codes with (<code>000000000000100342</code> = <code>100342</code>), and Approved/Pending come only from this file. This never touches the Google Sheet or anyone's actual submission — it only fills the Approved/Pending Order columns into a fresh copy of the same export "Export Filtered Stock" already produces, entirely in your browser, for you to save wherever you like. Nothing is uploaded to the server; close the tab and it's gone, same as any other export.</p>
     <input type="file" id="ordersUploadFile" accept=".xlsx,.xls" style="display:none;">
     <button class="btn btn-primary" id="btnUploadOrders">⬆ Upload Approved/Pending Orders File</button>
     <span id="ordersLoadedHint" style="margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);${state.pendingOrdersOverride?'':'display:none;'}">${state.pendingOrdersOverride?`✓ ${state.pendingOrdersOverride.count} row(s) loaded from ${state.pendingOrdersOverride.fileName}`:''}</span>
@@ -5030,20 +5030,43 @@ async function parseOrdersBulkFile(file){
     .filter(r=>r[cMaterial]!=='' && r[cMaterial]!==undefined && r[cPlant]!=='' && r[cPlant]!==undefined)
     .map(r=>({
       cnfCode: String(r[cPlant]).trim(),
-      productCode: String(r[cMaterial]).trim(),
+      productCode: normalizeMaterialCode(r[cMaterial]),
       approvedOrder: cApproved>-1 ? (Number(r[cApproved])||0) : null,
       pendingOrder: cPending>-1 ? (Number(r[cPending])||0) : null,
     }));
   if(!rows.length) throw new Error('No rows found in this file.');
   return rows;
 }
+// SAP stores a material number zero-padded out to 18 characters
+// ("000000000000100342"), while this app's stock rows and Product Master
+// use the plain number ("100342"). Compared as-is the two never match —
+// which is exactly why Approved/Pending came out blank or wrong for almost
+// every product. Everything before the first non-zero digit is padding,
+// not part of the code, so it's dropped on both sides before comparing. A
+// code that is nothing but zeros stays "0" rather than becoming empty.
+function normalizeMaterialCode(v){
+  const s = String(v==null?'':v).trim();
+  if(!s) return '';
+  return s.replace(/^0+/, '') || '0';
+}
 // Turns the parsed rows into a {cnfCode+'||'+productCode: row} lookup —
 // what the merged export below actually reads from, keyed the same way
 // the export's own rows are matched against it.
 function buildOrdersLookup(rows){
   const lookup = {};
-  rows.forEach(r=>{ lookup[r.cnfCode+'||'+r.productCode] = r; });
-  return lookup;
+  let duplicateLines = 0;
+  const round3 = n => Math.round(n*1000)/1000;
+  rows.forEach(r=>{
+    const key = r.cnfCode+'||'+r.productCode;
+    const ex = lookup[key];
+    if(!ex){ lookup[key] = {approvedOrder:r.approvedOrder, pendingOrder:r.pendingOrder}; return; }
+    // The same plant+material on more than one line is a split (e.g. by
+    // storage location), not a repeat — the orders on each line add up.
+    duplicateLines++;
+    if(r.approvedOrder!=null) ex.approvedOrder = round3((ex.approvedOrder||0) + r.approvedOrder);
+    if(r.pendingOrder!=null) ex.pendingOrder = round3((ex.pendingOrder||0) + r.pendingOrder);
+  });
+  return {lookup, duplicateLines};
 }
 // The whole point of this feature: a plain export — same headers, same
 // builder (buildMisExportRows) as "Export Filtered Stock" already uses —
@@ -5058,16 +5081,27 @@ function buildMergedOrdersExportRows(rows, lookup){
   const prodCodeIdx = headers.indexOf('Product Code');
   const apprIdx = headers.indexOf('Approved Order');
   const pendIdx = headers.indexOf('Pending Order');
+  let matched = 0, unmatched = 0;
   const mergedRows = dataRows.map(row=>{
-    const key = String(row[cnfCodeIdx])+'||'+String(row[prodCodeIdx]);
+    const key = String(row[cnfCodeIdx]).trim()+'||'+normalizeMaterialCode(row[prodCodeIdx]);
     const match = lookup[key];
-    if(!match) return row;
     const copy = row.slice();
-    if(match.approvedOrder!=null) copy[apprIdx] = match.approvedOrder;
-    if(match.pendingOrder!=null) copy[pendIdx] = match.pendingOrder;
+    // These two columns come ONLY from the uploaded file. A CNF/product the
+    // file doesn't list has no order on record there, so it shows 0 — not
+    // whatever figure happened to be sitting in that CNF's own submission,
+    // which would mix two different sources into one column.
+    if(match){
+      matched++;
+      copy[apprIdx] = match.approvedOrder!=null ? match.approvedOrder : 0;
+      copy[pendIdx] = match.pendingOrder!=null ? match.pendingOrder : 0;
+    } else {
+      unmatched++;
+      copy[apprIdx] = 0;
+      copy[pendIdx] = 0;
+    }
     return copy;
   });
-  return {headers, dataRows: mergedRows, statusColIndex: headers.indexOf('Ageing Status')};
+  return {headers, dataRows: mergedRows, statusColIndex: headers.indexOf('Ageing Status'), matched, unmatched};
 }
 
 // Sends every active CNF's current report right now, on demand — the exact
@@ -6455,9 +6489,10 @@ function bindGlobal(){
       if(prog){ prog.style.display='block'; prog.textContent = 'Reading file…'; }
       try{
         const rows = await parseOrdersBulkFile(file);
-        state.pendingOrdersOverride = { count: rows.length, fileName: file.name, lookup: buildOrdersLookup(rows) };
+        const built = buildOrdersLookup(rows);
+        state.pendingOrdersOverride = { count: rows.length, fileName: file.name, lookup: built.lookup };
         if(prog) prog.style.display='none';
-        showToast(`✓ ${rows.length} row(s) loaded — click "Export Report" to download it with Approved/Pending filled in`);
+        showToast(`✓ ${rows.length} row(s) loaded${built.duplicateLines?` (${built.duplicateLines} split line(s) added together)`:''} — click "Export Report" to download it with Approved/Pending filled in`);
         render();
       }catch(e){
         if(prog) prog.style.display='none';
@@ -6470,7 +6505,7 @@ function bindGlobal(){
     if(!state.pendingOrdersOverride) return;
     try{
       const rows = filteredRows();
-      const {headers, dataRows, statusColIndex} = buildMergedOrdersExportRows(rows, state.pendingOrdersOverride.lookup);
+      const {headers, dataRows, statusColIndex, matched, unmatched} = buildMergedOrdersExportRows(rows, state.pendingOrdersOverride.lookup);
       const summaryRows = buildMisPivotSummaryRows(rows);
       const wb = await buildXlsxWorkbook({
         title: 'CNF Stock Export — Approved/Pending Orders Filled',
@@ -6478,6 +6513,7 @@ function bindGlobal(){
         headers, rows: dataRows, summaryRows, statusColIndex,
       });
       await downloadRealXlsx(`cnf-stock-export-orders-filled-${todayISO()}`, wb);
+      showToast(`✓ Report downloaded — ${matched} row(s) filled from the file${unmatched?`, ${unmatched} not listed in it (shown as 0)`:''}`);
     }catch(e){
       showToast(`⚠ Export failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
     }
