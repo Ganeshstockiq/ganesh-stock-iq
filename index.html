@@ -706,9 +706,12 @@ const state = {
   newVersionAvailable: false, // set by checkForNewVersion() after login
   movementFilters: null, // {cnf:'ALL', fromDate, toDate} — initialized lazily so todayISO() is available
   backupPreview: null,      // parsed Sheet backup waiting for Admin to confirm — {fileName, parsed, stats}; never persisted
-  backupOptions: {masters:true, users:true, stock:true},
+  backupOptions: {masters:true, users:true, stock:true, supabase:true},
   lastImportResult: null,   // summary card shown after an import
   importedBackup: null,     // {fileName, importedAt, newestStockDate} — which backup this device is currently carrying, if any
+  reportDbDownAt: null,       // when the reporting database last failed to answer (reads fall back to the Sheet for a minute)
+  reportStaleAt: null,        // when a write to the reporting copy last failed — Supabase may be behind the Sheet
+  reportSync: null,           // last 'Sheet → Supabase' sync: {at, summary}
   lastRefreshFailedAt: null, // so a server that just failed to answer isn't made to time out again on every export
   allHistoryLoaded: false,
   misSubDetail: null, // submission ID — MIS's read-only submission-detail popup from Movement & History
@@ -871,7 +874,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.34';
+const APP_VERSION = '2026-10-06.1';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -898,12 +901,60 @@ async function checkForNewVersion(){
 // at a different backend); "Disconnect" is remembered explicitly so it
 // doesn't just snap back to this default.
 const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzu5mehQ-8pPVTHUv-sLig90Sl6Q0A9tlCuQU6u0Bb24_EJaZfBLpwzyKRheToproAIhg/exec';
+// Which kind of backend a URL points at. A Supabase project URL looks like
+// https://abcdxyz.supabase.co ; anything else is treated as a Google Apps Script
+// web app, exactly as before.
+function isSupabaseUrl(u){ return /^https:\/\/[a-z0-9-]+\.supabase\.(co|in)\/?$/i.test(String(u||'').trim()); }
+// Paste the project's PUBLIC key here (Supabase → Project Settings → API Keys →
+// the "publishable" key, or the legacy "anon" key) and the project URL into
+// DEFAULT_API_URL above, then re-host this file: every device then connects to
+// Supabase with no per-device setup. The public key is designed to sit in a page
+// like this one — what it can do is limited by the database, not by hiding it.
+const DEFAULT_SUPABASE_KEY = 'sb_publishable_XrjxDHti52Uy-ejzUPq3PQ_mxBXHyWA';
+function getSupabaseKey(){
+  try{ return localStorage.getItem(LS_PREFIX+'supabaseKey') || DEFAULT_SUPABASE_KEY || ''; }
+  catch(e){ return DEFAULT_SUPABASE_KEY || ''; }
+}
+function setSupabaseKey(k){
+  try{ if(k) localStorage.setItem(LS_PREFIX+'supabaseKey', k); else localStorage.removeItem(LS_PREFIX+'supabaseKey'); }catch(e){}
+}
 function getApiUrl(){
   try{
     if(localStorage.getItem(LS_PREFIX+'apiDisconnected')==='1') return '';
-    return localStorage.getItem(LS_PREFIX+'apiUrl') || DEFAULT_API_URL || '';
+    const stored = localStorage.getItem(LS_PREFIX+'apiUrl');
+    // Once the hosted file's built-in backend is Supabase, a device that had an old
+    // Apps Script URL saved from before must not keep using it forever — the built-in
+    // one wins. (Pointing a device at a different Supabase project still works.)
+    if(stored && isSupabaseUrl(DEFAULT_API_URL) && !isSupabaseUrl(stored)) return DEFAULT_API_URL;
+    return stored || DEFAULT_API_URL || '';
   }catch(e){ return DEFAULT_API_URL || ''; }
 }
+// ---- Hybrid: saves still go to the Google Sheet; REPORTS read from Supabase ----
+// Dashboards, analytics and exports used to ask the Sheet (through Apps Script) for
+// everything, every time — which is what was timing out. In hybrid mode the same screens
+// read from a Supabase copy that answers in milliseconds, while the Sheet stays the
+// place a CNF's submission is stored. Bake the project URL below (with
+// DEFAULT_SUPABASE_KEY above) and re-host: every device then reports from Supabase.
+const DEFAULT_REPORT_URL = 'https://rndiesjmqriumqosjwts.supabase.co';
+function getReportUrl(){
+  try{ return localStorage.getItem(LS_PREFIX+'reportUrl') || DEFAULT_REPORT_URL || ''; }
+  catch(e){ return DEFAULT_REPORT_URL || ''; }
+}
+function setReportUrl(u){
+  try{ if(u) localStorage.setItem(LS_PREFIX+'reportUrl', u); else localStorage.removeItem(LS_PREFIX+'reportUrl'); }catch(e){}
+}
+// The Supabase project in use: the main backend if that IS Supabase, otherwise the reporting database.
+function getSupabaseBase(){
+  const a = getApiUrl();
+  if(isSupabaseUrl(a)) return String(a).replace(/\/+$/,'');
+  const r = getReportUrl();
+  return isSupabaseUrl(r) ? String(r).replace(/\/+$/,'') : '';
+}
+function hasSupabase(){ return !!(getSupabaseBase() && getSupabaseKey()); }
+function isSupabaseMode(){ return isSupabaseUrl(getApiUrl()); }                                   // Supabase is the ONLY backend
+function isHybridMode(){ const a = getApiUrl(); return !!a && !isSupabaseUrl(a) && hasSupabase(); } // saves → Sheet, reports ← Supabase
+function usesSupabase(){ return isSupabaseMode() || isHybridMode(); }
+function backendName(){ return usesSupabase() ? 'Supabase' : 'the Google Sheet'; }
 function setApiUrl(url){
   try{
     if(url){ localStorage.setItem(LS_PREFIX+'apiUrl', url); localStorage.removeItem(LS_PREFIX+'apiDisconnected'); }
@@ -918,13 +969,68 @@ function setApiUrl(url){
 // the one read that has to build the response straight from the Sheet
 // tabs instead of a warm cache, and the one case most likely to occasionally
 // need every bit of that room.
+// Text from the server can arrive as a WHOLE HTML PAGE (an error or quota page
+// from Google instead of our JSON). Dropped raw into an error message and then
+// into the page, one unclosed <title>/<style> in it swallowed everything below
+// the banner — the blank white screen. Two defences: errors only ever carry a
+// plain-text digest (title + readable words, never markup), and every place an
+// error is drawn escapes it anyway.
+function responseDigest(raw){
+  const s = String(raw==null?'':raw);
+  if(!s.trim()) return '(empty response — the server sent nothing back)';
+  const title = ((s.match(/<title[^>]*>([\s\S]*?)<\/title>/i)||[])[1]||'').replace(/\s+/g,' ').trim();
+  const text = s
+    .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi,' ')
+    .replace(/<[^>]*>?/g,' ')
+    .replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+    .replace(/\s+/g,' ').trim();
+  const out = (title ? `[${title}] ` : '') + text;
+  return out ? out.slice(0,220) : '(a web page with no readable text)';
+}
+function escapeHtml(v){
+  return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 function withTimeout(promise, ms){
   return Promise.race([
     promise,
     new Promise((_,reject)=>setTimeout(()=>reject(new Error('Request timed out')), ms))
   ]);
 }
-async function apiGet(action, params, opts){
+// Everything the Apps Script backend did is one door on Supabase: the
+// app_call(action, payload) function in supabase_schema.sql. Same action names,
+// same JSON shapes — so nothing else in the app needed to learn a new protocol.
+const SUPABASE_EMAIL_ACTIONS = ['sendTestEmail','sendOverdueReminders','sendSubmissionReport'];
+async function supabaseCall(action, payload, timeoutMs){
+  if(SUPABASE_EMAIL_ACTIONS.includes(action)){
+    // Sending email was Apps Script's job (Gmail); the Supabase backend stores the settings
+    // but does not send yet. Answered locally — no point uploading a 1 MB attachment to refuse it.
+    throw new Error('Email sending is not available on the Supabase backend yet — use the Email Broadcaster app for now.');
+  }
+  const base = getSupabaseBase();
+  if(!base) throw new Error('No Supabase project URL is set — add it under Admin → API Connection.');
+  const key = getSupabaseKey();
+  if(!key) throw new Error('Supabase is selected but no public API key is set — add it under Admin → API Connection.');
+  const headers = {'Content-Type':'application/json', 'apikey':key};
+  // Legacy anon keys are JWTs and are also sent as a Bearer token; the newer "publishable"
+  // keys are not JWTs and must go in the apikey header only.
+  if(/^eyJ/.test(key)) headers['Authorization'] = 'Bearer '+key;
+  const res = await withTimeout(fetch(base+'/rest/v1/rpc/app_call', {
+    method:'POST', headers, body: JSON.stringify({p_action:action, p_payload:payload||{}})
+  }), timeoutMs||25000);
+  const rawText = await res.text();
+  let data;
+  try{ data = JSON.parse(rawText); }
+  catch(parseErr){ throw new Error(`Supabase did not return valid data (HTTP ${res.status}). What it sent: ${responseDigest(rawText)}`); }
+  if(!res.ok){
+    // PostgREST error object: {code, message, details, hint}
+    const msg = data && (data.message || data.error);
+    throw new Error(msg ? String(msg)+(data.hint?` — ${data.hint}`:'') : `Supabase error (HTTP ${res.status})`);
+  }
+  if(data && data.error) throw new Error(data.error);
+  return data;
+}
+// The Google Apps Script path (the Sheet) — exactly what apiGet always was.
+async function appsScriptGet(action, params, opts){
   const apiUrl = getApiUrl();
   if(!apiUrl) return null;
   const qs = new URLSearchParams(Object.assign({action}, params||{})).toString();
@@ -946,7 +1052,7 @@ async function apiGet(action, params, opts){
     // deployment, not anything doPost/doGet's own try/catch would produce.
     try{ data = JSON.parse(rawText); }
     catch(parseErr){
-      throw new Error(`Server did not return valid data (likely a stale or broken Apps Script deployment — redeploy Code.gs and re-check the API URL). Raw response: ${rawText.slice(0,200)}`);
+      throw new Error(`Server did not return valid data (likely a stale or broken Apps Script deployment — redeploy Code.gs and re-check the API URL). What the server sent: ${responseDigest(rawText)}`);
     }
     if(data && data.error) throw new Error(data.error);
     return data;
@@ -972,7 +1078,7 @@ function arrayBufferToBase64(buffer){
   }
   return btoa(binary);
 }
-async function apiPost(action, payload, timeoutMs){
+async function appsScriptPost(action, payload, timeoutMs){
   const apiUrl = getApiUrl();
   if(!apiUrl) throw new Error('No backend configured');
   // Deliberately NO automatic retry here, unlike apiGet — a POST can have a
@@ -998,11 +1104,59 @@ async function apiPost(action, payload, timeoutMs){
   let data;
   try{ data = JSON.parse(rawText); }
   catch(parseErr){
-    throw new Error(`Server did not return valid data (likely a stale or broken Apps Script deployment — redeploy Code.gs and re-check the API URL). Raw response: ${rawText.slice(0,200)}`);
+    throw new Error(`Server did not return valid data (likely a stale or broken Apps Script deployment — redeploy Code.gs and re-check the API URL). What the server sent: ${responseDigest(rawText)}`);
   }
   if(data && data.error) throw new Error(data.error);
   return data;
 }
+
+// ---- who answers what ----
+// Reads that feed dashboards/reports come from Supabase in hybrid mode. If Supabase can't
+// answer (down, paused, or simply not filled yet), the old Sheet path answers instead — so
+// switching to hybrid can never leave anyone unable to log in or see data.
+const HYBRID_READS = ['bootstrap','allSubmissions','cnfSubmissions','allMessages','messagesForCnf'];
+// Writes made by Admin/MIS that the reporting copy must also learn about (best effort; the
+// Sheet is the one that has to succeed). A CNF's submission is handled separately in syncSubmission.
+const HYBRID_MIRRORED_WRITES = ['saveMasters','addProducts','sendMessage'];
+function reportDbRecentlyDown(){ return !!(state.reportDbDownAt && Date.now()-state.reportDbDownAt < 60000); }
+function markReportStale(why){ state.reportStaleAt = Date.now(); lsSet('reportStaleAt', {at:state.reportStaleAt, why:String(why||'').slice(0,200)}); }
+function mirrorToSupabase(action, payload){
+  supabaseCall(action, payload, 30000).catch(e=>markReportStale(`${action}: ${(e&&e.message)||e}`));
+}
+async function apiGet(action, params, opts){
+  const apiUrl = getApiUrl();
+  if(!apiUrl) return null;
+  if(isSupabaseUrl(apiUrl)){
+    const tms = (opts && opts.timeoutMs) || 25000;
+    if(opts && opts.retry===false) return await supabaseCall(action, params, tms);
+    try{ return await supabaseCall(action, params, tms); }
+    catch(e){ return await supabaseCall(action, params, tms); } // reads are safe to retry once
+  }
+  if(isHybridMode() && HYBRID_READS.includes(action) && !reportDbRecentlyDown()){
+    try{
+      // Supabase answers in milliseconds, so it gets a short leash — a slow one is a broken one.
+      const data = await supabaseCall(action, params, Math.min((opts && opts.timeoutMs) || 25000, 15000));
+      if(action==='bootstrap' && !(((data && data.masters && data.masters.cnfs) || []).length)){
+        return await appsScriptGet(action, params, opts); // not filled yet — fall back, don't strand logins
+      }
+      state.reportDbDownAt = null;
+      return data;
+    }catch(e){
+      state.reportDbDownAt = Date.now();                  // don't make every call wait out the same failure
+      return await appsScriptGet(action, params, opts);
+    }
+  }
+  return await appsScriptGet(action, params, opts);
+}
+async function apiPost(action, payload, timeoutMs){
+  const apiUrl = getApiUrl();
+  if(!apiUrl) throw new Error('No backend configured');
+  if(isSupabaseUrl(apiUrl)) return await supabaseCall(action, payload, timeoutMs); // no auto-retry for writes
+  const result = await appsScriptPost(action, payload, timeoutMs);                   // the Sheet first — it must succeed
+  if(isHybridMode() && HYBRID_MIRRORED_WRITES.includes(action)) mirrorToSupabase(action, payload);
+  return result;
+}
+
 
 // Master data is treated as a STATIC, locally-cached set for speed — a CNF
 // opening their dashboard should never wait on a network round-trip just to
@@ -1056,6 +1210,7 @@ async function loadAll(){
     state.submissions = normalizeSubmissionList(lsGet('submissions') || []);
     state.currentSnapshots = lsGet('currentSnapshots') || {};   // MIS/Admin's merged per-CNF picture — without this a reload would forget it
     state.importedBackup = lsGet('importedBackup') || null;
+    state.reportSync = lsGet('reportSync') || null;
     state.loaded = true;
     startFakeProgress(['Restoring your session…']);
     let restored = null;
@@ -1195,9 +1350,39 @@ async function saveMasters(){
 // automatic retry if the device is offline right now. Returns a result
 // so the caller can decide whether silence is OK (it's usually fine, in
 // the background) or whether the person needs to actually be told.
+// Hybrid save: the SAME submission goes to the Google Sheet (where it is stored) and to the
+// Supabase reporting copy (so dashboards see it at once), both at the same time. Each side has
+// its own retry list, filled BEFORE sending and emptied only when that side confirms — so a closed
+// tab, a flaky network or a slow Apps Script can't make a submission vanish from either.
+// The CNF is told it worked if at least one side confirmed: a submission that is safely in the
+// database is not a failed submission just because the Sheet is slow, and its Sheet copy keeps
+// retrying on its own. Both sides are idempotent by submission id, so a retry never doubles it.
+function queueAdd_(key, sub){ const q = lsGet(key) || []; if(!q.some(x=>x.id===sub.id)){ q.push(sub); lsSet(key, q); } }
+function queueRemove_(key, id){ lsSet(key, (lsGet(key)||[]).filter(x=>x.id!==id)); }
+async function syncSubmissionHybrid_(sub){
+  queueAdd_('pendingSubmissions', sub);
+  queueAdd_('pendingSupabaseSubs', sub);
+  const confirmed = v => !!(v && v.ok===true);
+  const sheetP = appsScriptPost('addSubmission', {submission: sub}).then(v=>({ok:confirmed(v), v}), e=>({ok:false, e}));
+  const supaP  = supabaseCall('addSubmission', {submission: sub}, 25000).then(v=>({ok:confirmed(v), v}), e=>({ok:false, e}));
+  sheetP.then(r=>{ if(r.ok) queueRemove_('pendingSubmissions', sub.id); });
+  supaP.then(r=>{ if(r.ok){ queueRemove_('pendingSupabaseSubs', sub.id); } else markReportStale('a submission could not be saved to Supabase yet'); });
+  const supa = await supaP;
+  let sheet;
+  if(supa.ok){
+    // Safe in the database already — give the Sheet a few seconds, but never make the CNF stare at a slow Sheet.
+    sheet = await Promise.race([sheetP, new Promise(r=>setTimeout(()=>r(null), 4000))]);
+    return {ok:true, sheetPending: !(sheet && sheet.ok), reportPending:false};
+  }
+  sheet = await sheetP;
+  if(sheet.ok) return {ok:true, sheetPending:false, reportPending:true};
+  return {ok:false, offline:false, error: (sheet.e && sheet.e.message) || (supa.e && supa.e.message) || 'Neither the Google Sheet nor the reporting database confirmed the save.'};
+}
+
 async function syncSubmission(sub){
   lsSet('submissions', state.submissions);
   if(!getApiUrl()) return {ok:false, offline:true, error:'No backend connected — running in Local Demo Mode.'};
+  if(isHybridMode()) return await syncSubmissionHybrid_(sub);
   try{
     const result = await apiPost('addSubmission', {submission: sub});
     if(!result || result.ok!==true) throw new Error('Server responded but did not confirm the save — response: '+JSON.stringify(result));
@@ -1417,7 +1602,7 @@ async function saveOrDownloadRealXlsx(filenameBase, wb){
   await downloadRealXlsx(filenameBase, wb);
 }
 
-async function flushPendingQueue(){
+async function flushSheetQueue_(){
   if(!getApiUrl()) return;
   const queue = lsGet('pendingSubmissions') || [];
   if(!queue.length) return;
@@ -1426,11 +1611,29 @@ async function flushPendingQueue(){
     try{
       const result = await apiPost('addSubmission', {submission: sub});
       if(!result || result.ok!==true) throw new Error('Server did not confirm the save.');
+      if(isHybridMode()) queueAdd_('pendingSupabaseSubs', sub);   // saved to the Sheet — make sure the reporting copy has it too
     }catch(e){ remaining.push(sub); }
   }
   lsSet('pendingSubmissions', remaining);
   if(remaining.length !== queue.length) showToast('✓ Synced pending submissions to server');
   return {synced: queue.length-remaining.length, stillPending: remaining.length};
+}
+// The reporting-database retry list. Runs wherever the Sheet's does.
+async function flushSupabaseQueue_(){
+  if(!isHybridMode()) return;
+  const queue = lsGet('pendingSupabaseSubs') || [];
+  if(!queue.length) return;
+  for(const sub of queue){
+    try{
+      const r = await supabaseCall('addSubmission', {submission: sub}, 25000);
+      if(r && r.ok===true) queueRemove_('pendingSupabaseSubs', sub.id);
+    }catch(e){ markReportStale('pending submissions could not reach Supabase'); break; } // the same failure will repeat — try again next round
+  }
+}
+async function flushPendingQueue(){
+  const sheet = await flushSheetQueue_();
+  try{ await flushSupabaseQueue_(); }catch(e){}
+  return sheet;
 }
 if(typeof window!=='undefined' && window.addEventListener) window.addEventListener('online', flushPendingQueue);
 // Belt-and-braces on top of the 'online' event: rural/mobile connections
@@ -1985,14 +2188,14 @@ function NewVersionBanner(){
 // to the red failure banner. It now also requires that the last attempt
 // actually worked.
 function liveStatusLabel(){
-  if(state.backendConnected && !state.backendError) return '<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>';
+  if(state.backendConnected && !state.backendError) return `<span style="color:var(--green);">· ● LIVE — ${isHybridMode()?'reports from Supabase, saves to the Google Sheet':isSupabaseMode()?'synced to Supabase':'synced to your Google Sheet'}</span>`;
   if(state.backendConnected) return '<span style="color:var(--red);">· ● NOT CONNECTED — showing the last data loaded</span>';
   return '<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>';
 }
 function BackendErrorBanner(){
   if(!state.backendError) return '';
   return `<div style="background:#3a1f19;border-bottom:1px solid #6b3a2f;color:#f0c9c0;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
-    ⚠ Backend connection failed — ${dataSourceNote() ? `showing ${dataSourceNote()}, which may be out of date` : 'showing local/demo data, not live Sheet data'}. <span style="opacity:.85;">${state.backendError}</span> · <b>If this persists, contact IT: 1800-121-0144</b>
+    ⚠ Backend connection failed — ${dataSourceNote() ? `showing ${dataSourceNote()}, which may be out of date` : `showing local/demo data, not live ${usesSupabase()?'Supabase':'Sheet'} data`}. <span style="opacity:.85;">${escapeHtml(state.backendError)}</span> · <b>If this persists, contact IT: 1800-121-0144</b>
     ${state.role==='admin' ? ' · <span class="linklike" data-adminnav="api" style="cursor:pointer;">Check API Connection →</span>' : ''}
   </div>`;
 }
@@ -2188,7 +2391,7 @@ function UnifiedLoginScreen(){
       <div class="field"><label>User ID</label><input id="loginUserId" placeholder="e.g. 3100" autocomplete="username"></div>
       <div class="field"><label>Password</label>${PasswordField('loginPw', {autocomplete:'current-password'})}</div>
       <div class="field-check"><label><input type="checkbox" id="loginRemember" checked> Remember me on this device</label></div>
-      ${state.loginError ? `<p style="color:var(--red);font-size:12.5px;margin:-6px 0 14px;font-weight:600;">🔒 ${state.loginError}</p>` : ''}
+      ${state.loginError ? `<p style="color:var(--red);font-size:12.5px;margin:-6px 0 14px;font-weight:600;">🔒 ${escapeHtml(state.loginError)}</p>` : ''}
       <button class="btn btn-primary btn-block" id="btnUnifiedLogin">Login</button>
       <p class="hint" style="margin-top:16px;text-align:center;">Login not working? Your device may be holding an old cached copy of the CNF/user list — <span class="linklike" id="btnClearCacheLogin" style="cursor:pointer;">clear cached data &amp; reload</span>.</p>
     </div>
@@ -2434,7 +2637,7 @@ async function tryLogin(userId, password, remember){
   }catch(e){
     state.backendConnected = false;
     state.backendError = String((e&&e.message)||e);
-    state.loginError = `Backend connection failed, so your password can't be checked against the live Sheet right now — this may not be a wrong password. Reason: ${state.backendError}. If this persists, contact IT: 1800-121-0144`;
+    state.loginError = `Backend connection failed, so your password can't be checked against the live ${usesSupabase()?'Supabase database':'Sheet'} right now — this may not be a wrong password. Reason: ${state.backendError}. If this persists, contact IT: 1800-121-0144`;
     return {ok:false};
   }
   return tryLoginOnce_(userId, password, remember);
@@ -2466,7 +2669,7 @@ function SyncFailureModal(){
       <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Your stock submission is <b>safe</b> — it's saved on this device and a backup CSV was just downloaded automatically. But it could not reach the server just now, so <b>it will not show up in Admin/MIS until it syncs</b>.</p>
       <div class="confirm-row"><span>Submission ID</span><b>${info.subId}</b></div>
       <div class="confirm-row" style="border:none;"><span style="color:var(--red);">Reason</span></div>
-      <p style="font-family:var(--mono);font-size:11.5px;background:var(--red-bg);color:var(--red);padding:8px 10px;border-radius:8px;margin:2px 0 12px;word-break:break-word;">${info.error}</p>
+      <p style="font-family:var(--mono);font-size:11.5px;background:var(--red-bg);color:var(--red);padding:8px 10px;border-radius:8px;margin:2px 0 12px;word-break:break-word;">${escapeHtml(info.error)}</p>
       <p style="color:var(--ink-soft);font-size:12px;">It will retry automatically in the background and whenever you reopen the app. If this keeps happening, show this exact message to Admin — it usually means the backend connection needs attention. <b>Contact IT: 1800-121-0144</b></p>
       <div style="display:flex;gap:8px;margin-top:14px;">
         <button class="btn btn-ghost btn-block" id="btnDismissSyncFail">OK</button>
@@ -3682,6 +3885,89 @@ function parseBackupStockSheet(wb, name){
   return {groups:Array.from(groups.values()), lineCount:lines.length, badKg};
 }
 
+// "Google Sheet → Supabase": reads everything from the Sheet through Apps Script (the slow path —
+// done here once, patiently, instead of on every dashboard load) and writes it into Supabase.
+// Safe to repeat. A submission already in Supabase that is newer than the Sheet's copy of that CNF
+// is kept (importCurrent never moves a CNF backwards). If the Sheet can't be read in time, the
+// "Import Backup" route with a downloaded .xlsx does the same job without Apps Script.
+async function syncSheetToSupabase(onProgress){
+  const say = t=>{ if(onProgress) onProgress(t); };
+  if(!hasSupabase()) throw new Error('Add the Supabase URL and public key first.');
+  say('Step 1/4 — reading masters and current stock from the Google Sheet… (can take a minute)');
+  const boot = await appsScriptGet('bootstrap', null, {retry:false, timeoutMs:120000});
+  const masters = normalizeMasters(boot.masters);
+  if(!(masters.cnfs||[]).length) throw new Error('The Google Sheet returned no CNFs — nothing was synced.');
+  const snaps = normalizeSubmissionList(boot.latestSubmissions || []);
+  say('Step 2/4 — reading the full submission history from the Google Sheet…');
+  let history = null, historyError = null;
+  try{
+    const h = await appsScriptGet('allSubmissions', null, {retry:false, timeoutMs:180000});
+    history = dedupeResentSubmissions(normalizeSubmissionList(h.submissions || [])); // repeated saves counted once
+  }catch(e){ historyError = (e && e.message) || String(e); }
+  say('Step 3/4 — saving masters to Supabase…');
+  await supabaseCall('saveMasters', {masters}, 60000);
+  const out = {cnfs:masters.cnfs.length, products:masters.products.length, submissions:0, snapshots:0, historyError};
+  if(history){
+    let batch = [], lines = 0;
+    const flush = async ()=>{ if(!batch.length) return; say(`Step 4/4 — saving history… ${out.submissions}/${history.length} submissions`); const r = await supabaseCall('importSubmissions', {subs:batch}, 60000); out.submissions += (r && r.imported!=null) ? r.imported : batch.length; batch = []; lines = 0; };
+    for(const sub of history){ batch.push(sub); lines += sub.items.length; if(lines>=1500) await flush(); }
+    await flush();
+  }
+  {
+    let batch = [], lines = 0;
+    const flush = async ()=>{ if(!batch.length) return; say(`Step 4/4 — saving current stock… ${out.snapshots}/${snaps.length} CNFs`); await supabaseCall('importCurrent', {snaps:batch}, 60000); out.snapshots += batch.length; batch = []; lines = 0; };
+    for(const sn of snaps){ batch.push(sn); lines += sn.items.length; if(lines>=1500) await flush(); }
+    await flush();
+  }
+  state.reportSync = {at: Date.now(), summary: out};
+  lsSet('reportSync', state.reportSync);
+  if(!historyError){ state.reportStaleAt = null; lsSet('reportStaleAt', null); }
+  return out;
+}
+
+// Writes an imported backup into the connected Supabase database, in small requests
+// (a few hundred lines each) so none of them is slow or large. Masters are UPSERTED from the
+// file only — never the whole local masters object, which on a fresh device can carry demo
+// CNFs and demo logins that must never reach the real database. Everything is safe to re-run.
+async function pushBackupToSupabase(parsed, opts, onProgress){
+  const say = t=>{ if(onProgress) onProgress(t); };
+  const out = {masters:null, subs:{sent:0,total:0}, current:{replaced:0,kept:0,total:0}};
+  if(opts.masters || opts.users){
+    const mp = {};
+    if(opts.masters){ mp.cnfs = parsed.masters.cnfs; mp.products = parsed.masters.products; mp.categories = parsed.masters.categories; mp.categorySelfLife = parsed.masters.categorySelfLife; }
+    if(opts.users){ mp.adminUsers = parsed.masters.adminUsers; mp.misUsers = parsed.masters.misUsers; }
+    say('Saving masters to Supabase…');
+    out.masters = await supabaseCall('importMasters', mp, 60000);
+  }
+  if(opts.stock && parsed.history){
+    const subs = parsed.history.subs; out.subs.total = subs.length;
+    let batch = [], lines = 0;
+    const flush = async ()=>{
+      if(!batch.length) return;
+      say(`Saving history to Supabase… ${out.subs.sent}/${subs.length} submissions`);
+      const r = await supabaseCall('importSubmissions', {subs:batch}, 60000);
+      out.subs.sent += (r && r.imported!=null) ? r.imported : batch.length;
+      batch = []; lines = 0;
+    };
+    for(const sub of subs){ batch.push(sub); lines += sub.items.length; if(lines>=1500) await flush(); }
+    await flush();
+  }
+  if(opts.stock && parsed.current){
+    const snaps = Object.values(parsed.current.snaps); out.current.total = snaps.length;
+    let batch = [], lines = 0;
+    const flush = async ()=>{
+      if(!batch.length) return;
+      say(`Saving current stock to Supabase… ${out.current.replaced+out.current.kept}/${snaps.length} CNFs`);
+      const r = await supabaseCall('importCurrent', {snaps:batch}, 60000);
+      out.current.replaced += (r && r.replaced) || 0; out.current.kept += (r && r.kept) || 0;
+      batch = []; lines = 0;
+    };
+    for(const sn of snaps){ batch.push(sn); lines += sn.items.length; if(lines>=1500) await flush(); }
+    await flush();
+  }
+  return out;
+}
+
 function parseBackupWorkbook(wb){
   const masters = parseBackupMasters(wb);
   const hist = parseBackupStockSheet(wb, 'Submissions');
@@ -3834,6 +4120,8 @@ function BackupPreviewCard(pv){
     </table></div>
     ${ign ? `<p style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin:10px 0 0;">Ignored as template title/header/blank rows — ${ign}.</p>` : ''}
     ${(h&&h.badKg)||(c&&c.badKg) ? `<p style="font-family:var(--mono);font-size:11px;color:var(--orange);margin:6px 0 0;">⚠ ${(h?h.badKg:0)+(c?c.badKg:0)} stock line(s) had a non-numeric KG quantity and were counted as 0.</p>` : ''}
+    ${hasSupabase() ? `<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;cursor:pointer;"><input type="checkbox" data-bkopt="supabase" ${o.supabase?'checked':''}> <b>Also save this into the Supabase database</b> <span style="color:var(--ink-soft);">— makes it the live data for every device, not only this browser. Only what is ticked above is sent; nothing in the database is deleted.</span></label>` : ''}
+    <div id="backupPushProg" style="margin-top:10px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
     <div class="small-btn-row" style="margin-top:14px;">
       <button class="btn btn-primary btn-sm" id="btnApplyBackup">Import now</button>
       <button class="btn btn-ghost btn-sm" id="btnCancelBackup">Cancel</button>
@@ -3850,6 +4138,9 @@ function BackupResultCard(lr){
     ${r.users ? line('Admin users', r.users.admin) + line('MIS users', r.users.mis) : ''}
     ${r.stock && r.stock.subs ? line('Submissions', r.stock.subs, ` · ${Number(r.stock.subs.removedLines).toLocaleString('en-IN')} repeated lines dropped`) : ''}
     ${r.stock && r.stock.snaps ? line('Current stock (CNFs)', r.stock.snaps, r.stock.snaps.kept?` · ${r.stock.snaps.kept} kept (already newer here)`:'') : ''}
+    ${lr.push ? (lr.push.error
+      ? `<p style="font-size:12.5px;margin:12px 0 0;color:var(--red);">⚠ Saved on this device, but writing to Supabase failed: ${escapeHtml(lr.push.error)}. Nothing is lost — fix the connection and run this import again (it is safe to repeat).</p>`
+      : `<p style="font-size:12.5px;margin:12px 0 0;color:var(--green);">✓ Saved to Supabase${lr.push.masters?` — masters ${lr.push.masters.cnfs} CNFs, ${lr.push.masters.products} products`:''}${lr.push.subs.total?` · ${lr.push.subs.sent} submissions`:''}${lr.push.current.total?` · current stock for ${lr.push.current.total} CNFs${lr.push.current.kept?` (${lr.push.current.kept} already newer there, kept)`:''}`:''}.</p>`) : ''}
     <p style="font-size:12.5px;margin:12px 0 0;color:${warn?'var(--orange)':'var(--green)'};">${
       !warn ? '✓ Saved on this device — it will still be here after a reload or a restart, with or without the internet.'
       : `⚠ This browser's storage could not hold everything: ${r.persist.masters===false?'masters not saved; ':''}${r.persist.snapshots===false?'current stock not saved; ':''}${hist==='recent'?'history saved for the last 45 days only; ':''}${hist==='none'?'history is available for this session only; ':''}— the rest is saved.`}</p>
@@ -3876,6 +4167,34 @@ function AdminImport(){
   ${state.lastImportResult ? BackupResultCard(state.lastImportResult) : ''}`;
 }
 
+function ReportingDbCard(){
+  const on = isHybridMode(), rs = state.reportSync;
+  const stale = state.reportStaleAt && (!rs || state.reportStaleAt > rs.at);
+  const sm = rs && rs.summary;
+  return `<div class="panel-card">
+    <h4>Reporting database (Supabase) <span style="font-family:var(--mono);font-size:9px;color:var(--wheat-dim);text-transform:none;letter-spacing:0;font-weight:400;">fast dashboards, reports and exports</span></h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;line-height:1.6;">Saves keep going to the Google Sheet exactly as before. Dashboards, analytics and exports read from a Supabase copy instead, so they load in a moment and the Sheet is no longer asked for everything every time. If Supabase can't answer, the app quietly falls back to the Sheet.</p>
+    <div class="formgrid" style="grid-template-columns:1fr;">
+      <div class="fg"><label>Supabase project URL</label><input type="text" id="reportUrlInput" placeholder="https://xxxxxxxx.supabase.co" value="${escapeHtml(getReportUrl())}"></div>
+      <div class="fg"><label>Supabase public key — the "publishable" or "anon" key; it is meant to be public</label><input type="text" id="reportKeyInput" placeholder="sb_publishable_…  or  eyJ…" value="${escapeHtml(getSupabaseKey())}"></div>
+    </div>
+    <div class="small-btn-row">
+      <button class="btn btn-primary btn-sm" id="btnSaveReport">Save</button>
+      <button class="btn btn-ghost btn-sm" id="btnTestReport">Test Supabase</button>
+      <button class="btn btn-dark btn-sm" id="btnSyncSheetToSupabase" ${on?'':'disabled title="Save the Supabase URL and key first"'}>⟳ Sync Google Sheet → Supabase now</button>
+    </div>
+    <div id="reportTestResult" style="font-family:var(--mono);font-size:12px;color:var(--wheat-dim);margin-top:8px;white-space:pre-wrap;"></div>
+    <div id="reportSyncProg" style="font-family:var(--mono);font-size:12px;color:var(--wheat-dim);margin-top:8px;display:none;"></div>
+    <hr class="hr">
+    <div class="drow" style="border:none;padding:4px 0;"><span style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);text-transform:uppercase;">Status</span>
+      <b style="font-family:var(--mono);font-size:13px;color:${on?'var(--green)':'var(--orange)'}">${on ? '● Active — reports read from Supabase' : '● Not active — reports still read from the Google Sheet'}</b></div>
+    <div class="drow" style="border:none;padding:4px 0;"><span style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);text-transform:uppercase;">Last Sheet → Supabase sync</span>
+      <b style="font-family:var(--mono);font-size:13px;">${rs ? fmtWhen(rs.at) : 'never'}</b></div>
+    ${sm ? `<p style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin:4px 0 0;">${sm.cnfs} CNFs · ${sm.products} products · ${sm.submissions} submissions · current stock for ${sm.snapshots} CNFs${sm.historyError?` · <span style="color:var(--orange);">history could not be read from the Sheet (${escapeHtml(sm.historyError).slice(0,120)})</span>`:''}</p>` : ''}
+    ${stale ? `<p style="font-size:12px;color:var(--orange);margin:8px 0 0;">⚠ A recent save could not reach Supabase, so it may be slightly behind the Sheet. Run the sync above to catch it up.</p>` : ''}
+    <p style="font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin:10px 0 0;line-height:1.6;">First time: fill Supabase from a downloaded copy of the Sheet with <b>Import Backup</b> (fastest, works even if the Sheet is slow), or press the sync button. After that, every CNF submission is written to both at the same moment.</p>
+  </div>`;
+}
 function AdminApi(){
   const apiUrl = getApiUrl();
   const isDefault = apiUrl === DEFAULT_API_URL;
@@ -3887,8 +4206,11 @@ function AdminApi(){
     </p>
     ${isDefault ? `<p style="background:var(--green-bg);color:var(--green);font-size:12.5px;padding:8px 10px;border-radius:8px;margin:0 0 12px;">✓ Using the built-in backend URL — this is correct for normal use, nothing to change here.</p>` : ''}
     <div class="formgrid" style="grid-template-columns:1fr;">
-      <div class="fg"><label>Apps Script Web App URL (ends in /exec)</label>
-        <input type="text" id="apiUrlInput" placeholder="https://script.google.com/macros/s/XXXXXXXX/exec" value="${apiUrl}">
+      <div class="fg"><label>Backend URL — a Supabase project URL (https://xxxx.supabase.co) or a Google Apps Script web app URL (ends in /exec)</label>
+        <input type="text" id="apiUrlInput" placeholder="https://xxxxxxxx.supabase.co" value="${apiUrl}">
+      </div>
+      <div class="fg" id="apiKeyField" style="${isSupabaseUrl(apiUrl) ? '' : 'display:none;'}"><label>Supabase public key — the "publishable" or "anon" key; it is meant to be public</label>
+        <input type="text" id="apiKeyInput" placeholder="sb_publishable_…  or  eyJ…" value="${escapeHtml(getSupabaseKey())}">
       </div>
     </div>
     <div class="small-btn-row">
@@ -3900,9 +4222,10 @@ function AdminApi(){
     <div class="drow" style="border:none;padding:4px 0;"><span style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);text-transform:uppercase;">Status</span>
       <b style="font-family:var(--mono);font-size:13px;color:${state.backendConnected?'var(--green)':'var(--orange)'}">${state.backendConnected ? '● Connected' : '● Not connected — running in local demo mode'}</b>
     </div>
-    ${state.backendError ? `<div class="drow" style="border:none;padding:4px 0;"><span style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);text-transform:uppercase;">Last Error</span><b style="color:var(--red);font-size:12px;">${state.backendError}</b></div>` : ''}
+    ${state.backendError ? `<div class="drow" style="border:none;padding:4px 0;"><span style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);text-transform:uppercase;">Last Error</span><b style="color:var(--red);font-size:12px;">${escapeHtml(state.backendError)}</b></div>` : ''}
     <div id="apiTestResult" style="font-family:var(--mono);font-size:12px;color:var(--wheat-dim);margin-top:8px;"></div>
   </div>
+  ${isSupabaseUrl(apiUrl) ? '' : ReportingDbCard()}
   <div class="panel-card">
     <h4>Master Data Sync <span style="font-family:var(--mono);font-size:9px;color:var(--wheat-dim);text-transform:none;letter-spacing:0;font-weight:400;">for speed, CNFs/Admin/MIS don't re-pull this on every screen</span></h4>
     <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">CNFs, product list, categories, and self-life settings are cached on each device and treated as static — nobody waits on a network fetch just to see their dashboard. This device refreshes that cache automatically in the background at most once every 6 hours. Force it now if you've just made changes Admin needs everyone to see immediately (e.g. adding a CNF or product).</p>
@@ -5602,7 +5925,7 @@ function dataSourceNote(){
   const synced = Number(lsGet('masterSyncedAt')) || 0;
   const imp = state.importedBackup;
   if(imp && (imp.importedAt||0) >= synced) return `the imported backup "${imp.fileName}" (newest stock dated ${imp.newestStockDate||'unknown'})`;
-  if(synced) return `the data last loaded from the Sheet at ${fmtWhen(synced)}`;
+  if(synced) return `the data last loaded from ${backendName()} at ${fmtWhen(synced)}`;
   return null;
 }
 // The Overview's "Data as of" used to show only the last Sheet sync — so after
@@ -6896,6 +7219,8 @@ function bindGlobal(){
   const btnSaveApiUrl = document.getElementById('btnSaveApiUrl');
   if(btnSaveApiUrl) btnSaveApiUrl.onclick = async ()=>{
     const url = document.getElementById('apiUrlInput').value.trim();
+    const keyEl = document.getElementById('apiKeyInput');
+    if(isSupabaseUrl(url) && keyEl) setSupabaseKey(keyEl.value.trim());
     setApiUrl(url);
     showToast(url ? 'Connecting…' : 'Disconnected — using local demo mode');
     render();
@@ -6909,6 +7234,9 @@ function bindGlobal(){
     result.style.whiteSpace = 'normal';
     result.style.color = 'var(--wheat-dim)';
     const prevUrl = getApiUrl();
+    const prevKey = getSupabaseKey();
+    const typedKey = (document.getElementById('apiKeyInput')||{value:''}).value.trim();
+    if(isSupabaseUrl(url) && typedKey) setSupabaseKey(typedKey);
     setApiUrl(url);
     // Two separate, un-retried steps with a live timer. This used to call
     // apiGet twice, each waiting 25s and then silently retrying — so a dead
@@ -6917,31 +7245,34 @@ function bindGlobal(){
     // failures: the script never answering at all (wrong/dead URL, or
     // access not set to "Anyone") versus answering fine but being slow to
     // read the Sheet.
-    let stepLabel = 'Step 1/2 — contacting the script';
+    let stepLabel = 'Step 1/2 — contacting the server';
     const t0 = Date.now();
     const paint = ()=>{ result.textContent = `Testing… ${stepLabel} (${Math.round((Date.now()-t0)/1000)}s)`; };
     paint();
     const timer = setInterval(paint, 500);
     let pingMs = null;
     try{
-      const ping = await apiGet('ping', null, {retry:false, timeoutMs:20000});
+      const testCall = (a,pr,o)=> isSupabaseUrl(getApiUrl()) ? supabaseCall(a,pr,(o&&o.timeoutMs)||25000) : appsScriptGet(a,pr,o);
+      const ping = await testCall('ping', null, {retry:false, timeoutMs:20000});
       pingMs = Date.now()-t0;
       stepLabel = 'Step 2/2 — reading CNFs & products from the Sheet';
-      const boot = await apiGet('bootstrap', null, {retry:false, timeoutMs:45000});
+      const boot = await testCall('bootstrap', null, {retry:false, timeoutMs:45000});
       const totalS = ((Date.now()-t0)/1000).toFixed(1);
-      result.innerHTML = `✓ Connected to Google Sheet <b>"${ping.connectedSpreadsheet}"</b> — found ${(boot.masters.cnfs||[]).length} CNFs and ${(boot.masters.products||[]).length} products.<br><span style="font-family:var(--mono);font-size:10px;">Script answered in ${(pingMs/1000).toFixed(1)}s · data loaded in ${totalS}s total · Sheet ID: ${ping.spreadsheetId} · Tabs: ${(ping.sheets||[]).join(', ')}</span>`;
+      const sb = ping.backend==='supabase';
+      result.innerHTML = `✓ Connected to ${sb?'':'Google Sheet '}<b>"${escapeHtml(ping.connectedSpreadsheet)}"</b> — found ${(boot.masters.cnfs||[]).length} CNFs and ${(boot.masters.products||[]).length} products.<br><span style="font-family:var(--mono);font-size:10px;">${sb?'Database':'Script'} answered in ${(pingMs/1000).toFixed(1)}s · data loaded in ${totalS}s total · ${sb?'Database':'Sheet ID'}: ${escapeHtml(ping.spreadsheetId)} · ${sb?'Tables':'Tabs'}: ${escapeHtml((ping.sheets||[]).join(', '))}</span>`;
       result.style.color = 'var(--green)';
     }catch(e){
       const msg = String((e&&e.message)||e);
       let hint = '';
-      if(pingMs===null && /timed out/i.test(msg)) hint = 'The script did not answer at all within 20s — usually the URL is wrong or points to a deleted deployment, or the deployment access is not set to "Anyone".';
-      else if(pingMs!==null && /timed out/i.test(msg)) hint = `The script IS reachable (it answered in ${(pingMs/1000).toFixed(1)}s) but took over 45s to read the Sheet — that points at the Sheet/backend being slow, not the URL.`;
+      if(pingMs===null && /timed out/i.test(msg)) hint = 'The server did not answer at all within 20s — usually the URL is wrong or points to a deleted deployment, or the deployment access is not set to "Anyone".';
+      else if(pingMs!==null && /timed out/i.test(msg)) hint = `The server IS reachable (it answered in ${(pingMs/1000).toFixed(1)}s) but took over 45s to read the Sheet — that points at the Sheet/backend being slow, not the URL.`;
       else if(/failed to fetch|networkerror|load failed/i.test(msg)) hint = 'The browser could not reach it — check the URL, that deployment access is "Anyone", and your internet connection.';
       else if(/valid data/i.test(msg)) hint = 'The URL answered with a web page instead of data — a stale or broken deployment.';
       result.style.whiteSpace = 'pre-wrap';
-      result.textContent = `✗ Could not connect at ${pingMs===null?'step 1 (contacting the script)':'step 2 (reading the Sheet)'}: ${msg}${hint?'\n→ '+hint:''}\nIf it persists, contact IT: 1800-121-0144`;
+      result.textContent = `✗ Could not connect at ${pingMs===null?'step 1 (contacting the server)':'step 2 (reading the Sheet)'}: ${msg}${hint?'\n→ '+hint:''}\nIf it persists, contact IT: 1800-121-0144`;
       result.style.color = 'var(--red)';
       setApiUrl(prevUrl);
+      setSupabaseKey(prevKey);
     }finally{
       clearInterval(timer);
     }
@@ -6972,15 +7303,24 @@ function bindGlobal(){
     };
   }
   const btnApplyBackup = document.getElementById('btnApplyBackup');
-  if(btnApplyBackup) btnApplyBackup.onclick = ()=>{
+  if(btnApplyBackup) btnApplyBackup.onclick = async ()=>{
     const pv = state.backupPreview; if(!pv) return;
     const o = state.backupOptions;
     if(!o.masters && !o.users && !o.stock){ showToast('Tick at least one thing to import'); return; }
     try{
-      const result = applyBackupImport(pv.parsed, Object.assign({}, o), pv.fileName);
-      state.lastImportResult = {fileName:pv.fileName, when:Date.now(), result};
+      const result = applyBackupImport(pv.parsed, Object.assign({}, o), pv.fileName);   // this browser first — works with no network at all
+      let push = null;
+      if(o.supabase && hasSupabase()){
+        btnApplyBackup.disabled = true;
+        const prog = document.getElementById('backupPushProg');
+        const say = t=>{ if(prog){ prog.style.display='block'; prog.textContent = t; } };
+        try{ push = await pushBackupToSupabase(pv.parsed, o, say); }
+        catch(e){ push = {error:(e&&e.message)||String(e)}; }
+        if(!push.error){ try{ await forceSyncMasters(); }catch(e){ /* the push itself succeeded */ } }
+      }
+      state.lastImportResult = {fileName:pv.fileName, when:Date.now(), result, push};
       state.backupPreview = null;
-      showToast('✓ Backup imported');
+      showToast(push && push.error ? '⚠ Imported here, but saving to Supabase failed' : '✓ Backup imported');
       render();
     }catch(e){
       showToast(`⚠ Import failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
@@ -6988,6 +7328,62 @@ function bindGlobal(){
   };
   const btnCancelBackup = document.getElementById('btnCancelBackup');
   if(btnCancelBackup) btnCancelBackup.onclick = ()=>{ state.backupPreview = null; render(); };
+
+  // The key box belongs to the "main backend is Supabase" setup, so it appears only when the URL typed above is a Supabase one.
+  const apiUrlInputEl = document.getElementById('apiUrlInput');
+  if(apiUrlInputEl) apiUrlInputEl.oninput = ()=>{ const f = document.getElementById('apiKeyField'); if(f) f.style.display = isSupabaseUrl(apiUrlInputEl.value.trim()) ? '' : 'none'; };
+  // --- Reporting database (Supabase) — hybrid mode ---
+  const btnSaveReport = document.getElementById('btnSaveReport');
+  if(btnSaveReport) btnSaveReport.onclick = async ()=>{
+    const url = document.getElementById('reportUrlInput').value.trim();
+    const key = document.getElementById('reportKeyInput').value.trim();
+    if(url && !isSupabaseUrl(url)){ showToast('That does not look like a Supabase project URL (https://xxxx.supabase.co)'); return; }
+    setReportUrl(url); setSupabaseKey(key);
+    state.reportDbDownAt = null;
+    showToast(url && key ? 'Saved — reports will now read from Supabase' : 'Saved');
+    try{ if(isHybridMode()) await forceSyncMasters(); }catch(e){}
+    render();
+  };
+  const btnTestReport = document.getElementById('btnTestReport');
+  if(btnTestReport) btnTestReport.onclick = async ()=>{
+    const out = document.getElementById('reportTestResult');
+    const url = document.getElementById('reportUrlInput').value.trim();
+    const key = document.getElementById('reportKeyInput').value.trim();
+    if(!url || !key){ out.textContent = 'Enter the Supabase URL and public key first.'; out.style.color = 'var(--orange)'; return; }
+    if(!isSupabaseUrl(url)){ out.textContent = 'That does not look like a Supabase project URL (https://xxxx.supabase.co).'; out.style.color = 'var(--red)'; return; }
+    const prevUrl = getReportUrl(), prevKey = getSupabaseKey();
+    setReportUrl(url); setSupabaseKey(key);
+    out.textContent = 'Testing…'; out.style.color = 'var(--wheat-dim)';
+    const t0 = Date.now();
+    try{
+      await supabaseCall('ping', null, 15000);
+      const boot = await supabaseCall('bootstrap', null, 20000);
+      const n = (boot.masters.cnfs||[]).length, pr = (boot.masters.products||[]).length;
+      out.textContent = `✓ Supabase answered in ${((Date.now()-t0)/1000).toFixed(1)}s — it holds ${n} CNFs and ${pr} products.` + (n ? '' : '\nIt is empty: fill it with Import Backup or "Sync Google Sheet → Supabase" before relying on it (until then the app keeps using the Sheet).');
+      out.style.color = 'var(--green)';
+    }catch(e){
+      setReportUrl(prevUrl); setSupabaseKey(prevKey);
+      out.textContent = '✗ Could not reach Supabase: ' + ((e&&e.message)||e) + '\nIf the project was created a while ago, open it in the Supabase dashboard — an unused free project may be paused.';
+      out.style.color = 'var(--red)';
+    }
+  };
+  const btnSyncSheetToSupabase = document.getElementById('btnSyncSheetToSupabase');
+  if(btnSyncSheetToSupabase) btnSyncSheetToSupabase.onclick = async ()=>{
+    const prog = document.getElementById('reportSyncProg');
+    btnSyncSheetToSupabase.disabled = true;
+    if(prog){ prog.style.display = 'block'; prog.textContent = 'Starting…'; }
+    try{
+      const out = await syncSheetToSupabase(t=>{ if(prog) prog.textContent = t; });
+      showToast(out.historyError ? '⚠ Synced masters and current stock — history could not be read from the Sheet' : '✓ Google Sheet → Supabase sync finished');
+      try{ await forceSyncMasters(); }catch(e){}
+    }catch(e){
+      showToast(`⚠ Sync failed — ${(e&&e.message)||e}`);
+      if(prog){ prog.style.display = 'block'; prog.textContent = '✗ ' + ((e&&e.message)||e) + '\nIf the Sheet is too slow to read, download it (File → Download → .xlsx) and use Import Backup instead — it does the same job without asking the Sheet anything.'; prog.style.whiteSpace = 'pre-wrap'; }
+      btnSyncSheetToSupabase.disabled = false;
+      return;
+    }
+    render();
+  };
 
   const btnDisconnectApi = document.getElementById('btnDisconnectApi');
   if(btnDisconnectApi) btnDisconnectApi.onclick = async ()=>{
