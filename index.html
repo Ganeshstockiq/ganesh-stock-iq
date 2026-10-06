@@ -709,6 +709,12 @@ const state = {
   backupOptions: {masters:true, users:true, stock:true, supabase:true},
   lastImportResult: null,   // summary card shown after an import
   importedBackup: null,     // {fileName, importedAt, newestStockDate} — which backup this device is currently carrying, if any
+  // True only while this device is running on the app's BUILT-IN DEMO masters even though a real
+  // backend is configured — i.e. the very first load couldn't reach it and nothing real was cached.
+  // Demo logins (Mis01/Misganesh@123, mis/mis123 ...) differ from the real ones, which is exactly
+  // how "my correct MIS password is rejected" happens; and a demo list saved over the real one
+  // would wipe it. So while this is set: no sign-in until real data loads, and no masters save.
+  mastersAreDemo: false,
   reportDbDownAt: null,       // when the reporting database last failed to answer (reads fall back to the Sheet for a minute)
   reportStaleAt: null,        // when a write to the reporting copy last failed — Supabase may be behind the Sheet
   reportSync: null,           // last 'Sheet → Supabase' sync: {at, summary}
@@ -874,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.37';
+const APP_VERSION = '2026-08-24.38';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1118,7 +1124,7 @@ const HYBRID_READS = ['bootstrap','allSubmissions','cnfSubmissions','allMessages
 // Writes made by Admin/MIS that the reporting copy must also learn about (best effort; the
 // Sheet is the one that has to succeed). A CNF's submission is handled separately in syncSubmission.
 const HYBRID_MIRRORED_WRITES = ['saveMasters','addProducts','sendMessage'];
-function reportDbRecentlyDown(){ return !!(state.reportDbDownAt && Date.now()-state.reportDbDownAt < 60000); }
+function reportDbRecentlyDown(){ return !!(state.reportDbDownAt && Date.now()-state.reportDbDownAt < 20000); }
 function markReportStale(why){ state.reportStaleAt = Date.now(); lsSet('reportStaleAt', {at:state.reportStaleAt, why:String(why||'').slice(0,200)}); }
 function mirrorToSupabase(action, payload){
   supabaseCall(action, payload, 30000).catch(e=>markReportStale(`${action}: ${(e&&e.message)||e}`));
@@ -1132,7 +1138,8 @@ async function apiGet(action, params, opts){
     try{ return await supabaseCall(action, params, tms); }
     catch(e){ return await supabaseCall(action, params, tms); } // reads are safe to retry once
   }
-  if(isHybridMode() && HYBRID_READS.includes(action) && !reportDbRecentlyDown()){
+  // opts.fresh = someone is waiting on THIS call (signing in, tapping Sync): always try Supabase, never go by the "it failed a moment ago" note.
+  if(isHybridMode() && HYBRID_READS.includes(action) && (!reportDbRecentlyDown() || (opts && opts.fresh))){
     try{
       // Supabase answers in milliseconds, so it gets a short leash — a slow one is a broken one.
       const data = await supabaseCall(action, params, Math.min((opts && opts.timeoutMs) || 25000, 15000));
@@ -1142,8 +1149,9 @@ async function apiGet(action, params, opts){
       state.reportDbDownAt = null;
       return data;
     }catch(e){
-      state.reportDbDownAt = Date.now();                  // don't make every call wait out the same failure
-      return await appsScriptGet(action, params, opts);
+      state.reportDbDownAt = Date.now();                  // don't make every background call wait out the same failure
+      try{ return await appsScriptGet(action, params, opts); }
+      catch(e2){ throw new Error(`Supabase: ${(e&&e.message)||e} · Google Sheet: ${(e2&&e2.message)||e2}`); } // both failed — say both, not just the last
     }
   }
   return await appsScriptGet(action, params, opts);
@@ -1151,6 +1159,7 @@ async function apiGet(action, params, opts){
 async function apiPost(action, payload, timeoutMs){
   const apiUrl = getApiUrl();
   if(!apiUrl) throw new Error('No backend configured');
+  if(action==='saveMasters' && state.mastersAreDemo) throw new Error('Not saved: this device is showing built-in demo data, not your real CNF/product list — saving it would overwrite the real one. Reload once the server is reachable.');
   if(isSupabaseUrl(apiUrl)) return await supabaseCall(action, payload, timeoutMs); // no auto-retry for writes
   const result = await appsScriptPost(action, payload, timeoutMs);                   // the Sheet first — it must succeed
   if(isHybridMode() && HYBRID_MIRRORED_WRITES.includes(action)) mirrorToSupabase(action, payload);
@@ -1237,6 +1246,7 @@ async function loadAll(){
       state.currentSnapshots = {};
       state.submissions.forEach(sn=>{ state.currentSnapshots[String(sn.cnfCode)] = sn; });
       state.lastDataSyncAt = Date.now();
+      state.mastersAreDemo = false;
       lsSet('masters', state.masters);
       lsSet('submissions', state.submissions);
       lsSet('currentSnapshots', state.currentSnapshots);
@@ -1251,7 +1261,9 @@ async function loadAll(){
       // "LIVE" label backed entirely by demo data with no way to tell.
       state.backendConnected = false;
       state.backendError = String((e&&e.message)||e);
-      state.masters = normalizeMasters((await legacyWindowStorageMasters()) || seedMasters());
+      const legacyMasters = await legacyWindowStorageMasters();
+      state.mastersAreDemo = !legacyMasters;
+      state.masters = normalizeMasters(legacyMasters || seedMasters());
       state.submissions = [];
     }
   } else {
@@ -1321,6 +1333,7 @@ async function forceSyncMasters(opts){
   state.currentSnapshots = {};
   serverList.forEach(sn=>{ state.currentSnapshots[String(sn.cnfCode)] = sn; });
   state.lastDataSyncAt = Date.now();
+  state.mastersAreDemo = false;
   lsSet('masters', state.masters);
   lsSet('submissions', state.submissions);
   lsSet('currentSnapshots', state.currentSnapshots);
@@ -2584,38 +2597,71 @@ async function tryRestoreSession(){
 // caller can show the dashboard right away and only needs syncPromise to
 // know when to re-render with freshly-synced data, not to know whether
 // login itself succeeded.
+// ---- login comparisons ----
+// A password that is "correct" but rejected is almost always whitespace or capitalisation of the
+// ID, not a wrong password: phone keyboards add a trailing space after a suggested word, and a
+// password pasted into the Sheet from Excel/WhatsApp can carry a space (or a non-breaking one) at
+// either end. Both sides are trimmed before comparing. The PASSWORD itself stays case-sensitive —
+// only the User ID tolerates capitals, because keyboards capitalise the first letter on their own.
+function samePassword_(typed, stored){
+  return String(typed==null?'':typed).trim() === String(stored==null?'':stored).trim();
+}
+function sameUserId_(a, b){
+  return String(a==null?'':a).trim().toLowerCase() === String(b==null?'':b).trim().toLowerCase();
+}
+// An exact match always wins; capitalisation-tolerant matching is only the fallback.
+function findByUserId_(list, userId, getters){
+  const exact = list.find(x=>getters.some(g=>g(x)===userId));
+  if(exact) return exact;
+  return list.find(x=>getters.some(g=>sameUserId_(g(x), userId)));
+}
+// What a failed login was checked against — so "Incorrect password" can be told apart from
+// "this device never loaded your real data" at a glance, from a screenshot.
+function loginCheckedAgainst_(){
+  const n = ((state.masters && state.masters.cnfs) || []).length;
+  let src;
+  if(state.lastDataSyncAt) src = `${backendName()}, loaded ${fmtClock(state.lastDataSyncAt)}`;
+  else src = dataSourceNote() || 'built-in DEMO data — your real data has not loaded on this device';
+  return ` [Checked against ${n} CNFs · ${src}]`;
+}
 async function tryLoginOnce_(userId, password, remember){
   userId = (userId||'').trim();
+  // Demo masters on a device that should have real ones: don't pretend to check credentials against
+  // them. credentialFailure makes tryLogin() fetch the real data first and then try again.
+  if(state.mastersAreDemo && getApiUrl()){
+    state.loginError = 'Cannot sign in yet — this device has not loaded your real data (it only has built-in demo data).';
+    return {ok:false, credentialFailure:true};
+  }
   // CNF — matched by CNF code (their User ID is their code, e.g. 3100)
-  const cnf = state.masters.cnfs.find(c=>c.code===userId || c.userId===userId);
+  const cnf = findByUserId_(state.masters.cnfs, userId, [c=>c.code, c=>c.userId]);
   if(cnf){
     if(cnf.status==='Inactive'){ state.loginError = 'This CNF is inactive. Contact Admin.'; return {ok:false}; }
-    if(password !== cnf.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false, credentialFailure:true}; }
+    if(!samePassword_(password, cnf.password)){ state.loginError = 'Incorrect User ID or Password.'+loginCheckedAgainst_(); return {ok:false, credentialFailure:true}; }
     restoreCnfSessionFast_(cnf);
     state.loginError = null;
     if(remember) saveRememberedSession('cnf', cnf.code); else clearRememberedSession();
     return {ok:true, syncPromise: syncCnfSessionInBackground_(cnf)};
   }
   // Admin
-  const admin = state.masters.adminUsers.find(a=>a.userId===userId);
+  const admin = findByUserId_(state.masters.adminUsers, userId, [a=>a.userId]);
   if(admin){
     if(admin.status==='Inactive'){ state.loginError = 'This account is inactive.'; return {ok:false}; }
-    if(password !== admin.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false, credentialFailure:true}; }
+    if(!samePassword_(password, admin.password)){ state.loginError = 'Incorrect User ID or Password.'+loginCheckedAgainst_(); return {ok:false, credentialFailure:true}; }
     state.role = 'admin'; state.adminUser = admin; state.loginError = null;
     if(remember) saveRememberedSession('admin', admin.userId); else clearRememberedSession();
     return {ok:true, syncPromise: Promise.allSettled([forceSyncMasters(), loadAllMessages()])};
   }
   // MIS / Back Office
-  const mis = state.masters.misUsers.find(u=>u.userId===userId);
+  const mis = findByUserId_(state.masters.misUsers, userId, [u=>u.userId]);
   if(mis){
     if(mis.status==='Inactive'){ state.loginError = 'This account is inactive.'; return {ok:false}; }
-    if(password !== mis.password){ state.loginError = 'Incorrect User ID or Password.'; return {ok:false, credentialFailure:true}; }
+    if(!samePassword_(password, mis.password)){ state.loginError = 'Incorrect User ID or Password.'+loginCheckedAgainst_(); return {ok:false, credentialFailure:true}; }
     state.role = 'mis'; state.misUser = mis; state.loginError = null;
     if(remember) saveRememberedSession('mis', mis.userId); else clearRememberedSession();
     if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now()); // first-ever login: don't dump the whole existing history into "new"
     return {ok:true, syncPromise: Promise.allSettled([forceSyncMasters(), loadAllMessages()])};
   }
-  state.loginError = 'Unknown User ID or Password.';
+  state.loginError = 'Unknown User ID or Password.'+loginCheckedAgainst_();
   return {ok:false, credentialFailure:true};
 }
 
@@ -2631,7 +2677,7 @@ async function tryLogin(userId, password, remember){
   const first = await tryLoginOnce_(userId, password, remember);
   if(first.ok || !first.credentialFailure || !getApiUrl()) return first;
   try{
-    await forceSyncMasters();
+    await forceSyncMasters({fresh:true});
     state.backendConnected = true;
     state.backendError = null;
   }catch(e){
@@ -4044,6 +4090,7 @@ function applyBackupImport(p, opts, fileName){
     if(!m.categorySelfLife) m.categorySelfLife = {};
     p.masters.categories.forEach(c=>{ if(m.categories.includes(c)) res.masters.categories.ov++; else { m.categories.push(c); res.masters.categories.nw++; } m.categorySelfLife[c] = p.masters.categorySelfLife[c]; });
   }
+  if(opts.masters || opts.users) state.mastersAreDemo = false;
   if(opts.users){
     res.users = { admin: upsert(m.adminUsers, p.masters.adminUsers, u=>u.userId), mis: upsert(m.misUsers, p.masters.misUsers, u=>u.userId) };
   }
@@ -5959,11 +6006,11 @@ function updateDataAsOfLabel(){
 // a recent failure is remembered and later exports don't wait it out again.
 async function refreshBeforeExport(){
   if(!getApiUrl()) return {refreshed:false, reason:'No backend connected'};
-  if(state.lastRefreshFailedAt && Date.now()-state.lastRefreshFailedAt < 90000){
+  if(state.lastRefreshFailedAt && Date.now()-state.lastRefreshFailedAt < 20000){
     return {refreshed:false, skipped:true, reason:`the server did not answer ${Math.round((Date.now()-state.lastRefreshFailedAt)/1000)}s ago`};
   }
   try{
-    await withTimeout(forceSyncMasters({retry:false, timeoutMs:40000}), 45000);
+    await withTimeout(forceSyncMasters({retry:false, timeoutMs:40000, fresh:true}), 45000);
     state.lastRefreshFailedAt = null;
     updateDataAsOfLabel();
     return {refreshed:true};
@@ -6598,7 +6645,7 @@ function bindGlobal(){
   const btnForceSync = document.getElementById('btnForceSync');
   if(btnForceSync) btnForceSync.onclick = async ()=>{
     btnForceSync.textContent = 'Syncing…'; btnForceSync.disabled = true;
-    try{ await forceSyncMasters({retry:false, timeoutMs:60000}); showToast('Synced'); }
+    try{ await forceSyncMasters({retry:false, timeoutMs:60000, fresh:true}); showToast('Synced'); }
     catch(e){ showToast('Sync failed — check connection'); }
     render();
   };
@@ -6837,7 +6884,7 @@ function bindGlobal(){
   const btnMisRefresh = document.getElementById('btnMisRefresh');
   if(btnMisRefresh) btnMisRefresh.onclick = async ()=>{
     btnMisRefresh.textContent = 'Refreshing…'; btnMisRefresh.disabled = true;
-    try{ await forceSyncMasters({retry:false, timeoutMs:60000}); showToast('✓ Refreshed — showing every CNF\'s latest submission'); }
+    try{ await forceSyncMasters({retry:false, timeoutMs:60000, fresh:true}); showToast('✓ Refreshed — showing every CNF\'s latest submission'); }
     catch(e){ showToast('Refresh failed — check connection'); }
     render();
   };
@@ -6860,7 +6907,7 @@ function bindGlobal(){
       // needs 30–40s to answer used to fail this EVERY time at 25s, even though
       // it was working; with a visible "Syncing…" that wait is better than a
       // guaranteed failure.
-      await forceSyncMasters({retry:false, timeoutMs:60000});
+      await forceSyncMasters({retry:false, timeoutMs:60000, fresh:true});
       state.backendError = null;
     }catch(e){
       state.backendError = String((e&&e.message)||e);
