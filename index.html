@@ -655,6 +655,16 @@ const state = {
   // long as it takes to hit Export; reloading the page clears it, same as
   // any other in-progress export would be.
   pendingOrdersOverride: null,
+  // Each CNF's CURRENT picture as the server built it (bootstrap's
+  // latestSubmissions) — a CNF that did a Final and then a Partial has ONE
+  // merged "what do they hold right now" entry here, with every product.
+  // Kept apart from state.submissions on purpose: that list is also where
+  // per-submission history gets merged in, and a history entry for the
+  // latest submission only carries what THAT submission touched. When the
+  // two shared a list, loading history silently replaced the merged picture
+  // with the partial-only one and products vanished from MIS/Export.
+  currentSnapshots: {},
+  lastDataSyncAt: null, // when MIS/Admin data was last actually pulled from the server — shown in Export Centre so "is this the latest?" has a visible answer
   emailLog: [], // sent-email follow-up history, loaded on demand
   emailConfig: null, // Admin's Email Configuration — sender, rules, templates; loaded on demand
   composerOpen: false, // Admin/MIS "Send Message" form visibility
@@ -843,7 +853,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.29';
+const APP_VERSION = '2026-08-24.30';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1046,6 +1056,9 @@ async function loadAll(){
       const boot = await apiGet('bootstrap');
       state.masters = normalizeMasters(boot.masters);
       state.submissions = normalizeSubmissionList(boot.latestSubmissions || []);
+      state.currentSnapshots = {};
+      state.submissions.forEach(sn=>{ state.currentSnapshots[String(sn.cnfCode)] = sn; });
+      state.lastDataSyncAt = Date.now();
       lsSet('masters', state.masters);
       lsSet('submissions', state.submissions);
       lsSet('masterSyncedAt', Date.now());
@@ -1126,6 +1139,9 @@ async function forceSyncMasters(){
   const serverIds = new Set(serverList.map(s=>s.id));
   const localOnly = state.submissions.filter(s=>!serverIds.has(s.id));
   state.submissions = serverList.concat(localOnly);
+  state.currentSnapshots = {};
+  serverList.forEach(sn=>{ state.currentSnapshots[String(sn.cnfCode)] = sn; });
+  state.lastDataSyncAt = Date.now();
   lsSet('masters', state.masters);
   lsSet('submissions', state.submissions);
   lsSet('masterSyncedAt', Date.now());
@@ -1799,7 +1815,18 @@ function normalizeSubmissionList(list){
 
 function latestSubmissionFor(cnfCode){
   const subs = state.submissions.filter(s=>String(s.cnfCode)===String(cnfCode)).sort((a,b)=> new Date(b.timestamp)-new Date(a.timestamp));
-  return subs[0] || null;
+  const newest = subs[0] || null;
+  // MIS/Admin look at each CNF's CURRENT stock — every product it holds
+  // right now — which, after a Partial following a Final, is the server's
+  // merged picture, not whatever the single newest submission happened to
+  // touch. The merged picture wins unless something genuinely newer is
+  // already known locally. (The CNF panel keeps its own existing behaviour
+  // untouched — this is only about what MIS/Admin see and export.)
+  if(state.role==='mis' || state.role==='admin'){
+    const snap = state.currentSnapshots && state.currentSnapshots[String(cnfCode)];
+    if(snap && (!newest || new Date(snap.timestamp) >= new Date(newest.timestamp))) return snap;
+  }
+  return newest;
 }
 
 // Submission cadence — each CNF has its own required frequency (Admin →
@@ -4980,6 +5007,8 @@ function MisExport(){
     <h4>Export Centre</h4>
     <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Exports the current filtered stock view (respects CNF / category / status filters above) as CSV — includes original UOM, converted kg, MFD, ageing status and safety stock status.</p>
     <button class="btn btn-primary" id="btnExportCsv">⬇ Export Filtered Stock (CSV)</button>
+    <div id="dataAsOf" style="margin-top:10px;font-family:var(--mono);font-size:11.5px;color:var(--wheat-dim);">${state.lastDataSyncAt ? `Data as of ${fmtClock(state.lastDataSyncAt)} — pulled from the server` : 'Not yet refreshed from the server in this session'}</div>
+    <div style="font-size:11.5px;color:var(--ink-soft);margin-top:2px;">Every export on this screen fetches the newest data from the server first.</div>
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
@@ -5197,11 +5226,42 @@ function buildMisPivotSummaryRows(rows){
   ];
   return out;
 }
+// An export is exactly the moment someone needs the NEWEST data — yet it
+// used to build straight from whatever this tab had loaded when it was
+// opened (or last synced), with nothing pulling from the server first. A
+// CNF submitting after that point simply never appeared, with no sign
+// anything was out of date. So every export now fetches first. If that
+// fetch fails (offline, backend down) the export still goes ahead from
+// what's loaded — better than nothing — but it says so, with the time that
+// data is actually from, instead of quietly passing it off as current.
+function fmtClock(ts){ return ts ? new Date(ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—'; }
+function updateDataAsOfLabel(){
+  const el = document.getElementById('dataAsOf');
+  if(el) el.textContent = state.lastDataSyncAt ? `Data as of ${fmtClock(state.lastDataSyncAt)} — pulled from the server` : 'Not yet refreshed from the server in this session';
+}
+async function refreshBeforeExport(){
+  if(!getApiUrl()) return {refreshed:false, reason:'No backend connected'};
+  try{
+    await withTimeout(forceSyncMasters(), 30000);
+    updateDataAsOfLabel();
+    return {refreshed:true};
+  }catch(e){
+    return {refreshed:false, reason:(e&&e.message)||String(e)};
+  }
+}
+function warnIfStale(fresh){
+  if(fresh && !fresh.refreshed && getApiUrl()){
+    showToast(`⚠ Couldn't fetch the latest from the server (${fresh.reason}) — using data last loaded at ${fmtClock(state.lastDataSyncAt)}. Contact IT if this persists: 1800-121-0144`);
+  }
+}
 async function runExport(){
   const prog = document.getElementById('exportProg');
   const stages = ['Preparing Data…','Filtering…','Applying UOM Conversion…','Calculating Ageing…','Building Summary…','Formatting Report…'];
   prog.style.display='block';
   try{
+    prog.textContent = 'Fetching latest data from the server…';
+    const fresh = await refreshBeforeExport();
+    warnIfStale(fresh);
     for(let i=0;i<stages.length;i++){
       prog.textContent = `${stages[i]}  ${Math.round((i+1)/stages.length*100)}%`;
       await new Promise(r=>setTimeout(r, 220));
@@ -6504,6 +6564,8 @@ function bindGlobal(){
   if(btnExportMergedOrders) btnExportMergedOrders.onclick = async ()=>{
     if(!state.pendingOrdersOverride) return;
     try{
+      showToast('Fetching latest data from the server…');
+      warnIfStale(await refreshBeforeExport());
       const rows = filteredRows();
       const {headers, dataRows, statusColIndex, matched, unmatched} = buildMergedOrdersExportRows(rows, state.pendingOrdersOverride.lookup);
       const summaryRows = buildMisPivotSummaryRows(rows);
@@ -6526,8 +6588,11 @@ function bindGlobal(){
     if(!confirm(`Send every active CNF (${activeCount}) their current stock report by email now? This uses the "Full Submission Report" rule's To/Cc settings in Email Configuration.`)) return;
     const prog = document.getElementById('broadcastProg');
     btnEmailBroadcast.disabled = true;
-    if(prog) prog.style.display='block';
+    if(prog){ prog.style.display='block'; prog.textContent = 'Fetching latest data from the server…'; }
     try{
+      // Sending a CNF a report built from stale data is worse than a stale
+      // export — it goes out to them. Fresh first, same as every export.
+      warnIfStale(await refreshBeforeExport());
       const result = await broadcastReportsToAllCnfs((i,total,name)=>{
         if(prog) prog.textContent = `Sending ${i}/${total} — ${name}…`;
       });
