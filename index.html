@@ -874,7 +874,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-10-06.1';
+const APP_VERSION = '2026-08-24.37';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -4192,7 +4192,7 @@ function ReportingDbCard(){
       <b style="font-family:var(--mono);font-size:13px;">${rs ? fmtWhen(rs.at) : 'never'}</b></div>
     ${sm ? `<p style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin:4px 0 0;">${sm.cnfs} CNFs · ${sm.products} products · ${sm.submissions} submissions · current stock for ${sm.snapshots} CNFs${sm.historyError?` · <span style="color:var(--orange);">history could not be read from the Sheet (${escapeHtml(sm.historyError).slice(0,120)})</span>`:''}</p>` : ''}
     ${stale ? `<p style="font-size:12px;color:var(--orange);margin:8px 0 0;">⚠ A recent save could not reach Supabase, so it may be slightly behind the Sheet. Run the sync above to catch it up.</p>` : ''}
-    <p style="font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin:10px 0 0;line-height:1.6;">First time: fill Supabase from a downloaded copy of the Sheet with <b>Import Backup</b> (fastest, works even if the Sheet is slow), or press the sync button. After that, every CNF submission is written to both at the same moment.</p>
+    <p style="font-family:var(--mono);font-size:10.5px;color:var(--ink-soft);margin:10px 0 0;line-height:1.6;"><b>Best way to keep it filled:</b> in the Google Sheet open <b>⚡ Ganesh Stock IQ ▸ ☁ Sync everything to Supabase now</b>, then <b>⏰ Turn on automatic Supabase sync</b>. The Sheet then feeds Supabase by itself every few minutes, with no browser involved — so no timeouts. A downloaded copy of the Sheet loaded with <b>Import Backup</b> does the same job once, and the button above does it from here. Either way, every new CNF submission is also written to both at the same moment.</p>
   </div>`;
 }
 function AdminApi(){
