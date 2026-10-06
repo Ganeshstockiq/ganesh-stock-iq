@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.38';
+const APP_VERSION = '2026-08-24.39';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -906,7 +906,10 @@ async function checkForNewVersion(){
 // per-device via API Connection if ever needed (e.g. pointing a test device
 // at a different backend); "Disconnect" is remembered explicitly so it
 // doesn't just snap back to this default.
-const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbzu5mehQ-8pPVTHUv-sLig90Sl6Q0A9tlCuQU6u0Bb24_EJaZfBLpwzyKRheToproAIhg/exec';
+// The app's main backend is Supabase — it talks to it directly, so there is no Apps Script web app to
+// deploy, keep alive or have blocked. (The old web-app URL that used to be here no longer answers.)
+// Devices that still have an old Apps Script URL saved from before switch over by themselves.
+const DEFAULT_API_URL = 'https://rndiesjmqriumqosjwts.supabase.co';
 // Which kind of backend a URL points at. A Supabase project URL looks like
 // https://abcdxyz.supabase.co ; anything else is treated as a Google Apps Script
 // web app, exactly as before.
