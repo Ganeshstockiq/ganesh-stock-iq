@@ -871,7 +871,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.33';
+const APP_VERSION = '2026-08-24.34';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -4999,7 +4999,7 @@ function MisOverview(){
   <div class="panel-card" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
     <div>
       <div style="font-family:var(--mono);font-size:10px;color:var(--wheat-dim);text-transform:uppercase;">Data as of</div>
-      <b style="font-family:var(--mono);font-size:13px;color:var(--surface-text);">${lsGet('masterSyncedAt') ? new Date(Number(lsGet('masterSyncedAt'))).toLocaleString('en-IN') : 'never synced'}</b>
+      ${overviewDataAsOfHtml()}
     </div>
     <button class="btn btn-primary btn-sm" id="btnMisRefresh" ${state.backendConnected?'':'disabled title="Connect a backend first"'}>⟳ Refresh Now — pull every CNF's latest stock</button>
   </div>
@@ -5605,6 +5605,19 @@ function dataSourceNote(){
   if(synced) return `the data last loaded from the Sheet at ${fmtWhen(synced)}`;
   return null;
 }
+// The Overview's "Data as of" used to show only the last Sheet sync — so after
+// importing a newer backup it kept claiming an old date next to fresh numbers.
+// Whichever is newer (last real sync, or the imported backup) is what's named.
+function overviewDataAsOfHtml(){
+  const synced = Number(lsGet('masterSyncedAt')) || 0;
+  const imp = state.importedBackup;
+  const st = 'font-family:var(--mono);font-size:13px;color:var(--surface-text);';
+  if(imp && (imp.importedAt||0) >= synced){
+    return `<b style="${st}">Imported backup — newest stock dated ${imp.newestStockDate||'unknown'}</b>
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--wheat-dim);margin-top:2px;">${imp.fileName} · imported ${new Date(imp.importedAt).toLocaleString('en-IN')}${synced?` · last live sync ${new Date(synced).toLocaleString('en-IN')}`:''}</div>`;
+  }
+  return `<b style="${st}">${synced ? new Date(synced).toLocaleString('en-IN') : 'never synced'}</b>`;
+}
 function dataAsOfText(){
   if(state.lastDataSyncAt) return `Data as of ${fmtClock(state.lastDataSyncAt)} — pulled from the server`;
   const note = dataSourceNote();
@@ -5627,7 +5640,7 @@ async function refreshBeforeExport(){
     return {refreshed:false, skipped:true, reason:`the server did not answer ${Math.round((Date.now()-state.lastRefreshFailedAt)/1000)}s ago`};
   }
   try{
-    await withTimeout(forceSyncMasters({retry:false, timeoutMs:15000}), 20000);
+    await withTimeout(forceSyncMasters({retry:false, timeoutMs:40000}), 45000);
     state.lastRefreshFailedAt = null;
     updateDataAsOfLabel();
     return {refreshed:true};
@@ -6262,7 +6275,7 @@ function bindGlobal(){
   const btnForceSync = document.getElementById('btnForceSync');
   if(btnForceSync) btnForceSync.onclick = async ()=>{
     btnForceSync.textContent = 'Syncing…'; btnForceSync.disabled = true;
-    try{ await forceSyncMasters(); showToast('Synced'); }
+    try{ await forceSyncMasters({retry:false, timeoutMs:60000}); showToast('Synced'); }
     catch(e){ showToast('Sync failed — check connection'); }
     render();
   };
@@ -6501,7 +6514,7 @@ function bindGlobal(){
   const btnMisRefresh = document.getElementById('btnMisRefresh');
   if(btnMisRefresh) btnMisRefresh.onclick = async ()=>{
     btnMisRefresh.textContent = 'Refreshing…'; btnMisRefresh.disabled = true;
-    try{ await forceSyncMasters(); showToast('✓ Refreshed — showing every CNF\'s latest submission'); }
+    try{ await forceSyncMasters({retry:false, timeoutMs:60000}); showToast('✓ Refreshed — showing every CNF\'s latest submission'); }
     catch(e){ showToast('Refresh failed — check connection'); }
     render();
   };
@@ -6519,7 +6532,12 @@ function bindGlobal(){
     // Sync; the fresh stock is put on screen the moment it's in, and the
     // other two are best-effort with their own, honest message.
     try{
-      await forceSyncMasters();
+      // Someone tapped Sync and is waiting — 60s, not the 25s every background
+      // call gets, and no silent retry (which doubled the wait). A server that
+      // needs 30–40s to answer used to fail this EVERY time at 25s, even though
+      // it was working; with a visible "Syncing…" that wait is better than a
+      // guaranteed failure.
+      await forceSyncMasters({retry:false, timeoutMs:60000});
       state.backendError = null;
     }catch(e){
       state.backendError = String((e&&e.message)||e);
