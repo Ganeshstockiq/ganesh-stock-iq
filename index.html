@@ -705,6 +705,11 @@ const state = {
   syncingNow: false, // drives the Topbar sync button's "Syncing…" state
   newVersionAvailable: false, // set by checkForNewVersion() after login
   movementFilters: null, // {cnf:'ALL', fromDate, toDate} — initialized lazily so todayISO() is available
+  backupPreview: null,      // parsed Sheet backup waiting for Admin to confirm — {fileName, parsed, stats}; never persisted
+  backupOptions: {masters:true, users:true, stock:true},
+  lastImportResult: null,   // summary card shown after an import
+  importedBackup: null,     // {fileName, importedAt, newestStockDate} — which backup this device is currently carrying, if any
+  lastRefreshFailedAt: null, // so a server that just failed to answer isn't made to time out again on every export
   allHistoryLoaded: false,
   misSubDetail: null, // submission ID — MIS's read-only submission-detail popup from Movement & History
 };
@@ -779,10 +784,23 @@ function seedMasters(){
 // Admin/MIS user accounts, or the editable category list — fills in sensible
 // defaults rather than crashing.
 function normalizeMasters(m){
+  // A header row delivered as a user ("userId" / "password") is a working
+  // login — verified against a real Sheet whose CNF/Admin/MIS tabs have a
+  // title in row 1 and the header in row 2, which Code.gs reads as data.
+  // Anyone typing userId / password got in as Admin. Dropped before the
+  // default-user fallback below so it can't be mistaken for a real account.
+  const userHeaderWord = v => ['userid','user id','user_id','id','name','password'].includes(String(v==null?'':v).trim().toLowerCase());
+  m.adminUsers = (m.adminUsers||[]).filter(u=>!userHeaderWord(u.userId));
+  m.misUsers = (m.misUsers||[]).filter(u=>!userHeaderWord(u.userId));
   if(!m.adminUsers || !m.adminUsers.length) m.adminUsers = [{userId:'admin', name:'Administrator', password:'admin123', status:'Active'}];
   if(!m.misUsers || !m.misUsers.length) m.misUsers = [{userId:'mis', name:'Back Office', password:'mis123', status:'Active'}];
   if(!m.categories || !m.categories.length) m.categories = Object.keys(m.categorySelfLife||{}).length ? Object.keys(m.categorySelfLife) : CATS.slice();
   if(!m.categoryThresholds) m.categoryThresholds = {};
+  // A header row pasted back into CNF_Master as if it were data shows up as a
+  // CNF literally named "name" with code "code" (visible as a "name · code"
+  // chip). Products and categories already had this guard; CNFs didn't.
+  const headerWord = v => ['code','cnf code','plant','name','cnf name'].includes(String(v==null?'':v).trim().toLowerCase());
+  m.cnfs = (m.cnfs||[]).filter(c=>!(headerWord(c.code) || headerWord(c.name)));
   (m.cnfs||[]).forEach(c=>{ if(!c.submissionFrequencyDays) c.submissionFrequencyDays = 7; });
   return m;
 }
@@ -853,7 +871,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-10-06.31';
+const APP_VERSION = '2026-08-24.33';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -906,7 +924,7 @@ function withTimeout(promise, ms){
     new Promise((_,reject)=>setTimeout(()=>reject(new Error('Request timed out')), ms))
   ]);
 }
-async function apiGet(action, params){
+async function apiGet(action, params, opts){
   const apiUrl = getApiUrl();
   if(!apiUrl) return null;
   const qs = new URLSearchParams(Object.assign({action}, params||{})).toString();
@@ -920,7 +938,7 @@ async function apiGet(action, params){
   // make someone manually retry, this gives it one more try automatically
   // — by then the cache is usually warm.
   const fetchAndParse = async ()=>{
-    const res = await withTimeout(fetch(url), 25000);
+    const res = await withTimeout(fetch(url), (opts && opts.timeoutMs) || 25000);
     const rawText = await res.text();
     let data;
     // Same reasoning as apiPost: a parse failure here means the response
@@ -933,6 +951,9 @@ async function apiGet(action, params){
     if(data && data.error) throw new Error(data.error);
     return data;
   };
+  // A caller that wants to know exactly what happened on the FIRST attempt
+  // (the Test Connection button) opts out of the silent retry.
+  if(opts && opts.retry===false) return await fetchAndParse();
   try{ return await fetchAndParse(); }
   catch(e){ return await fetchAndParse(); }
 }
@@ -1018,7 +1039,6 @@ async function loadAll(){
   const apiUrl = getApiUrl();
   state.backendConnected = !!apiUrl;
   state.backendError = null;
-  state.importedInfo = lsGet('importedInfo') || null; // set when MIS imported a downloaded Google Sheet file (see importStockFromSheetFile)
 
   const cachedMasters = lsGet('masters');
   if(cachedMasters){
@@ -1034,6 +1054,8 @@ async function loadAll(){
     // making that freshness a precondition for seeing anything at all.
     state.masters = normalizeMasters(cachedMasters);
     state.submissions = normalizeSubmissionList(lsGet('submissions') || []);
+    state.currentSnapshots = lsGet('currentSnapshots') || {};   // MIS/Admin's merged per-CNF picture — without this a reload would forget it
+    state.importedBackup = lsGet('importedBackup') || null;
     state.loaded = true;
     startFakeProgress(['Restoring your session…']);
     let restored = null;
@@ -1042,7 +1064,7 @@ async function loadAll(){
     render();
     flushPendingQueue();
     if(restored){
-      tRRkUSs6V3Eu6gxjGDbGzcS99F5WyKtggsw_(restored).then(()=>render()).catch(()=>{});
+      tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored).then(()=>render()).catch(()=>{});
     }
     if(apiUrl) maybeBackgroundSyncMasters(); // silent, throttled, never blocks the UI
     if(state.role) checkForNewVersion(); // fire-and-forget — "sync" for the app's own code, not just its data
@@ -1062,6 +1084,7 @@ async function loadAll(){
       state.lastDataSyncAt = Date.now();
       lsSet('masters', state.masters);
       lsSet('submissions', state.submissions);
+      lsSet('currentSnapshots', state.currentSnapshots);
       lsSet('masterSyncedAt', Date.now());
     }catch(e){
       // A URL being configured is NOT the same as the fetch having actually
@@ -1132,22 +1155,20 @@ async function maybeBackgroundSyncMasters(){
 // read timing, or a sync that's still in flight) must never make a
 // just-submitted, already-visible-on-screen submission disappear — that's
 // strictly worse than just leaving it stale for a few seconds.
-async function forceSyncMasters(){
+async function forceSyncMasters(opts){
   if(!getApiUrl()) return;
-  const boot = await apiGet('bootstrap');
-  // Live server data is the truth — once it arrives, anything imported from
-  // a downloaded Sheet file is dropped so the two can never get mixed.
-  if(state.importedInfo){ state.importedInfo = null; lsSet('importedInfo', null); }
+  const boot = await apiGet('bootstrap', null, opts);
   state.masters = normalizeMasters(boot.masters);
   const serverList = normalizeSubmissionList(boot.latestSubmissions || []);
   const serverIds = new Set(serverList.map(s=>s.id));
-  const localOnly = state.submissions.filter(s=>!serverIds.has(s.id) && !s._imported);
+  const localOnly = state.submissions.filter(s=>!serverIds.has(s.id));
   state.submissions = serverList.concat(localOnly);
   state.currentSnapshots = {};
   serverList.forEach(sn=>{ state.currentSnapshots[String(sn.cnfCode)] = sn; });
   state.lastDataSyncAt = Date.now();
   lsSet('masters', state.masters);
   lsSet('submissions', state.submissions);
+  lsSet('currentSnapshots', state.currentSnapshots);
   lsSet('masterSyncedAt', Date.now());
 }
 
@@ -1451,7 +1472,7 @@ if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{
 // is kept, not discarded.
 function mergeSubmissionsForCnf(cnfCode, list){
   cnfCode = String(cnfCode);
-  list = normalizeSubmissionList(list);
+  list = dedupeResentSubmissions(normalizeSubmissionList(list));
   const existingForCnf = state.submissions.filter(s=>s.cnfCode===cnfCode);
   const serverIds = new Set(list.map(s=>s.id));
   const keepLocalOnly = existingForCnf.filter(s=>!serverIds.has(s.id));
@@ -1464,15 +1485,20 @@ async function ensureCnfHistory(cnfCode){
     mergeSubmissionsForCnf(cnfCode, res.submissions||[]);
   }catch(e){ /* keep whatever we already have */ }
 }
-async function ensureAllHistory(){
-  if(!getApiUrl()) return;
+// Returns true if the full history actually loaded, false if it didn't (and
+// whatever was already known is kept either way). It used to return nothing,
+// so every caller had to assume success — and "Load Full History" cheerfully
+// reported "loaded" after a timeout.
+async function ensureAllHistory(opts){
+  if(!getApiUrl()) return true; // local mode already holds full history in memory
   try{
-    const res = await apiGet('allSubmissions');
-    const serverList = normalizeSubmissionList(res.submissions||[]);
+    const res = await apiGet('allSubmissions', null, opts);
+    const serverList = dedupeResentSubmissions(normalizeSubmissionList(res.submissions||[])); // a submission saved twice by a retry counts once
     const serverIds = new Set(serverList.map(s=>s.id));
     const localOnly = state.submissions.filter(s=>!serverIds.has(s.id));
     state.submissions = serverList.concat(localOnly);
-  }catch(e){ /* keep whatever we already have */ }
+    return true;
+  }catch(e){ return false; /* keep whatever we already have */ }
 }
 
 async function loadDraft(cnfCode){ return lsGet('draft:'+cnfCode); }
@@ -1955,15 +1981,18 @@ function NewVersionBanner(){
 // fallback demo data because the real fetch had failed. Whenever there's a
 // genuine backend error, everyone — CNF, Admin, MIS — sees this, with the
 // actual technical reason, not just "something's wrong."
+// "LIVE" used to mean only "a URL is saved" — so it sat in green right next
+// to the red failure banner. It now also requires that the last attempt
+// actually worked.
+function liveStatusLabel(){
+  if(state.backendConnected && !state.backendError) return '<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>';
+  if(state.backendConnected) return '<span style="color:var(--red);">· ● NOT CONNECTED — showing the last data loaded</span>';
+  return '<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>';
+}
 function BackendErrorBanner(){
-  if(state.importedInfo){
-    return `<div style="background:#3b3216;border-bottom:1px solid #7a6a2c;color:#f3e3a6;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
-      📥 Showing data imported from file <b>${state.importedInfo.fileName}</b> (${fmtClock(state.importedInfo.at)} · ${state.importedInfo.lines} lines · ${state.importedInfo.cnfs} CNFs) — not live from the server. Tap <b>Sync</b> once the backend is back to return to live data.
-    </div>`;
-  }
   if(!state.backendError) return '';
   return `<div style="background:#3a1f19;border-bottom:1px solid #6b3a2f;color:#f0c9c0;font-family:var(--mono);font-size:11.5px;padding:8px 16px;text-align:center;">
-    ⚠ Backend connection failed — showing local/demo data, not live Sheet data. <span style="opacity:.85;">${state.backendError}</span> · <b>If this persists, contact IT: 1800-121-0144</b>
+    ⚠ Backend connection failed — ${dataSourceNote() ? `showing ${dataSourceNote()}, which may be out of date` : 'showing local/demo data, not live Sheet data'}. <span style="opacity:.85;">${state.backendError}</span> · <b>If this persists, contact IT: 1800-121-0144</b>
     ${state.role==='admin' ? ' · <span class="linklike" data-adminnav="api" style="cursor:pointer;">Check API Connection →</span>' : ''}
   </div>`;
 }
@@ -2295,7 +2324,7 @@ async function saveEmailConfigToServer(config){
 // Desktop notifications — entirely optional, and only ever fired for
 // something the person would actually want interrupted for (a new
 // message), never for routine background syncs.
-async function RRkUSs6V3Eu6gxjGDbGzcS99F5WyKtggsw(){
+async function r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(){
   if(typeof Notification==='undefined'){ showToast('This browser does not support desktop notifications.'); return; }
   const perm = await Notification.requestPermission();
   state.notifyPermission = perm;
@@ -2336,14 +2365,14 @@ function tryRestoreSessionFast_(){
   clearRememberedSession(); // account gone/deactivated since — don't keep trying
   return null;
 }
-async function tRRkUSs6V3Eu6gxjGDbGzcS99F5WyKtggsw_(restored){
+async function tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored){
   if(!restored) return;
   if(restored.role==='cnf') await syncCnfSessionInBackground_(restored.cnf);
   else await Promise.allSettled([forceSyncMasters(), loadAllMessages()]);
 }
 async function tryRestoreSession(){
   const restored = tryRestoreSessionFast_();
-  await tRRkUSs6V3Eu6gxjGDbGzcS99F5WyKtggsw_(restored);
+  await tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored);
 }
 
 // Returns {ok, syncPromise} rather than blocking on the full sync itself —
@@ -3241,14 +3270,14 @@ function AdminPanel(){
     ['misusers','MIS Users'],['adminusers','Admin Users'],
     ['reports','Report Builder'],
     ['messages','Messages to CNFs'],['empmap','Employee Mapping'],['emailconfig','Email Configuration'],['emaillog','Email Follow-up'],
-    ['api','API Connection'],['audit','Audit Log'],
+    ['api','API Connection'],['audit','Audit Log'],['import','Import Backup'],
   ];
   const navBtn = ([k,l])=>`<button class="navitem ${state.adminScreen===k?'active':''}" data-adminnav="${k}"><span class="dot"></span>${l}</button>`;
   const screens = {
     cnfs:AdminCnfs, products:AdminProducts, selflife:AdminSelfLife, safety:AdminSafety,
     misusers:AdminMisUsers, adminusers:AdminAdminUsers, reports:AdminReportBuilder,
     messages:MessagingScreen, empmap:EmployeeMappingScreen, emailconfig:EmailConfigScreen, emaillog:EmailFollowUpScreen,
-    api:AdminApi, audit:AdminAudit
+    api:AdminApi, audit:AdminAudit, import:AdminImport
   };
   return `<div class="console">
     <div class="sidenav-overlay ${state.sideOpen?'open':''}" id="navOverlay"></div>
@@ -3271,7 +3300,7 @@ function AdminPanel(){
     <div class="consolebody">
       <button class="navtoggle" id="btnNavToggle">☰ Menu</button>
       <div class="ch-title">Admin — ${nav.find(n=>n[0]===state.adminScreen)[1]}</div>
-      <div class="ch-sub">MASTER DATA · CONFIGURATION ${state.backendConnected?'<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>':'<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>'}</div>
+      <div class="ch-sub">MASTER DATA · CONFIGURATION ${liveStatusLabel()}</div>
       ${(screens[state.adminScreen]||AdminCnfs)()}
     </div>
   </div>${state.adminModal||''}${PasswordResetModal()}${AddFormModal()}${ImportPreviewModal()}${ReplaceMasterModal()}${EmailPreviewModal_()}`;
@@ -3523,6 +3552,328 @@ function MessagingScreen(){
       </tbody>
     </table></div>
   </div>`;
+}
+
+/* ================= Sheet backup import (offline fallback) =================
+   A downloaded copy of the Google Sheet (File → Download → Microsoft Excel
+   .xlsx) can be loaded straight into this browser, so the MIS/Admin dashboards
+   and the Export Centre keep working even if the link to the Sheet is down.
+   Entirely client-side: nothing here is ever written back to the Sheet. */
+const BACKUP_HEADER_WORDS = ['code','cnf code','plant','name','cnf name','userid','user id','category','categories','cat','product','products','product code','material','selflifedays','self-life','self life','n/a','na'];
+function backupIsDataRow(r){
+  const f = String(r[0]==null?'':r[0]).trim();
+  // Title sentences ("CNF_MASTER — one row per CNF…") are long and header rows
+  // are header words; both are template furniture, not data. Code.gs reads
+  // these tabs from row 2, so a title in row 1 pushes the header row into the
+  // data — the same trap this skips.
+  return f!=='' && f.length<25 && !BACKUP_HEADER_WORDS.includes(f.toLowerCase());
+}
+function backupNum(v){ return (v===''||v==null||isNaN(Number(v))) ? null : Number(v); }
+function backupDate(v){
+  if(v==null||v==='') return '';
+  if(v instanceof Date) return localDateISO(v);
+  // Excel stores dates as day-serials; converting arithmetically (not via a JS
+  // Date) is what keeps them off-by-one-day-proof in every timezone.
+  if(typeof v==='number'){ const d = XLSX.SSF.parse_date_code(v); return d ? `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}` : ''; }
+  return cleanDateField(String(v));
+}
+function backupTimestamp(v){
+  if(typeof v==='number') return new Date(Math.round((v-25569)*86400000)).toISOString();
+  if(v instanceof Date) return v.toISOString();
+  return String(v==null?'':v);
+}
+
+// A submission whose line list is the SAME block repeated k≥2 times was saved
+// k times — a timed-out save is retried, and the backend used to append the
+// same SubmissionID again on every retry (one real backup had 28 of 101
+// submissions saved 2–8 times, ~5,000 duplicate lines). One copy is the real
+// submission. Only a whole-list repeat is collapsed, so a genuine pair of
+// separate lines inside one submission is never touched.
+function collapseResentItems(items){
+  const n = items.length;
+  if(n<2) return {items, removed:0};
+  const keys = items.map(it=>JSON.stringify([it.code,it.qty,it.uom,it.kgQty,it.mfd,it.sapQtyKg,it.varianceReason,it.approvedOrder,it.pendingOrder,it.safetyStockKg]));
+  for(let p=1;p<=n/2;p++){
+    if(n%p) continue;
+    let same = true;
+    for(let i=p;i<n;i++){ if(keys[i]!==keys[i%p]){ same=false; break; } }
+    if(same) return {items: items.slice(0,p), removed: n-p};
+  }
+  return {items, removed:0};
+}
+function dedupeResentSubmissions(list){
+  return (list||[]).map(sub=>{
+    const r = collapseResentItems(sub.items||[]);
+    return r.removed ? Object.assign({}, sub, {items:r.items}) : sub;
+  });
+}
+
+function parseBackupMasters(wb){
+  const rowsOf = n => wb.Sheets[n] ? XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, defval:'', raw:true}) : null;
+  const res = {found:{}, ignored:{}, cnfs:[], products:[], categories:[], categorySelfLife:{}, adminUsers:[], misUsers:[], dupInFile:0};
+  const take = (name, rowToObj, valid, keyFn) => {
+    const rows = rowsOf(name); if(!rows) return [];
+    const nonEmpty = rows.filter(r=>r.some(c=>c!==''));
+    const objs = nonEmpty.filter(backupIsDataRow).map(rowToObj).filter(valid);
+    const m = new Map();
+    objs.forEach(o=>{ const k = keyFn(o); if(m.has(k)) res.dupInFile++; m.set(k, o); }); // a code listed twice: the later row wins
+    const out = Array.from(m.values());
+    res.found[name] = out.length; res.ignored[name] = nonEmpty.length - objs.length;
+    return out;
+  };
+  res.cnfs = take('CNF_Master', r=>({
+    code:String(r[0]).trim(), name:String(r[1]).trim(), userId:String(r[2]===''?r[0]:r[2]).trim(), password:String(r[3]===''?'demo':r[3]),
+    status:r[4]||'Active', location:r[5]||'', submissionFrequencyDays: backupNum(r[6])||7, email:String(r[7]||'').trim()
+  }), c=>c.name!=='', c=>c.code);
+  res.products = take('Product_Master', r=>{
+    const cat = String(r[2]===''?'OTHERS':r[2]).trim().toUpperCase();
+    return {
+      code:String(r[0]).trim(), name:String(r[1]).trim(), category: BACKUP_HEADER_WORDS.includes(cat.toLowerCase())?'OTHERS':cat,
+      packSize:r[3]===''?null:r[3], defaultUOM:String(r[4]||'KG').toUpperCase(),
+      bagToKg:backupNum(r[5]), pcToKg:backupNum(r[6]), safetyStockKg:backupNum(r[7])||0,
+      selfLifeOverride:backupNum(r[8]), ageingDaysOverride:backupNum(r[9]),
+      pendingReview: r[10]===true || String(r[10]).toUpperCase()==='TRUE'
+    };
+  }, p=>p.name!=='', p=>p.code);
+  const cats = take('Categories', r=>({name:String(r[0]).trim().toUpperCase(), days:backupNum(r[1])}), c=>c.name!=='', c=>c.name);
+  cats.forEach(c=>{ res.categories.push(c.name); res.categorySelfLife[c.name] = c.days||180; });
+  const userRow = r=>({userId:String(r[0]).trim(), name:String(r[1]||'').trim(), password:String(r[2]==null?'':r[2]), status:r[3]||'Active'});
+  res.adminUsers = take('Admin_Users', userRow, u=>u.password!=='', u=>u.userId);
+  res.misUsers   = take('MIS_Users',   userRow, u=>u.password!=='', u=>u.userId);
+  return res;
+}
+
+// Submissions (full log) and CurrentStock share one 21-column layout. Located
+// by header NAME where possible (the real Sheet's last header, SafetyStockKg,
+// was never written, so column U is read by position when its header is blank).
+function parseBackupStockSheet(wb, name){
+  const ws = wb.Sheets[name]; if(!ws) return null;
+  const raw = XLSX.utils.sheet_to_json(ws, {header:1, defval:'', raw:true});
+  const hi = raw.findIndex((r,i)=>i<6 && r.some(c=>String(c).trim().toLowerCase()==='submissionid'));
+  if(hi<0) throw new Error(`The "${name}" tab has no SubmissionID header row — is this the right file?`);
+  const hdr = raw[hi].map(c=>String(c).trim().toLowerCase());
+  const need = h => { const i = hdr.indexOf(h.toLowerCase()); if(i<0) throw new Error(`The "${name}" tab is missing the "${h}" column.`); return i; };
+  const C = {
+    ts:need('Timestamp'), id:need('SubmissionID'), cnf:need('CNFCode'), date:need('StockDate'), code:need('ProductCode'), kg:need('KGQty'),
+    cnfName:hdr.indexOf('cnfname'), pname:hdr.indexOf('productname'), cat:hdr.indexOf('category'), qty:hdr.indexOf('enteredqty'), uom:hdr.indexOf('entereduom'),
+    mfd:hdr.indexOf('mfd'), by:hdr.indexOf('submittedby'), status:hdr.indexOf('status'), sap:hdr.indexOf('sapqtykg'), reason:hdr.indexOf('variancereason'),
+    sapFile:hdr.indexOf('sapfilename'), sapAt:hdr.indexOf('sapuploadedat'), appr:hdr.indexOf('approvedorder'), pend:hdr.indexOf('pendingorder'),
+    safety: hdr.indexOf('safetystockkg')>-1 ? hdr.indexOf('safetystockkg') : (hdr.length>20 ? 20 : -1)
+  };
+  const at = (r,i) => i>-1 ? r[i] : '';
+  const lines = raw.slice(hi+1).filter(r=>String(r[C.id]).trim()!=='' && String(r[C.cnf]).trim()!=='');
+  let badKg = 0;
+  const groups = new Map();
+  lines.forEach(r=>{
+    const id = String(r[C.id]).trim();
+    let g = groups.get(id);
+    if(!g){
+      g = {id, cnfCode:String(r[C.cnf]).trim(), cnfName:String(at(r,C.cnfName)), date:backupDate(r[C.date]), timestamp:backupTimestamp(r[C.ts]),
+           submittedBy:String(at(r,C.by)), status:String(at(r,C.status))||'Final', sapFileName:String(at(r,C.sapFile)||''), sapUploadedAt:String(at(r,C.sapAt)||''), items:[]};
+      groups.set(id, g);
+    }
+    const kg = backupNum(r[C.kg]); if(kg===null) badKg++;
+    g.items.push({
+      code:String(r[C.code]).trim(), name:at(r,C.pname), category:at(r,C.cat), qty:backupNum(at(r,C.qty))||0, uom:String(at(r,C.uom)||'KG'),
+      kgQty: kg===null?0:kg, mfd:backupDate(at(r,C.mfd)), sapQtyKg:backupNum(at(r,C.sap)), varianceReason:at(r,C.reason)||'',
+      approvedOrder:backupNum(at(r,C.appr)), pendingOrder:backupNum(at(r,C.pend)), safetyStockKg:backupNum(at(r,C.safety))
+    });
+  });
+  return {groups:Array.from(groups.values()), lineCount:lines.length, badKg};
+}
+
+function parseBackupWorkbook(wb){
+  const masters = parseBackupMasters(wb);
+  const hist = parseBackupStockSheet(wb, 'Submissions');
+  const cur = parseBackupStockSheet(wb, 'CurrentStock');
+  const recognised = ['CNF_Master','Product_Master','Categories','Admin_Users','MIS_Users','Submissions','CurrentStock'].filter(n=>wb.Sheets[n]);
+  if(!recognised.length) throw new Error('This does not look like a Ganesh Stock IQ Sheet backup — none of its tabs (CNF_Master, Product_Master, Submissions, CurrentStock…) were found.');
+  // History: collapse whole-submission repeats (see collapseResentItems).
+  let resentSubs = 0, removedLines = 0, history = null;
+  if(hist){
+    const subs = hist.groups.map(g=>{ const r = collapseResentItems(g.items); if(r.removed){ resentSubs++; removedLines += r.removed; } return r.removed ? Object.assign({}, g, {items:r.items}) : g; });
+    history = {subs, lineCount:hist.lineCount, keptLines:hist.lineCount-removedLines, resentSubs, removedLines, badKg:hist.badKg};
+  }
+  // Current stock: one merged picture per CNF, built the way the server builds it.
+  let current = null;
+  if(cur){
+    const snaps = {};
+    cur.groups.forEach(g=>{
+      const e = snaps[g.cnfCode] || (snaps[g.cnfCode] = {id:g.id, cnfCode:g.cnfCode, cnfName:g.cnfName, date:g.date, timestamp:g.timestamp, submittedBy:g.submittedBy, status:g.status, sapFileName:g.sapFileName, sapUploadedAt:g.sapUploadedAt, items:[]});
+      if(new Date(g.timestamp) > new Date(e.timestamp)){ Object.assign(e, {id:g.id, cnfName:g.cnfName, date:g.date, timestamp:g.timestamp, submittedBy:g.submittedBy, status:g.status, sapFileName:g.sapFileName, sapUploadedAt:g.sapUploadedAt}); }
+      g.items.forEach(it=>e.items.push(it));
+    });
+    current = {snaps, cnfCount:Object.keys(snaps).length, lineCount:cur.lineCount, badKg:cur.badKg};
+  }
+  const newestStockDate = current ? Object.values(current.snaps).map(x=>x.date).sort().pop() : (history ? history.subs.map(x=>x.date).sort().pop() : '');
+  return {masters, history, current, recognised, newestStockDate};
+}
+
+// What importing WOULD do, against what's here right now — shown before anything changes.
+function computeBackupPreview(p){
+  const cmp = (incoming, existing, keyFn) => { const ex = new Set((existing||[]).map(keyFn)); let nw=0, ov=0; incoming.forEach(x=>{ ex.has(keyFn(x)) ? ov++ : nw++; }); return {total:incoming.length, nw, ov}; };
+  const m = state.masters;
+  const out = {
+    cnfs: cmp(p.masters.cnfs, m.cnfs, x=>x.code), products: cmp(p.masters.products, m.products, x=>x.code),
+    categories: cmp(p.masters.categories.map(n=>({n})), (m.categories||[]).map(n=>({n})), x=>x.n),
+    adminUsers: cmp(p.masters.adminUsers, m.adminUsers, x=>x.userId), misUsers: cmp(p.masters.misUsers, m.misUsers, x=>x.userId),
+    submissions: p.history ? cmp(p.history.subs, state.submissions, x=>x.id) : null,
+    snapshots: null
+  };
+  if(p.current){
+    let nw=0, replace=0, keep=0;
+    Object.values(p.current.snaps).forEach(inc=>{
+      const ex = state.currentSnapshots && state.currentSnapshots[inc.cnfCode];
+      if(!ex) nw++; else if(new Date(inc.timestamp) >= new Date(ex.timestamp)) replace++; else keep++;
+    });
+    out.snapshots = {total:p.current.cnfCount, nw, replace, keep};
+  }
+  return out;
+}
+
+// Same as lsSet, but says whether it actually fit — lsSet swallows a full
+// browser storage silently, which is exactly wrong for "will this survive a reload?".
+function lsSetChecked(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.stringify(value)); return true; }catch(e){ return false; } }
+
+function applyBackupImport(p, opts, fileName){
+  const res = {opts, masters:null, users:null, stock:null, persist:{}};
+  if(!Array.isArray(state.submissions)) state.submissions = [];
+  if(!state.currentSnapshots) state.currentSnapshots = {};
+  const upsert = (list, incoming, keyFn, merge) => {
+    let nw=0, ov=0;
+    incoming.forEach(inc=>{
+      const i = list.findIndex(x=>keyFn(x)===keyFn(inc));
+      if(i>-1){ list[i] = merge ? merge(list[i], inc) : inc; ov++; } else { list.push(inc); nw++; }
+    });
+    return {nw, ov};
+  };
+  const m = state.masters;
+  if(opts.masters){
+    res.masters = {
+      cnfs: upsert(m.cnfs, p.masters.cnfs, c=>c.code, (old,inc)=>Object.assign({}, old, inc, {email: inc.email || old.email || ''})), // the Sheet predates the email column — never blank an email we have
+      products: upsert(m.products, p.masters.products, x=>x.code),
+      categories: {nw:0, ov:0}
+    };
+    if(!m.categories) m.categories = [];
+    if(!m.categorySelfLife) m.categorySelfLife = {};
+    p.masters.categories.forEach(c=>{ if(m.categories.includes(c)) res.masters.categories.ov++; else { m.categories.push(c); res.masters.categories.nw++; } m.categorySelfLife[c] = p.masters.categorySelfLife[c]; });
+  }
+  if(opts.users){
+    res.users = { admin: upsert(m.adminUsers, p.masters.adminUsers, u=>u.userId), mis: upsert(m.misUsers, p.masters.misUsers, u=>u.userId) };
+  }
+  if(opts.stock){
+    res.stock = {subs:null, snaps:null};
+    if(p.history){
+      const incomingIds = new Set(p.history.subs.map(s=>s.id));
+      const existingIds = new Set(state.submissions.map(s=>s.id));
+      let ov = 0; incomingIds.forEach(id=>{ if(existingIds.has(id)) ov++; });
+      state.submissions = state.submissions.filter(s=>!incomingIds.has(s.id)).concat(p.history.subs);
+      res.stock.subs = {total:p.history.subs.length, nw:p.history.subs.length-ov, ov, removedLines:p.history.removedLines, resentSubs:p.history.resentSubs};
+    }
+    if(p.current){
+      if(!state.currentSnapshots) state.currentSnapshots = {};
+      let nw=0, replaced=0, kept=0;
+      Object.values(p.current.snaps).forEach(inc=>{
+        const ex = state.currentSnapshots[inc.cnfCode];
+        if(!ex){ state.currentSnapshots[inc.cnfCode] = inc; nw++; }
+        else if(new Date(inc.timestamp) >= new Date(ex.timestamp)){ state.currentSnapshots[inc.cnfCode] = inc; replaced++; }
+        else kept++; // what's already here is newer than the file — the file never rolls a CNF backwards
+      });
+      res.stock.snaps = {total:p.current.cnfCount, nw, replaced, kept};
+    }
+  }
+  // Persist, and report honestly whether it fit.
+  res.persist.masters = (opts.masters||opts.users) ? lsSetChecked('masters', state.masters) : null;
+  if(opts.stock){
+    res.persist.snapshots = lsSetChecked('currentSnapshots', state.currentSnapshots);
+    if(lsSetChecked('submissions', state.submissions)) res.persist.history = 'full';
+    else {
+      const cutoff = new Date(Date.now()-45*86400000).toISOString().slice(0,10);
+      const recent = state.submissions.filter(s=>(s.date||'')>=cutoff);
+      if(lsSetChecked('submissions', recent)) res.persist.history = 'recent';
+      else { try{ localStorage.removeItem(LS_PREFIX+'submissions'); }catch(e){} res.persist.history = 'none'; }
+    }
+  }
+  if(opts.masters||opts.users||opts.stock){
+    state.importedBackup = {fileName, importedAt:Date.now(), newestStockDate:p.newestStockDate||''};
+    lsSetChecked('importedBackup', state.importedBackup);
+  }
+  return res;
+}
+
+function fmtWhen(ts){
+  if(!ts) return '—';
+  const d = new Date(ts);
+  const sameDay = d.toDateString()===new Date().toDateString();
+  return sameDay ? d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : d.toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+}
+function BackupPreviewCard(pv){
+  const st = pv.stats, p = pv.parsed, o = state.backupOptions;
+  const num = n => Number(n).toLocaleString('en-IN');
+  const row = (label, a, note) => `<tr><td>${label}</td><td>${num(a.total)}</td><td>${num(a.nw)}</td><td>${num(a.ov)}</td><td style="white-space:normal;color:var(--ink-soft);">${note||''}</td></tr>`;
+  const grp = (key, title, hint, checked) => `<tr><td colspan="5" style="background:var(--panel-2);"><label style="display:flex;gap:8px;align-items:center;cursor:pointer;text-transform:none;letter-spacing:0;font-family:inherit;font-size:13px;"><input type="checkbox" data-bkopt="${key}" ${checked?'checked':''}> <b>${title}</b> <span style="color:var(--ink-soft);font-weight:400;">${hint}</span></label></td></tr>`;
+  const ign = Object.entries(p.masters.ignored||{}).filter(([,n])=>n>0).map(([k,n])=>`${k}: ${n}`).join(', ');
+  const h = p.history, c = p.current;
+  return `<div class="panel-card">
+    <h4>Review before importing — ${pv.fileName}</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Nothing has changed yet. "Will override" means this device already has that code/ID and the file's version replaces it. Nothing is ever deleted.</p>
+    <div class="tablewrap"><table class="dtable">
+      <thead><tr><th></th><th>In file</th><th>New here</th><th>Will override</th><th>Note</th></tr></thead>
+      <tbody>
+        ${grp('masters','Masters','CNFs, products, categories', o.masters)}
+        ${row('CNFs', st.cnfs, p.masters.dupInFile?`${p.masters.dupInFile} code(s) listed twice in the file — the later row is used`:'')}
+        ${row('Products', st.products)}
+        ${row('Categories (self-life)', st.categories)}
+        ${grp('users','Logins','Admin and MIS users — a user already here with the same ID gets the file\'s password', o.users)}
+        ${row('Admin users', st.adminUsers)}
+        ${row('MIS users', st.misUsers)}
+        ${grp('stock','Stock','what the dashboards and Export Centre show', o.stock)}
+        ${h && st.submissions ? row('Submissions (history)', st.submissions, `${num(h.lineCount)} lines in file → <b>${num(h.keptLines)}</b> after counting ${h.resentSubs} submission(s) saved more than once only once (${num(h.removedLines)} repeated lines dropped)`) : ''}
+        ${c && st.snapshots ? `<tr><td>Current stock (per CNF)</td><td>${num(st.snapshots.total)}</td><td>${num(st.snapshots.nw)}</td><td>${num(st.snapshots.replace)}</td><td style="white-space:normal;color:var(--ink-soft);">${num(c.lineCount)} stock lines${st.snapshots.keep?` · <b>${st.snapshots.keep} CNF(s) already have newer stock here and are kept as they are</b>`:''}</td></tr>` : ''}
+      </tbody>
+    </table></div>
+    ${ign ? `<p style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);margin:10px 0 0;">Ignored as template title/header/blank rows — ${ign}.</p>` : ''}
+    ${(h&&h.badKg)||(c&&c.badKg) ? `<p style="font-family:var(--mono);font-size:11px;color:var(--orange);margin:6px 0 0;">⚠ ${(h?h.badKg:0)+(c?c.badKg:0)} stock line(s) had a non-numeric KG quantity and were counted as 0.</p>` : ''}
+    <div class="small-btn-row" style="margin-top:14px;">
+      <button class="btn btn-primary btn-sm" id="btnApplyBackup">Import now</button>
+      <button class="btn btn-ghost btn-sm" id="btnCancelBackup">Cancel</button>
+    </div>
+  </div>`;
+}
+function BackupResultCard(lr){
+  const r = lr.result, line = (label, a, extra) => a ? `<div class="drow" style="border:none;padding:3px 0;"><span style="font-family:var(--mono);font-size:11px;color:var(--wheat-dim);text-transform:uppercase;">${label}</span><b style="font-size:13px;">${a.nw} new · ${a.ov!=null?a.ov:a.replaced} overridden${extra||''}</b></div>` : '';
+  const hist = r.persist.history;
+  const warn = (r.persist.masters===false || r.persist.snapshots===false || hist==='none' || hist==='recent');
+  return `<div class="panel-card">
+    <h4>✓ Import finished <span style="font-family:var(--mono);font-size:10px;color:var(--wheat-dim);text-transform:none;font-weight:400;">${lr.fileName} · ${fmtWhen(lr.when)}</span></h4>
+    ${r.masters ? line('CNFs', r.masters.cnfs) + line('Products', r.masters.products) + line('Categories', r.masters.categories) : ''}
+    ${r.users ? line('Admin users', r.users.admin) + line('MIS users', r.users.mis) : ''}
+    ${r.stock && r.stock.subs ? line('Submissions', r.stock.subs, ` · ${Number(r.stock.subs.removedLines).toLocaleString('en-IN')} repeated lines dropped`) : ''}
+    ${r.stock && r.stock.snaps ? line('Current stock (CNFs)', r.stock.snaps, r.stock.snaps.kept?` · ${r.stock.snaps.kept} kept (already newer here)`:'') : ''}
+    <p style="font-size:12.5px;margin:12px 0 0;color:${warn?'var(--orange)':'var(--green)'};">${
+      !warn ? '✓ Saved on this device — it will still be here after a reload or a restart, with or without the internet.'
+      : `⚠ This browser's storage could not hold everything: ${r.persist.masters===false?'masters not saved; ':''}${r.persist.snapshots===false?'current stock not saved; ':''}${hist==='recent'?'history saved for the last 45 days only; ':''}${hist==='none'?'history is available for this session only; ':''}— the rest is saved.`}</p>
+  </div>`;
+}
+function AdminImport(){
+  const imp = state.importedBackup;
+  return `
+  <div class="panel-card">
+    <h4>Import from a Google Sheet backup</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;line-height:1.65;">Keeps the MIS/Admin dashboards and the Export Centre working if the link to the Google Sheet ever breaks. In the Google Sheet use <b>File → Download → Microsoft Excel (.xlsx)</b>, then choose that file here.</p>
+    <ul style="color:var(--ink-soft);font-size:12.5px;line-height:1.7;margin:0 0 12px;padding-left:18px;">
+      <li>Reads CNF_Master, Product_Master, Categories, Admin_Users, MIS_Users, Submissions and CurrentStock.</li>
+      <li>Same code / ID already here → the file <b>overrides</b> it. Re-importing the same file changes nothing. Nothing is deleted.</li>
+      <li>A submission that was saved to the Sheet more than once is counted <b>once</b>.</li>
+      <li><b>Nothing is written to the Google Sheet.</b> The data is kept in this browser only. Whenever the Sheet is reachable again, its live data takes over.</li>
+    </ul>
+    <input type="file" id="backupFile" accept=".xlsx,.xls" style="display:none;">
+    <button class="btn btn-primary" id="btnPickBackup">⬆ Choose Sheet backup (.xlsx)</button>
+    <div id="backupProg" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+    ${imp ? `<p style="font-family:var(--mono);font-size:11.5px;color:var(--wheat-dim);margin:14px 0 0;">Backup currently on this device: <b>${imp.fileName}</b> · imported ${fmtWhen(imp.importedAt)}${imp.newestStockDate?` · newest stock dated ${imp.newestStockDate}`:''}</p>` : ''}
+  </div>
+  ${state.backupPreview ? BackupPreviewCard(state.backupPreview) : ''}
+  ${state.lastImportResult ? BackupResultCard(state.lastImportResult) : ''}`;
 }
 
 function AdminApi(){
@@ -4504,7 +4855,7 @@ function MisPanel(){
     <div class="consolebody">
       <button class="navtoggle" id="btnNavToggle">☰ Menu</button>
       <div class="ch-title">Back Office — ${nav.find(n=>n[0]===state.misScreen)[1]}</div>
-      <div class="ch-sub">REAL-TIME CNF-WISE STOCK · AGEING · FIFO · click any card, bar or row for detail ${state.backendConnected?'<span style="color:var(--green);">· ● LIVE — synced to your Google Sheet</span>':'<span style="color:var(--orange);">· ● LOCAL DEMO MODE — this device only</span>'}</div>
+      <div class="ch-sub">REAL-TIME CNF-WISE STOCK · AGEING · FIFO · click any card, bar or row for detail ${liveStatusLabel()}</div>
       ${noChrome.includes(state.misScreen) ? '' : ActiveFilterBanner()}
       ${noChrome.includes(state.misScreen) ? '' : MisFilters()}
       ${(screenMap[state.misScreen]||MisOverview)()}
@@ -5011,132 +5362,14 @@ function MisSubmissionDetailModal(){
   </div></div>`;
 }
 
-/* ---------------- Import a downloaded Google Sheet (.xlsx) ----------------
-   Offline fallback for when the Apps Script backend can't answer in time.
-   Reads the CurrentStock tab (same 21 columns as the Sheet) and rebuilds
-   the exact per-CNF snapshot shape the server's bootstrap would have
-   returned, so every dashboard/export path downstream is untouched. */
-function xlSerialToISODate_(n){ return new Date(Math.round(Math.floor(n)*86400000) + Date.UTC(1899,11,30)).toISOString().slice(0,10); }
-function xlDateCell_(v){
-  if(v===''||v==null) return '';
-  if(typeof v==='number') return xlSerialToISODate_(v);
-  if(v instanceof Date) return localDateISO(v);
-  return cleanDateField(v);
-}
-function xlTimestampCell_(v){
-  if(typeof v==='number') return new Date(Math.round((v-25569)*86400000)).toISOString();
-  const d = new Date(String(v||'')); return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
-}
-function xlNum_(v){ if(v===''||v==null) return null; const n = Number(v); return isNaN(n) ? null : n; }
-function xlCode_(v){ return String(v==null?'':v).trim().replace(/\.0+$/,''); }
-function xlSheetRows_(wb, name){
-  const key = Object.keys(wb.Sheets).find(n=>n.trim().toLowerCase()===name.toLowerCase());
-  return key ? XLSX.utils.sheet_to_json(wb.Sheets[key], {header:1, defval:'', raw:true}) : null;
-}
-function importStockFromWorkbook_(wb){
-  const raw = xlSheetRows_(wb, 'CurrentStock');
-  if(!raw) throw new Error(`This file has no "CurrentStock" tab (tabs found: ${wb.SheetNames.join(', ')}). Download the whole Google Sheet as .xlsx, not a single tab.`);
-  const hi = raw.findIndex(r=>r.some(c=>String(c).trim()==='CNFCode'));
-  if(hi<0) throw new Error('CurrentStock tab has no header row (CNFCode column not found).');
-  const col = {}; raw[hi].forEach((h,i)=>{ if(h!=='') col[String(h).trim()] = i; });
-  ['CNFCode','ProductCode','KGQty'].forEach(h=>{ if(!(h in col)) throw new Error(`CurrentStock tab is missing the "${h}" column.`); });
-  const g = (r,h)=> (h in col) ? r[col[h]] : '';
-  const byCnf = {};
-  let lines = 0;
-  raw.slice(hi+1).forEach(r=>{
-    const cnfCode = xlCode_(g(r,'CNFCode'));
-    if(!cnfCode) return;
-    lines++;
-    const ts = xlTimestampCell_(g(r,'Timestamp'));
-    let e = byCnf[cnfCode];
-    if(!e) e = byCnf[cnfCode] = {cnfCode, cnfName:String(g(r,'CNFName')||''), items:[], _ts:null, _imported:true};
-    if(!e._ts || ts > e._ts){
-      e._ts = ts; e.id = String(g(r,'SubmissionID')||('IMP'+cnfCode)); e.date = xlDateCell_(g(r,'StockDate'));
-      e.timestamp = ts; e.submittedBy = String(g(r,'SubmittedBy')||''); e.status = g(r,'Status')||'Final';
-      e.sapFileName = String(g(r,'SapFileName')||''); e.sapUploadedAt = g(r,'SapUploadedAt')||'';
-    }
-    e.items.push({
-      code: xlCode_(g(r,'ProductCode')), name: String(g(r,'ProductName')||''), category: String(g(r,'Category')||''),
-      qty: xlNum_(g(r,'EnteredQty')) ?? 0, uom: String(g(r,'EnteredUOM')||'KG'), kgQty: xlNum_(g(r,'KGQty')) ?? 0,
-      mfd: xlDateCell_(g(r,'MFD')),
-      sapQtyKg: xlNum_(g(r,'SapQtyKg')), varianceReason: String(g(r,'VarianceReason')||''),
-      approvedOrder: xlNum_(g(r,'ApprovedOrder')), pendingOrder: xlNum_(g(r,'PendingOrder')),
-      safetyStockKg: xlNum_(g(r,'SafetyStockKg'))
-    });
-  });
-  if(!lines) throw new Error('The CurrentStock tab has a header but no stock rows.');
-  const snaps = Object.values(byCnf).map(e=>{ delete e._ts; return e; });
-
-  // Masters: ADD what the app is missing, never overwrite what it has.
-  const m = state.masters;
-  let addedCnf=0, addedProd=0;
-  const cnfRows = xlSheetRows_(wb,'CNF_Master') || [];
-  cnfRows.forEach(r=>{
-    const code = xlCode_(r[0]);
-    if(!/^\d+$/.test(code) || !r[1] || m.cnfs.some(c=>String(c.code)===code)) return;
-    m.cnfs.push({code, name:String(r[1]), userId:xlCode_(r[2])||code, password:String(r[3]||'demo'), status:String(r[4]||'Active'), location:String(r[5]||''), submissionFrequencyDays:Number(r[6])||7, email:String(r[7]||'')});
-    addedCnf++;
-  });
-  // CNFs that have stock but are in neither the app nor CNF_Master still need to appear
-  snaps.forEach(sn=>{ if(!m.cnfs.some(c=>String(c.code)===sn.cnfCode)){ m.cnfs.push({code:sn.cnfCode, name:sn.cnfName||sn.cnfCode, userId:sn.cnfCode, password:'demo', status:'Active', location:'', submissionFrequencyDays:7, email:''}); addedCnf++; } });
-  (xlSheetRows_(wb,'Categories') || []).forEach(r=>{
-    const c = String(r[0]||'').trim().toUpperCase();
-    if(!c || /^(CATEGORY|CATEGORIES)/.test(c) || c.length>30 || !(Number(r[1])>0) || m.categories.includes(c)) return;
-    m.categories.push(c); m.categorySelfLife[c] = Number(r[1]);
-  });
-  (xlSheetRows_(wb,'Product_Master') || []).forEach(r=>{
-    const code = xlCode_(r[0]);
-    if(!/^\d+$/.test(code) || !r[1] || m.products.some(p=>String(p.code)===code)) return;
-    const n = v=> (v===''||v==null||isNaN(Number(v))) ? null : Number(v);
-    m.products.push({code, name:String(r[1]), category:String(r[2]||'OTHERS').toUpperCase(), packSize:r[3]||null, defaultUOM:String(r[4]||'KG').toUpperCase(), bagToKg:n(r[5]), pcToKg:n(r[6]), safetyStockKg:n(r[7])||0, selfLifeOverride:n(r[8]), ageingDaysOverride:n(r[9]), pendingReview:false});
-    addedProd++;
-  });
-  // Any stocked product still unknown (not in app, not in Product_Master) gets a minimal entry so its row isn't silently dropped
-  snaps.forEach(sn=>sn.items.forEach(it=>{
-    if(m.products.some(p=>String(p.code)===it.code)) return;
-    const cat = (it.category||'OTHERS').toUpperCase();
-    m.products.push({code:it.code, name:it.name||it.code, category:cat, packSize:null, defaultUOM:'KG', bagToKg:null, pcToKg:null, safetyStockKg:it.safetyStockKg||0, selfLifeOverride:null, ageingDaysOverride:null, pendingReview:true});
-    addedProd++;
-  }));
-  return {snaps, lines, addedCnf, addedProd};
-}
-async function importStockFromSheetFile(file){
-  if(typeof XLSX==='undefined') throw new Error('Excel reader failed to load — check your internet connection and try again.');
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, {type:'array'});
-  const res = importStockFromWorkbook_(wb);
-  state.submissions = normalizeSubmissionList(res.snaps);
-  state.submissions.forEach(s=>{ s._imported = true; });
-  state.currentSnapshots = {};
-  state.submissions.forEach(sn=>{ state.currentSnapshots[String(sn.cnfCode)] = sn; });
-  state.importedInfo = {fileName:file.name, at:Date.now(), lines:res.lines, cnfs:res.snaps.length};
-  state.lastDataSyncAt = Date.now();
-  state.misFilters = {cnfs:'ALL', category:'ALL', status:'ALL'};
-  state.backendError = null;
-  lsSet('masters', state.masters);
-  lsSet('submissions', state.submissions);
-  lsSet('importedInfo', state.importedInfo);
-  return res;
-}
-
 function MisExport(){
   return `<div class="panel-card">
     <h4>Export Centre</h4>
     <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Exports the current filtered stock view (respects CNF / category / status filters above) as CSV — includes original UOM, converted kg, MFD, ageing status and safety stock status.</p>
     <button class="btn btn-primary" id="btnExportCsv">⬇ Export Filtered Stock (CSV)</button>
     <div id="dataAsOf" style="margin-top:10px;font-family:var(--mono);font-size:11.5px;color:var(--wheat-dim);">${dataAsOfText()}</div>
-    <div style="font-size:11.5px;color:var(--ink-soft);margin-top:2px;">${state.importedInfo ? 'Exports use the imported file data (no server fetch) until you tap Sync or "Return to live data".' : 'Every export on this screen fetches the newest data from the server first.'}</div>
+    <div style="font-size:11.5px;color:var(--ink-soft);margin-top:2px;">Every export on this screen fetches the newest data from the server first.</div>
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
-  </div>
-
-  <div class="panel-card">
-    <h4>Import from Google Sheet file (.xlsx)</h4>
-    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Use this when the live sync fails ("Request timed out"). In Google Sheets: <b>File → Download → Microsoft Excel (.xlsx)</b>, then upload that file here. The dashboard, filters and <b>Export Filtered Stock</b> then run on the file's <b>CurrentStock</b> tab, in exactly the same report format. Nothing is sent to the server or written to the Sheet — it only fills this browser. Any CNF/product present in the file's CNF_Master / Product_Master tabs but missing in the app is added locally.</p>
-    <input type="file" id="sheetImportFile" accept=".xlsx,.xls" style="display:none;">
-    <button class="btn btn-primary" id="btnImportSheet">⬆ Import Google Sheet File</button>
-    ${state.importedInfo ? `<button class="btn" id="btnClearImport" style="margin-left:8px;">↩ Return to live data</button>` : ''}
-    <span style="margin-left:10px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);${state.importedInfo?'':'display:none;'}">${state.importedInfo?`✓ ${state.importedInfo.lines} lines · ${state.importedInfo.cnfs} CNFs from ${state.importedInfo.fileName}`:''}</span>
-    <div id="sheetImportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
   <div class="panel-card">
@@ -5362,28 +5595,51 @@ function buildMisPivotSummaryRows(rows){
 // what's loaded — better than nothing — but it says so, with the time that
 // data is actually from, instead of quietly passing it off as current.
 function fmtClock(ts){ return ts ? new Date(ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—'; }
+// Says plainly where the data on screen actually came from when it is NOT
+// freshly pulled from the server — the imported backup if that is the newest
+// thing this device has, otherwise the last real sync. null = nothing known.
+function dataSourceNote(){
+  const synced = Number(lsGet('masterSyncedAt')) || 0;
+  const imp = state.importedBackup;
+  if(imp && (imp.importedAt||0) >= synced) return `the imported backup "${imp.fileName}" (newest stock dated ${imp.newestStockDate||'unknown'})`;
+  if(synced) return `the data last loaded from the Sheet at ${fmtWhen(synced)}`;
+  return null;
+}
 function dataAsOfText(){
-  if(state.importedInfo) return `Data imported from ${state.importedInfo.fileName} at ${fmtClock(state.importedInfo.at)}`;
-  return state.lastDataSyncAt ? `Data as of ${fmtClock(state.lastDataSyncAt)} — pulled from the server` : 'Not yet refreshed from the server in this session';
+  if(state.lastDataSyncAt) return `Data as of ${fmtClock(state.lastDataSyncAt)} — pulled from the server`;
+  const note = dataSourceNote();
+  return note ? `Showing ${note} — the server has not been reached this session` : 'Not yet refreshed from the server in this session';
 }
 function updateDataAsOfLabel(){
   const el = document.getElementById('dataAsOf');
   if(el) el.textContent = dataAsOfText();
 }
+// An export is exactly the moment someone needs the NEWEST data — yet it used
+// to build straight from whatever this tab had loaded, with nothing pulling
+// from the server first. So every export fetches first. If that fails
+// (offline, backend down) the export still goes ahead from what's loaded —
+// the imported backup counts — but says so and says where that data is from.
+// A server that just failed to answer won't answer a second later either, so
+// a recent failure is remembered and later exports don't wait it out again.
 async function refreshBeforeExport(){
-  if(state.importedInfo) return {refreshed:false, imported:true, reason:'Using imported file data'};
   if(!getApiUrl()) return {refreshed:false, reason:'No backend connected'};
+  if(state.lastRefreshFailedAt && Date.now()-state.lastRefreshFailedAt < 90000){
+    return {refreshed:false, skipped:true, reason:`the server did not answer ${Math.round((Date.now()-state.lastRefreshFailedAt)/1000)}s ago`};
+  }
   try{
-    await withTimeout(forceSyncMasters(), 30000);
+    await withTimeout(forceSyncMasters({retry:false, timeoutMs:15000}), 20000);
+    state.lastRefreshFailedAt = null;
     updateDataAsOfLabel();
     return {refreshed:true};
   }catch(e){
+    state.lastRefreshFailedAt = Date.now();
     return {refreshed:false, reason:(e&&e.message)||String(e)};
   }
 }
 function warnIfStale(fresh){
-  if(fresh && !fresh.refreshed && !fresh.imported && getApiUrl()){
-    showToast(`⚠ Couldn't fetch the latest from the server (${fresh.reason}) — using data last loaded at ${fmtClock(state.lastDataSyncAt)}. Contact IT if this persists: 1800-121-0144`);
+  if(fresh && !fresh.refreshed && getApiUrl()){
+    const note = dataSourceNote();
+    showToast(`⚠ Couldn't reach the server (${fresh.reason}) — exporting ${note || 'the data currently loaded'}. Contact IT if this persists: 1800-121-0144`);
   }
 }
 async function runExport(){
@@ -6250,28 +6506,45 @@ function bindGlobal(){
     render();
   };
   const btnEnableNotify = document.getElementById('btnEnableNotify');
-  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ rahJ91ZuNL8Y2px8iYciYeHN8sfSh5eXH8(); };
+  if(btnEnableNotify) btnEnableNotify.onclick = ()=>{ r9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8(); };
   const btnTopbarSync = document.getElementById('btnTopbarSync');
   if(btnTopbarSync) btnTopbarSync.onclick = async ()=>{
     state.syncingNow = true; render();
+    // Sync used to run three very different jobs back-to-back inside ONE
+    // try/catch — the latest stock (fast, essential), the full submission
+    // history (the heaviest request this app makes), and messages (a
+    // convenience) — so a timeout in either of the last two turned the whole
+    // thing into a red "Backend connection failed" banner, even when the
+    // stock data itself had loaded fine. Now only the first one can fail the
+    // Sync; the fresh stock is put on screen the moment it's in, and the
+    // other two are best-effort with their own, honest message.
     try{
       await forceSyncMasters();
-      // forceSyncMasters() only pulls each CNF's LATEST snapshot (fast,
-      // used everywhere for speed) — it does NOT refresh full submission
-      // history. Without this, "Sync" could look complete while MIS/Admin
-      // reports that filter across a date range (Export Center, Audit,
-      // etc.) were still quietly working off an older, incomplete history
-      // list loaded earlier in the session. The whole point of a manual
-      // Sync tap is "make everything current right now," so it has to
-      // cover both.
-      await ensureAllHistory();
-      state.allHistoryLoaded = true;
+      state.backendError = null;
+    }catch(e){
+      state.backendError = String((e&&e.message)||e);
+      state.syncingNow = false; render();
+      showToast('⚠ Sync failed — see the error banner for why');
+      checkForNewVersion();
+      return;
+    }
+    state.syncingNow = false; render();
+    let historyOk = true;
+    // Full history is only for MIS/Admin reports that filter across a date
+    // range (Export Centre, Audit, Movement). A CNF's own screens fetch
+    // their own history on demand, so their Sync never needed — or should
+    // pay for — everyone's.
+    if(state.adminUser || state.misUser){
+      showToast('✓ Latest stock loaded — loading full history…');
+      historyOk = await ensureAllHistory({retry:false, timeoutMs:60000});
+      if(historyOk) state.allHistoryLoaded = true;
+    }
+    try{
       if(state.cnfUser) await loadMessagesForCnf(state.cnfUser.code);
       else if(state.adminUser || state.misUser) await loadAllMessages();
-      state.backendError = null; showToast('✓ Synced — showing the latest data');
-    }
-    catch(e){ state.backendError = String((e&&e.message)||e); showToast('⚠ Sync failed — see the error banner for why'); }
-    state.syncingNow = false; render();
+    }catch(e){ /* messages are a convenience — never fail a Sync over them */ }
+    render();
+    showToast(historyOk ? '✓ Synced — showing the latest data' : 'ℹ Latest stock is current, but the full history could not load in time — date-range reports may be incomplete. Tap Sync again to retry.');
     checkForNewVersion(); // the sync button doubles as "check for a code update too"
   };
   const btnReloadNewVersion = document.getElementById('btnReloadNewVersion');
@@ -6615,20 +6888,89 @@ function bindGlobal(){
     const url = document.getElementById('apiUrlInput').value.trim();
     const result = document.getElementById('apiTestResult');
     if(!url){ result.textContent = 'Enter a URL first.'; result.style.color = 'var(--orange)'; return; }
-    result.textContent = 'Testing…'; result.style.color = 'var(--wheat-dim)';
+    result.style.whiteSpace = 'normal';
+    result.style.color = 'var(--wheat-dim)';
     const prevUrl = getApiUrl();
     setApiUrl(url);
+    // Two separate, un-retried steps with a live timer. This used to call
+    // apiGet twice, each waiting 25s and then silently retrying — so a dead
+    // URL sat on a bare "Testing…" for up to ~50s with no hint what it was
+    // waiting for. Splitting it tells apart the two very different
+    // failures: the script never answering at all (wrong/dead URL, or
+    // access not set to "Anyone") versus answering fine but being slow to
+    // read the Sheet.
+    let stepLabel = 'Step 1/2 — contacting the script';
+    const t0 = Date.now();
+    const paint = ()=>{ result.textContent = `Testing… ${stepLabel} (${Math.round((Date.now()-t0)/1000)}s)`; };
+    paint();
+    const timer = setInterval(paint, 500);
+    let pingMs = null;
     try{
-      const ping = await apiGet('ping');
-      const boot = await apiGet('bootstrap');
-      result.innerHTML = `✓ Connected to Google Sheet <b>"${ping.connectedSpreadsheet}"</b> — found ${(boot.masters.cnfs||[]).length} CNFs and ${(boot.masters.products||[]).length} products.<br><span style="font-family:var(--mono);font-size:10px;">Sheet ID: ${ping.spreadsheetId} · Tabs: ${(ping.sheets||[]).join(', ')}</span>`;
+      const ping = await apiGet('ping', null, {retry:false, timeoutMs:20000});
+      pingMs = Date.now()-t0;
+      stepLabel = 'Step 2/2 — reading CNFs & products from the Sheet';
+      const boot = await apiGet('bootstrap', null, {retry:false, timeoutMs:45000});
+      const totalS = ((Date.now()-t0)/1000).toFixed(1);
+      result.innerHTML = `✓ Connected to Google Sheet <b>"${ping.connectedSpreadsheet}"</b> — found ${(boot.masters.cnfs||[]).length} CNFs and ${(boot.masters.products||[]).length} products.<br><span style="font-family:var(--mono);font-size:10px;">Script answered in ${(pingMs/1000).toFixed(1)}s · data loaded in ${totalS}s total · Sheet ID: ${ping.spreadsheetId} · Tabs: ${(ping.sheets||[]).join(', ')}</span>`;
       result.style.color = 'var(--green)';
     }catch(e){
-      result.textContent = '✗ Could not connect: '+(e.message||e);
+      const msg = String((e&&e.message)||e);
+      let hint = '';
+      if(pingMs===null && /timed out/i.test(msg)) hint = 'The script did not answer at all within 20s — usually the URL is wrong or points to a deleted deployment, or the deployment access is not set to "Anyone".';
+      else if(pingMs!==null && /timed out/i.test(msg)) hint = `The script IS reachable (it answered in ${(pingMs/1000).toFixed(1)}s) but took over 45s to read the Sheet — that points at the Sheet/backend being slow, not the URL.`;
+      else if(/failed to fetch|networkerror|load failed/i.test(msg)) hint = 'The browser could not reach it — check the URL, that deployment access is "Anyone", and your internet connection.';
+      else if(/valid data/i.test(msg)) hint = 'The URL answered with a web page instead of data — a stale or broken deployment.';
+      result.style.whiteSpace = 'pre-wrap';
+      result.textContent = `✗ Could not connect at ${pingMs===null?'step 1 (contacting the script)':'step 2 (reading the Sheet)'}: ${msg}${hint?'\n→ '+hint:''}\nIf it persists, contact IT: 1800-121-0144`;
       result.style.color = 'var(--red)';
       setApiUrl(prevUrl);
+    }finally{
+      clearInterval(timer);
     }
   };
+  // --- Admin: import a downloaded Google Sheet backup ---
+  document.querySelectorAll('[data-bkopt]').forEach(cb=>cb.onchange=()=>{ state.backupOptions[cb.dataset.bkopt] = cb.checked; });
+  const btnPickBackup = document.getElementById('btnPickBackup');
+  const backupFile = document.getElementById('backupFile');
+  if(btnPickBackup && backupFile){
+    btnPickBackup.onclick = ()=>backupFile.click();
+    backupFile.onchange = async ()=>{
+      const file = backupFile.files[0]; backupFile.value = '';
+      if(!file) return;
+      const prog = document.getElementById('backupProg');
+      if(prog){ prog.style.display='block'; prog.textContent = 'Reading the file…'; }
+      try{
+        if(typeof XLSX === 'undefined') throw new Error('Excel reader failed to load — check your internet connection and try again.');
+        const buf = await readFileAsArrayBuffer(file);
+        await new Promise(r=>setTimeout(r,30)); // let "Reading…" paint before the heavy parse
+        const parsed = parseBackupWorkbook(XLSX.read(buf, {type:'array'}));
+        state.backupPreview = {fileName:file.name, parsed, stats:computeBackupPreview(parsed)};
+        state.lastImportResult = null;
+        render();
+      }catch(e){
+        if(prog) prog.style.display='none';
+        showToast(`⚠ ${(e&&e.message)||'Could not read that file'}`);
+      }
+    };
+  }
+  const btnApplyBackup = document.getElementById('btnApplyBackup');
+  if(btnApplyBackup) btnApplyBackup.onclick = ()=>{
+    const pv = state.backupPreview; if(!pv) return;
+    const o = state.backupOptions;
+    if(!o.masters && !o.users && !o.stock){ showToast('Tick at least one thing to import'); return; }
+    try{
+      const result = applyBackupImport(pv.parsed, Object.assign({}, o), pv.fileName);
+      state.lastImportResult = {fileName:pv.fileName, when:Date.now(), result};
+      state.backupPreview = null;
+      showToast('✓ Backup imported');
+      render();
+    }catch(e){
+      showToast(`⚠ Import failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
+  };
+  const btnCancelBackup = document.getElementById('btnCancelBackup');
+  if(btnCancelBackup) btnCancelBackup.onclick = ()=>{ state.backupPreview = null; render(); };
+
   const btnDisconnectApi = document.getElementById('btnDisconnectApi');
   if(btnDisconnectApi) btnDisconnectApi.onclick = async ()=>{
     setApiUrl('');
@@ -6662,34 +7004,6 @@ function bindGlobal(){
   if(misStatus) misStatus.onchange = ()=>{ state.misFilters.status = misStatus.value; render(); };
   const btnExport = document.getElementById('btnExportCsv');
   if(btnExport) btnExport.onclick = runExport;
-
-  const btnImportSheet = document.getElementById('btnImportSheet');
-  const sheetImportFile = document.getElementById('sheetImportFile');
-  if(btnImportSheet && sheetImportFile){
-    btnImportSheet.onclick = ()=>sheetImportFile.click();
-    sheetImportFile.onchange = async ()=>{
-      const file = sheetImportFile.files[0];
-      sheetImportFile.value = '';
-      if(!file) return;
-      const prog = document.getElementById('sheetImportProg');
-      if(prog){ prog.style.display='block'; prog.textContent = 'Reading file…'; }
-      try{
-        const res = await importStockFromSheetFile(file);
-        showToast(`✓ Imported ${res.lines} stock lines for ${res.snaps.length} CNFs${res.addedCnf||res.addedProd?` (added ${res.addedCnf} CNF / ${res.addedProd} product missing in app)`:''} — dashboard and export now use this file`);
-        render();
-      }catch(e){
-        if(prog) prog.style.display='none';
-        showToast(`⚠ ${(e&&e.message)||'Could not read that file'}`);
-      }
-    };
-  }
-  const btnClearImport = document.getElementById('btnClearImport');
-  if(btnClearImport) btnClearImport.onclick = async ()=>{
-    // forceSyncMasters() drops the imported data itself, but only once live data has actually arrived
-    try{ await forceSyncMasters(); showToast('✓ Back on live data'); }
-    catch(e){ state.backendError = String((e&&e.message)||e); showToast('⚠ Live server still unreachable — keeping the imported file data for now'); }
-    render();
-  };
 
   // Approved/Pending Orders — Merged Report: purely client-side. Uploading
   // only ever parses the file and builds an in-memory lookup — nothing is
@@ -6829,8 +7143,9 @@ function bindGlobal(){
   const btnLoadFullHistory = document.getElementById('btnLoadFullHistory');
   if(btnLoadFullHistory) btnLoadFullHistory.onclick = async ()=>{
     btnLoadFullHistory.textContent = 'Loading…'; btnLoadFullHistory.disabled = true;
-    try{ await ensureAllHistory(); state.allHistoryLoaded = true; showToast('✓ Full history loaded'); }
-    catch(e){ showToast('Could not load full history — check connection'); }
+    const historyOk = await ensureAllHistory();
+    if(historyOk){ state.allHistoryLoaded = true; showToast('✓ Full history loaded'); }
+    else showToast('⚠ Could not load full history — the server did not answer in time. Try again, or contact IT: 1800-121-0144');
     render();
   };
   const btnExportMovement = document.getElementById('btnExportMovement');
