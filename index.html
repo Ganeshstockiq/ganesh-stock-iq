@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.41';
+const APP_VERSION = '2026-08-24.42';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -5965,7 +5965,7 @@ async function broadcastReportsToAllCnfs(onProgress){
       const wb = await buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, summaryTable: detailedReport.summaryTable, statusColIndex: detailedReport.statusColIndex,
+        headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, statusColIndex: detailedReport.statusColIndex,
       });
       const buffer = await wb.xlsx.writeBuffer();
       const xlsxBase64 = arrayBufferToBase64(buffer);
@@ -6326,7 +6326,7 @@ function bindGlobal(){
       const wb = await buildXlsxWorkbook({
         title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, summaryTable: report.summaryTable, statusColIndex: report.statusColIndex,
+        headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, statusColIndex: report.statusColIndex,
       });
       await saveOrDownloadRealXlsx(report.filename, wb);
     }catch(e){
@@ -6347,7 +6347,7 @@ function bindGlobal(){
       const wb = await buildXlsxWorkbook({
         title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, summaryTable: report.summaryTable, statusColIndex: report.statusColIndex,
+        headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, statusColIndex: report.statusColIndex,
       });
       await downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
     }catch(e){
@@ -6621,7 +6621,7 @@ function bindGlobal(){
       const detailedWbPromise = buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, summaryTable: detailedReport.summaryTable, statusColIndex: detailedReport.statusColIndex,
+        headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, statusColIndex: detailedReport.statusColIndex,
       });
       // No .catch() here before was a real bug: if building this workbook
       // ever threw (a bad value, a library hiccup, ExcelJS failing to load
@@ -6639,7 +6639,7 @@ function bindGlobal(){
             buildXlsxWorkbook({
               title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
               subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-              headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, summaryTable: detailedReport.summaryTable, statusColIndex: detailedReport.statusColIndex,
+              headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, statusColIndex: detailedReport.statusColIndex,
             }).then(wb=>saveOrDownloadRealXlsx(detailedReport.filename, wb))
               .catch(e2=>showToast(`⚠ Still failing (${(e2&&e2.message)||e2}) — contact IT: 1800-121-0144`));
           });
