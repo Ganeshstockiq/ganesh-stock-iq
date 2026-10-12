@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.39';
+const APP_VERSION = '2026-08-24.41';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1516,7 +1516,60 @@ function buildDetailedReportRows(sub){
     const shortfall = safetyStat==='low' ? (safetyNorm - it.kgQty).toFixed(1) : safetyStat==='ok' ? 'No Shortfall' : '';
     return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
   });
-  return {headers, rows, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
+  // CNF/CFA-code-wise Summary — becomes sheet ONE of the workbook. Built from
+  // the submission itself, so every download (fresh, re-download, History,
+  // old submissions) carries it.
+  const byCat = {}, byStatus = {};
+  let totalKg = 0, belowSafety = 0, noMfd = 0;
+  sub.items.forEach(it=>{
+    const p = state.masters.products.find(pp=>pp.code===it.code);
+    const st = p ? ageingStatus(p, it.mfd) : {label:''};
+    const kg = Number(it.kgQty)||0;
+    totalKg += kg;
+    byCat[it.category||'Other'] = (byCat[it.category||'Other']||0) + kg;
+    const lbl = it.mfd ? (st.label||'Unknown') : 'No MFD';
+    byStatus[lbl] = (byStatus[lbl]||0) + 1;
+    if(!it.mfd) noMfd++;
+    if(safetyStatusFor(it, p)==='low') belowSafety++;
+  });
+  const kf = n => Number(n.toFixed(1));
+  const summaryRows = [
+    ['CNF / CFA DETAILS',''],
+    ['CNF / CFA Code', sub.cnfCode||''],
+    ['CNF / CFA Name', sub.cnfName||''],
+    ['Stock Date', sub.date||''],
+    ['Submission ID', sub.id||''],
+    ['',''],
+    ['AT A GLANCE',''],
+    ['Total Stock (kg)', kf(totalKg)],
+    ['Total Lines', sub.items.length],
+    ['Below Safety Stock', belowSafety],
+    ['Lines without MFD', noMfd],
+    ['',''],
+    ['STOCK BY CATEGORY (kg)',''],
+    ...Object.entries(byCat).sort((a,b)=>b[1]-a[1]).map(([c,kg])=>[c, kf(kg)]),
+    ['',''],
+    ['AGEING BREAKDOWN (line count)',''],
+    ...['Expired','Near Expiry','Critical','Ageing','Normal','Fresh','No MFD'].filter(x=>byStatus[x]).map(x=>[x, byStatus[x]]),
+    ...Object.keys(byStatus).filter(x=>!['Expired','Near Expiry','Critical','Ageing','Normal','Fresh','No MFD'].includes(x)).map(x=>[x, byStatus[x]]),
+  ];
+  const SEV = ['Expired','Near Expiry','Critical','Ageing','Normal','Fresh'];
+  const byProd = {};
+  sub.items.forEach(it=>{
+    const p = state.masters.products.find(pp=>pp.code===it.code);
+    const st = p && it.mfd ? ageingStatus(p, it.mfd) : null;
+    const o = byProd[it.code] || (byProd[it.code] = {code:it.code, name:it.name, cat:it.category||'', kg:0, lines:0, mfd:'', sev:99, label:'No MFD'});
+    o.kg += Number(it.kgQty)||0; o.lines++;
+    if(it.mfd && (!o.mfd || it.mfd < o.mfd)) o.mfd = it.mfd;
+    if(st && st.label){ const sv = SEV.indexOf(st.label); const v = sv<0?50:sv; if(v < o.sev){ o.sev = v; o.label = st.label; } }
+  });
+  const summaryTable = {
+    title: 'PRODUCT-WISE SUMMARY',
+    headers: ['Product Code','Product Name','Category','Total Stock (kg)','Batches / Lines','Oldest MFD','Worst Status'],
+    rows: Object.values(byProd).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).map(o=>[o.code,o.name,o.cat,kf(o.kg),o.lines,o.mfd,o.label]),
+    statusColIndex: 6,
+  };
+  return {headers, rows, summaryRows, summaryTable, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
 }
 
 // Builds an HTML table of just the ageing-flagged lines (Ageing/Critical/
@@ -4702,7 +4755,7 @@ function generatedByLabel(){
 // genuinely valid .xlsx file that never triggers Excel's "format and
 // extension don't match, could be corrupted" warning the way an HTML file
 // wearing an .xls extension used to.
-async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, statusColIndex}){
+async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex}){
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Ganesh Stock IQ';
   const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
@@ -4731,7 +4784,7 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
 
   if(summaryRows && summaryRows.length){
     const wsSummary = wb.addWorksheet('Summary');
-    wsSummary.columns = [{width:30},{width:20}];
+    wsSummary.columns = [{width:34},{width:34}];
     let r = writeMeta(wsSummary, 2);
     summaryRows.forEach(([label,value])=>{
       const isHeading = value==='' && label!=='' && label===label.toUpperCase();
@@ -4747,6 +4800,33 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
       }
       r++;
     });
+    if(summaryTable && summaryTable.rows && summaryTable.rows.length){
+      const nc = summaryTable.headers.length;
+      wsSummary.columns = [{width:34},{width:34},{width:18},{width:16},{width:14},{width:14},{width:24}].slice(0,Math.max(nc,2));
+      r++;
+      wsSummary.mergeCells(r,1,r,nc);
+      const th = wsSummary.getRow(r).getCell(1);
+      th.value = summaryTable.title; th.font = {bold:true, color:{argb:HEADFG}};
+      th.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF1C1712'}};
+      r++;
+      summaryTable.headers.forEach((h,i)=>{
+        const c = wsSummary.getRow(r).getCell(i+1);
+        c.value = h; c.font = {bold:true, color:{argb:HEADFG}, size:10.5};
+        c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:HEADBG}};
+      });
+      r++;
+      summaryTable.rows.forEach(rv=>{
+        const row = wsSummary.getRow(r);
+        rv.forEach((val,i)=>{
+          const c = row.getCell(i+1); c.value = val; c.font = {size:10};
+          if(i===summaryTable.statusColIndex){
+            const k = Object.keys(AGEING_STATUS_COLORS).find(k=>String(val).startsWith(k));
+            if(k){ const cc = AGEING_STATUS_COLORS[k]; c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+cc.bg.replace('#','')}}; c.font = {bold:true, size:10, color:{argb:'FF'+cc.fg.replace('#','')}}; }
+          }
+        });
+        r++;
+      });
+    }
   }
 
   const wsData = wb.addWorksheet(summaryRows&&summaryRows.length ? 'Data' : 'Report');
@@ -5885,7 +5965,7 @@ async function broadcastReportsToAllCnfs(onProgress){
       const wb = await buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
+        headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, summaryTable: detailedReport.summaryTable, statusColIndex: detailedReport.statusColIndex,
       });
       const buffer = await wb.xlsx.writeBuffer();
       const xlsxBase64 = arrayBufferToBase64(buffer);
@@ -6246,7 +6326,7 @@ function bindGlobal(){
       const wb = await buildXlsxWorkbook({
         title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: report.headers, rows: report.rows, statusColIndex: report.statusColIndex,
+        headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, summaryTable: report.summaryTable, statusColIndex: report.statusColIndex,
       });
       await saveOrDownloadRealXlsx(report.filename, wb);
     }catch(e){
@@ -6263,12 +6343,11 @@ function bindGlobal(){
     const sub = state.submissions.find(s=>s.id===el.dataset.exportsub && s.cnfCode===state.cnfUser.code);
     if(!sub) return;
     try{
-      const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason'];
-      const rows = sub.items.map(it=>[it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'']);
+      const report = buildDetailedReportRows(sub);
       const wb = await buildXlsxWorkbook({
-        title: `${state.cnfUser.name} (${state.cnfUser.code}) — Stock Submission`,
+        title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers, rows,
+        headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, summaryTable: report.summaryTable, statusColIndex: report.statusColIndex,
       });
       await downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
     }catch(e){
@@ -6542,7 +6621,7 @@ function bindGlobal(){
       const detailedWbPromise = buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
         subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-        headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
+        headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, summaryTable: detailedReport.summaryTable, statusColIndex: detailedReport.statusColIndex,
       });
       // No .catch() here before was a real bug: if building this workbook
       // ever threw (a bad value, a library hiccup, ExcelJS failing to load
@@ -6560,7 +6639,7 @@ function bindGlobal(){
             buildXlsxWorkbook({
               title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
               subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
-              headers: detailedReport.headers, rows: detailedReport.rows, statusColIndex: detailedReport.statusColIndex,
+              headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, summaryTable: detailedReport.summaryTable, statusColIndex: detailedReport.statusColIndex,
             }).then(wb=>saveOrDownloadRealXlsx(detailedReport.filename, wb))
               .catch(e2=>showToast(`⚠ Still failing (${(e2&&e2.message)||e2}) — contact IT: 1800-121-0144`));
           });
