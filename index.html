@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.46';
+const APP_VERSION = '2026-08-24.47';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -6178,10 +6178,10 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     'Big qty swing': 'Stock moved by 50% or more between two submissions with no MFD change. Check for a unit (UOM) error, a typo, or a genuine large dispatch/receipt.',
     'Far from SAP qty': 'The entered physical stock differs from the SAP system quantity by more than 20%. Check the entry, the unit, or whether SAP is out of date.',
   };
-  const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed','Logic & Calculation','Reason'];
+  const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed','Logic & Calculation','Reason','Previous Submission ID','Current Submission ID'];
   const rows = out.map(x=>{
     const cnf = state.masters.cnfs.find(c=>String(c.code)===String(x.cur.sub.cnfCode));
-    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, x.prev.sub.date, x.cur.sub.date, cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n')];
+    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, x.prev.sub.date, x.cur.sub.date, cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id];
   });
   const byType = {}, byCnf = {};
   const sevCount = {High:0, Medium:0, Low:0};
@@ -6252,7 +6252,8 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     g.lo = Math.min(g.lo, x.i-1); g.hi = Math.max(g.hi, x.i);
     groupMap.set(k, g);
   });
-  const evHeaders = ['CNF Code','CNF Name','Product Code','Product Name','Submission Date','MFD Entered','Stock (kg)','Check','What is wrong'];
+  const evHeaders = ['CNF Code','CNF Name','Product Code','Product Name','Submission Date','Compared With (previous submission)','MFD Entered','Stock (kg)','Check','What is wrong'];
+  const stamp = sub=>{ let t=''; try{ t = new Date(sub.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}); }catch(e){} return `${sub.date}${t?' · '+t:''}`; };
   const evRows = [], evStyles = [];
   const LEVEL_UI = {
     wrong:    {label:'✖ Incorrect — please verify', bg:'#f8d0cc', fg:'#8a1f11'},
@@ -6269,9 +6270,11 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
         const mk = marks[snap.sub.id+'|'+m];
         const cnf = state.masters.cnfs.find(c=>String(c.code)===String(g.cnfCode));
         const ui = mk ? LEVEL_UI[mk.level] : null;
-        rowsForG.push([g.cnfCode, cnf?cnf.name:(snap.sub.cnfName||''), g.code, g.name, snap.sub.date + (snap.sub.date<fromDate?' (starting point)':''), m, Number(snap.batches[m].toFixed(1)), ui?ui.label:'✔ OK', mk?mk.issues.join('; '):'']);
+        const prevSnap = j>g.lo ? g.list[j-1] : (j>0 ? g.list[j-1] : null);
+        const cmpWith = j>g.lo ? stamp(g.list[j-1].sub) : (prevSnap ? stamp(prevSnap.sub) : 'First submission on record');
+        rowsForG.push([g.cnfCode, cnf?cnf.name:(snap.sub.cnfName||''), g.code, g.name, stamp(snap.sub) + (snap.sub.date<fromDate?' (starting point)':''), j>g.lo ? cmpWith : (prevSnap ? cmpWith : cmpWith), m, Number(snap.batches[m].toFixed(1)), ui?ui.label:'✔ OK', mk?mk.issues.join('; '):'']);
         const bad = ui ? {bg:ui.bg, fg:ui.fg, bold:true} : null;
-        stylesForG.push(ui ? [null,null,null,null,null,bad,null,bad,bad] : [null,null,null,null,null,null,null,{bg:'#dff0e0', fg:'#1e5b2b'},null]);
+        stylesForG.push(ui ? [null,null,null,null,null,null,bad,null,bad,bad] : [null,null,null,null,null,null,null,null,{bg:'#dff0e0', fg:'#1e5b2b'},null]);
       });
     }
     if(!rowsForG.length) return;
@@ -6282,9 +6285,9 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const emailSheet = evRows.length ? {
     name: 'CNF Email View',
     title: 'Please confirm the highlighted MFD / stock entries',
-    subtitle: `Submissions dated ${fromDate} to ${toDate} · ${cnfLabel||'All CNFs'} · products where an entry looks incorrect or inconsistent, shown date-wise`,
+    subtitle: `Submissions dated ${fromDate} to ${toDate} · ${cnfLabel||'All CNFs'} · each entry is checked against the previous submission of the same product by the same CNF/CFA (see 'Compared With') · only products with an incorrect or inconsistent entry are listed`,
     headers: evHeaders, rows: evRows, styles: evStyles,
-    widths: [10,24,13,34,22,14,12,30,60], wrapCols: [3,7,8],
+    widths: [10,24,13,34,24,26,14,12,30,60], wrapCols: [3,5,8,9],
   } : null;
   const mfdCols = [headers.indexOf('Previous MFD (kg)'), headers.indexOf('Current MFD (kg)')];
   const cellStyleFn = (ri, ci, val)=>{
