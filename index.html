@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.44';
+const APP_VERSION = '2026-08-24.46';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -4755,23 +4755,24 @@ function generatedByLabel(){
 // genuinely valid .xlsx file that never triggers Excel's "format and
 // extension don't match, could be corrupted" warning the way an HTML file
 // wearing an .xls extension used to.
-async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex, statusColors, cellStyleFn, wrapCols}){
+async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex, statusColors, cellStyleFn, wrapCols, extraSheets}){
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Ganesh Stock IQ';
   const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
   const BRAND = 'FF5A3D1A', HEADBG = 'FFCC8F3F', HEADFG = 'FFFFFFFF', METAFG = 'FF666666';
 
-  function writeMeta(ws, colCount){
+  function writeMeta(ws, colCount, tOv, stOv){
+    const T = tOv!==undefined ? tOv : title, ST = stOv!==undefined ? stOv : subtitle;
     ws.mergeCells(1,1,1,colCount);
     ws.getCell(1,1).value = 'Ganesh Stock IQ';
     ws.getCell(1,1).font = {bold:true, size:16, color:{argb:BRAND}};
     ws.mergeCells(2,1,2,colCount);
-    ws.getCell(2,1).value = title||'';
+    ws.getCell(2,1).value = T||'';
     ws.getCell(2,1).font = {bold:true, size:12.5};
     let row = 3;
-    if(subtitle){
+    if(ST){
       ws.mergeCells(row,1,row,colCount);
-      ws.getCell(row,1).value = subtitle;
+      ws.getCell(row,1).value = ST;
       ws.getCell(row,1).font = {size:10, color:{argb:METAFG}};
       row++;
     }
@@ -4861,6 +4862,32 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
       if(c){ cell.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+c.bg.replace('#','')}}; cell.font = {bold:true, size:10, color:{argb:'FF'+c.fg.replace('#','')}}; }
     });
     r++;
+  });
+  (extraSheets||[]).forEach(sh=>{
+    const ws = wb.addWorksheet(sh.name);
+    ws.columns = sh.widths.map(w=>({width:w}));
+    let rr = writeMeta(ws, sh.headers.length, sh.title, sh.subtitle);
+    const hr = ws.getRow(rr);
+    sh.headers.forEach((h,i)=>{
+      const c = hr.getCell(i+1);
+      c.value = h; c.font = {bold:true, color:{argb:HEADFG}, size:10.5};
+      c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:HEADBG}};
+      c.border = {top:{style:'thin',color:{argb:'FFA97A30'}}, bottom:{style:'thin',color:{argb:'FFA97A30'}}, left:{style:'thin',color:{argb:'FFA97A30'}}, right:{style:'thin',color:{argb:'FFA97A30'}}};
+    });
+    rr++;
+    sh.rows.forEach((rv,ri)=>{
+      if(!rv){ rr++; return; } // null = blank spacer row
+      const row = ws.getRow(rr);
+      rv.forEach((val,i)=>{
+        const c = row.getCell(i+1);
+        c.value = val; c.font = {size:10};
+        c.border = {bottom:{style:'hair',color:{argb:'FFCCCCCC'}}};
+        if(sh.wrapCols && sh.wrapCols.includes(i)) c.alignment = {wrapText:true, vertical:'top'};
+        const st = sh.styles && sh.styles[ri] && sh.styles[ri][i];
+        if(st){ c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+st.bg.replace('#','')}}; c.font = {bold:!!st.bold, size:10, color:{argb:'FF'+st.fg.replace('#','')}}; }
+      });
+      rr++;
+    });
   });
   return wb;
 }
@@ -6069,7 +6096,7 @@ function cmpBatchText(batches){
 // For every CNF + product, compares each submission inside the date range
 // with the one right before it for that same product (the baseline may be
 // from before the range). Only differences that look unusual come out.
-function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline){
+function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLabel){
   const groups = {};
   const pool = (allSubsForBaseline||subs).filter(s=>s.date<=toDate);
   pool.forEach(sub=>{
@@ -6136,7 +6163,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline){
       }
       if(!flags.length) continue;
       const sev = flags.reduce((m,f)=>sevRank[f.sev]>sevRank[m]?f.sev:m,'Low');
-      out.push({sev, flags, prev, cur, delta, pct, mfdChanged});
+      out.push({sev, flags, prev, cur, delta, pct, mfdChanged, list, i});
     }
   });
   out.sort((a,b)=> sevRank[b.sev]-sevRank[a.sev] || String(a.cur.sub.cnfCode).localeCompare(String(b.cur.sub.cnfCode)) || String(a.cur.code).localeCompare(String(b.cur.code),undefined,{numeric:true}) );
@@ -6164,9 +6191,14 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline){
     const nm = rows[i][1] + ' (' + rows[i][2] + ')';
     byCnf[nm] = (byCnf[nm]||0)+1;
   });
+  const baselineDates = out.map(x=>x.prev.sub.date).sort();
   const summaryRows = [
     ['COMPARISON PERIOD',''],
-    ['From', fromDate], ['To', toDate],
+    ['Compared submissions dated', `${fromDate}  to  ${toDate}`],
+    ['CNF / CFA', cnfLabel||'All CNFs'],
+    ['Earliest starting point used', baselineDates.length ? baselineDates[0] : '—'],
+    ['How it is compared', 'Every submission dated inside the range is compared with the PREVIOUS submission of the same product by the same CNF/CFA. The previous one may be dated before the range start — it is used as the starting point.'],
+    ['Sheets in this file', '1 Summary · 2 Data (every difference with logic and reason) · 3 CNF Email View (short product-wise MFD and stock timeline, ready to send to the CNF/CFA)'],
     ['',''],
     ['AT A GLANCE',''],
     ['Product comparisons made', pairsCompared.n],
@@ -6181,6 +6213,79 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline){
     ['FLAGGED LINES BY CNF',''],
     ...Object.entries(byCnf).sort((a,b)=>b[1]-a[1]),
   ];
+  // ---- Sheet 3: short, product-wise timeline a CNF/CFA can be sent as-is ----
+  const marks = {}; // `${subId}|${mfd}` -> {level, issues[]}
+  const LV = {wrong:3, conflict:2, review:1};
+  const addMark = (snap, mfd, level, issue)=>{
+    const k = snap.sub.id+'|'+mfd; const m = marks[k] || (marks[k] = {level, issues:[]});
+    if(LV[level]>LV[m.level]) m.level = level;
+    if(!m.issues.includes(issue)) m.issues.push(issue);
+  };
+  out.forEach(x=>{
+    const pM = Object.keys(x.prev.batches), cM = Object.keys(x.cur.batches);
+    const added = cM.filter(m=>!(m in x.prev.batches)), removed = pM.filter(m=>!(m in x.cur.batches));
+    const newestPrev = pM.filter(m=>m!=='No MFD').sort().slice(-1)[0];
+    x.flags.forEach(f=>{
+      if(f.type==='Same qty, MFD changed'){
+        added.forEach(m=>addMark(x.cur, m, 'wrong', `MFD changed to ${m} on ${x.cur.sub.date} but stock is the same as ${x.prev.sub.date}`));
+        removed.forEach(m=>addMark(x.prev, m, 'conflict', `Entered as ${m} on ${x.prev.sub.date}; later entry shows a different MFD for the same stock`));
+      } else if(f.type==='MFD changed'){
+        added.forEach(m=>addMark(x.cur, m, 'wrong', `MFD differs from the earlier entry (${removed.join(', ')})`));
+      } else if(f.type==='MFD missing'){
+        addMark(x.cur, 'No MFD', 'wrong', 'MFD left blank');
+      } else if(f.type==='Older MFD appeared'){
+        added.filter(m=>m!=='No MFD' && newestPrev && m<newestPrev).forEach(m=>addMark(x.cur, m, 'wrong', `Older MFD entered after a newer batch (${newestPrev}) was already held`));
+      } else if(f.type==='Batch qty increased'){
+        pM.filter(m=>m in x.cur.batches && x.cur.batches[m]-x.prev.batches[m]>1 && x.cur.batches[m]-x.prev.batches[m]>x.prev.batches[m]*0.01)
+          .forEach(m=>addMark(x.cur, m, 'wrong', `Stock of this batch went up from ${Number(x.prev.batches[m].toFixed(1))} to ${Number(x.cur.batches[m].toFixed(1))} kg without a new batch`));
+      } else if(f.type==='Big qty swing'){
+        cM.forEach(m=>addMark(x.cur, m, 'review', f.text));
+      } else if(f.type==='Far from SAP qty'){
+        cM.forEach(m=>addMark(x.cur, m, 'review', f.text));
+      }
+    });
+  });
+  const groupMap = new Map();
+  out.forEach(x=>{
+    const k = x.cur.sub.cnfCode+'|'+x.cur.code;
+    const g = groupMap.get(k) || {cnfCode:x.cur.sub.cnfCode, code:x.cur.code, name:x.cur.name, list:x.list, lo:x.i-1, hi:x.i};
+    g.lo = Math.min(g.lo, x.i-1); g.hi = Math.max(g.hi, x.i);
+    groupMap.set(k, g);
+  });
+  const evHeaders = ['CNF Code','CNF Name','Product Code','Product Name','Submission Date','MFD Entered','Stock (kg)','Check','What is wrong'];
+  const evRows = [], evStyles = [];
+  const LEVEL_UI = {
+    wrong:    {label:'✖ Incorrect — please verify', bg:'#f8d0cc', fg:'#8a1f11'},
+    conflict: {label:'⚠ Conflicts with a later entry', bg:'#fde2c4', fg:'#8a4b0a'},
+    review:   {label:'⚠ Please review', bg:'#fff2a8', fg:'#5c3b00'},
+  };
+  const evGroups = [...groupMap.values()].sort((a,b)=> String(a.cnfCode).localeCompare(String(b.cnfCode),undefined,{numeric:true}) || String(a.code).localeCompare(String(b.code),undefined,{numeric:true}));
+  let lastCnf = null;
+  evGroups.forEach(g=>{
+    const rowsForG = [], stylesForG = [];
+    for(let j=g.lo;j<=g.hi;j++){
+      const snap = g.list[j];
+      Object.keys(snap.batches).sort((a,b)=> a==='No MFD'?1 : b==='No MFD'?-1 : a.localeCompare(b)).forEach(m=>{
+        const mk = marks[snap.sub.id+'|'+m];
+        const cnf = state.masters.cnfs.find(c=>String(c.code)===String(g.cnfCode));
+        const ui = mk ? LEVEL_UI[mk.level] : null;
+        rowsForG.push([g.cnfCode, cnf?cnf.name:(snap.sub.cnfName||''), g.code, g.name, snap.sub.date + (snap.sub.date<fromDate?' (starting point)':''), m, Number(snap.batches[m].toFixed(1)), ui?ui.label:'✔ OK', mk?mk.issues.join('; '):'']);
+        const bad = ui ? {bg:ui.bg, fg:ui.fg, bold:true} : null;
+        stylesForG.push(ui ? [null,null,null,null,null,bad,null,bad,bad] : [null,null,null,null,null,null,null,{bg:'#dff0e0', fg:'#1e5b2b'},null]);
+      });
+    }
+    if(!rowsForG.length) return;
+    if(evRows.length){ evRows.push(null); evStyles.push(null); if(lastCnf!==null && lastCnf!==g.cnfCode){ evRows.push(null); evStyles.push(null); } }
+    lastCnf = g.cnfCode;
+    rowsForG.forEach((r,i)=>{ evRows.push(r); evStyles.push(stylesForG[i]); });
+  });
+  const emailSheet = evRows.length ? {
+    name: 'CNF Email View',
+    title: 'Please confirm the highlighted MFD / stock entries',
+    subtitle: `Submissions dated ${fromDate} to ${toDate} · ${cnfLabel||'All CNFs'} · products where an entry looks incorrect or inconsistent, shown date-wise`,
+    headers: evHeaders, rows: evRows, styles: evStyles,
+    widths: [10,24,13,34,22,14,12,30,60], wrapCols: [3,7,8],
+  } : null;
   const mfdCols = [headers.indexOf('Previous MFD (kg)'), headers.indexOf('Current MFD (kg)')];
   const cellStyleFn = (ri, ci, val)=>{
     const x = out[ri]; if(!x) return null;
@@ -6188,7 +6293,12 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline){
     if(ci===headers.indexOf('Change kg') && val!==0) return val>0 ? {bg:'#fde2d4', fg:'#8a3b0a'} : {bg:'#dff0e0', fg:'#1e5b2b'};
     return null;
   };
-  return {headers, rows, summaryRows, cellStyleFn, flagged: out.length, compared: pairsCompared.n, sevCount};
+  return {headers, rows, summaryRows, cellStyleFn, emailSheet, flagged: out.length, compared: pairsCompared.n, sevCount};
+}
+function noSubsMessage(sel, histOk){
+  const dates = state.submissions.filter(x=>sel.cnf==='ALL' || String(x.cnfCode)===String(sel.cnf)).map(x=>x.date).filter(Boolean).sort();
+  const span = dates.length ? `${dates.length} submission(s) are loaded, dated ${dates[0]} to ${dates[dates.length-1]}` : 'no submissions are loaded at all';
+  return `No submissions between ${sel.from} and ${sel.to} — ${span}.${histOk?'':' The server history could NOT be fetched just now (try Sync, then retry).'} Widen the date range.`;
 }
 async function loadHistoryForReport(){
   const ok = await ensureAllHistory({retry:false, timeoutMs:60000});
@@ -7758,9 +7868,9 @@ function bindGlobal(){
     if(!sel.from || !sel.to || sel.from>sel.to){ showToast('Pick a valid date range — From must be on or before To.'); return; }
     prog.style.display='block'; prog.textContent='Loading submission history…';
     try{
-      await loadHistoryForReport();
+      const histOk = await loadHistoryForReport();
       const subs = subsInRange(sel.from, sel.to, sel.cnf);
-      if(!subs.length){ prog.style.display='none'; showToast(`No submissions found between ${sel.from} and ${sel.to}.`); return; }
+      if(!subs.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
       prog.textContent='Building report…';
       const rows = buildRangeStockRows(subs);
       const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
@@ -7783,18 +7893,19 @@ function bindGlobal(){
     if(!sel.from || !sel.to || sel.from>sel.to){ showToast('Pick a valid date range — From must be on or before To.'); return; }
     prog.style.display='block'; prog.textContent='Loading submission history…';
     try{
-      await loadHistoryForReport();
+      const histOk = await loadHistoryForReport();
       const inRange = subsInRange(sel.from, sel.to, sel.cnf);
       const pool = state.submissions.filter(s=>sel.cnf==='ALL' || String(s.cnfCode)===String(sel.cnf));
-      if(!inRange.length){ prog.style.display='none'; showToast(`No submissions found between ${sel.from} and ${sel.to}.`); return; }
+      if(!inRange.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
       prog.textContent='Comparing…';
-      const rep = buildComparisonReport(inRange, sel.from, sel.to, pool);
+      const cnfObj = state.masters.cnfs.find(c=>String(c.code)===String(sel.cnf));
+      const rep = buildComparisonReport(inRange, sel.from, sel.to, pool, sel.cnf==='ALL'?'All CNFs':(cnfObj?`${cnfObj.name} (${cnfObj.code})`:sel.cnf));
       if(!rep.flagged){ prog.style.display='none'; showToast(`✓ No differences found — ${rep.compared} product comparison(s) all consistent.`); return; }
       const wb = await buildXlsxWorkbook({
         title: 'Comparison Report — Unusual Changes Between Submissions',
-        subtitle: `${sel.from} to ${sel.to} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${rep.flagged} flagged of ${rep.compared} comparisons`,
+        subtitle: `Compared submissions dated ${sel.from} to ${sel.to} (each against the previous submission of the same product) · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${rep.flagged} flagged of ${rep.compared} comparisons`,
         headers: rep.headers, rows: rep.rows, summaryRows: rep.summaryRows,
-        statusColIndex: 0, statusColors: CMP_SEVERITY_COLORS, cellStyleFn: rep.cellStyleFn, wrapCols: [8,9,14,15,16],
+        statusColIndex: 0, statusColors: CMP_SEVERITY_COLORS, cellStyleFn: rep.cellStyleFn, wrapCols: [8,9,14,15,16], extraSheets: rep.emailSheet?[rep.emailSheet]:[],
       });
       await downloadRealXlsx(`cnf-comparison-${sel.from}-to-${sel.to}`, wb);
       prog.style.display='none';
