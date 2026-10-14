@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.42';
+const APP_VERSION = '2026-08-24.43';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -4755,7 +4755,7 @@ function generatedByLabel(){
 // genuinely valid .xlsx file that never triggers Excel's "format and
 // extension don't match, could be corrupted" warning the way an HTML file
 // wearing an .xls extension used to.
-async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex}){
+async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex, statusColors, cellStyleFn}){
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Ganesh Stock IQ';
   const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
@@ -4841,6 +4841,7 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
     cell.border = {top:{style:'thin',color:{argb:'FFA97A30'}}, bottom:{style:'thin',color:{argb:'FFA97A30'}}, left:{style:'thin',color:{argb:'FFA97A30'}}, right:{style:'thin',color:{argb:'FFA97A30'}}};
   });
   r++;
+  const firstDataRow = r;
   rows.forEach(rowVals=>{
     const row = wsData.getRow(r);
     rowVals.forEach((val,i)=>{
@@ -4852,7 +4853,10 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
       // matching on which known label the cell STARTS WITH keeps the
       // colour-coding working against the combined text.
       const isStatus = statusColIndex!=null && i===statusColIndex;
-      const c = isStatus ? Object.keys(AGEING_STATUS_COLORS).map(k=>AGEING_STATUS_COLORS[String(val).startsWith(k)?k:null]).find(Boolean) : null;
+      const COLS = statusColors || AGEING_STATUS_COLORS;
+      const c = isStatus ? Object.keys(COLS).map(k=>COLS[String(val).startsWith(k)?k:null]).find(Boolean) : null;
+      const cs = cellStyleFn ? cellStyleFn(r - firstDataRow, i, val) : null;
+      if(cs){ cell.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+cs.bg.replace('#','')}}; cell.font = {bold:!!cs.bold, size:10, color:{argb:'FF'+cs.fg.replace('#','')}}; }
       if(c){ cell.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FF'+c.bg.replace('#','')}}; cell.font = {bold:true, size:10, color:{argb:'FF'+c.fg.replace('#','')}}; }
     });
     r++;
@@ -5815,6 +5819,14 @@ function MisSubmissionDetailModal(){
   </div></div>`;
 }
 
+function exportRange(){
+  if(!state.exportRangeSel){ const d=new Date(); d.setDate(d.getDate()-30); state.exportRangeSel = {from: localDateISO(d), to: todayISO(), cnf:'ALL'}; }
+  return state.exportRangeSel;
+}
+function compareRange(){
+  if(!state.compareRangeSel){ const d=new Date(); d.setDate(d.getDate()-30); state.compareRangeSel = {from: localDateISO(d), to: todayISO(), cnf:'ALL'}; }
+  return state.compareRangeSel;
+}
 function MisExport(){
   return `<div class="panel-card">
     <h4>Export Centre</h4>
@@ -5823,6 +5835,30 @@ function MisExport(){
     <div id="dataAsOf" style="margin-top:10px;font-family:var(--mono);font-size:11.5px;color:var(--wheat-dim);">${dataAsOfText()}</div>
     <div style="font-size:11.5px;color:var(--ink-soft);margin-top:2px;">Every export on this screen fetches the newest data from the server first.</div>
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Old Data — Date Range Export</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Pick a date range (and optionally one CNF) to download every submission made in it — same colour-coded format and Summary sheet as the normal export, with the Stock Date and Submission ID on each row. Ageing status is calculated as of today.</p>
+    <div class="filters">
+      <div class="fg"><label>From</label><input type="date" id="rngFrom" value="${exportRange().from}" max="${todayISO()}"></div>
+      <div class="fg"><label>To</label><input type="date" id="rngTo" value="${exportRange().to}" max="${todayISO()}"></div>
+      <div class="fg"><label>CNF</label><select id="rngCnf"><option value="ALL">All CNFs</option>${state.masters.cnfs.map(c=>`<option value="${c.code}" ${exportRange().cnf===c.code?'selected':''}>${c.name} · ${c.code}</option>`).join('')}</select></div>
+    </div>
+    <button class="btn btn-primary" id="btnExportRange" style="margin-top:12px;">⬇ Export Date Range</button>
+    <div id="rngProg" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+  </div>
+
+  <div class="panel-card">
+    <h4>Comparison Report — Date to Date (catch wrong entries)</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Compares each CNF's submissions product-code by product-code within the date range and lists <b>only what differs</b>: MFD changed for the same product, same quantity with a different MFD, an older batch suddenly appearing, a batch quantity going up, big stock swings, or entered stock far from the SAP quantity. Rows are colour-coded <b style="color:#c0392b;">High</b> / <b style="color:#e67e22;">Medium</b> / <b style="color:#2e86c1;">Low</b>, changed MFDs are highlighted yellow, and the Summary sheet counts flags by type and by CNF. The submission just before the range is used as the starting point.</p>
+    <div class="filters">
+      <div class="fg"><label>From</label><input type="date" id="cmpFrom" value="${compareRange().from}" max="${todayISO()}"></div>
+      <div class="fg"><label>To</label><input type="date" id="cmpTo" value="${compareRange().to}" max="${todayISO()}"></div>
+      <div class="fg"><label>CNF</label><select id="cmpCnf"><option value="ALL">All CNFs</option>${state.masters.cnfs.map(c=>`<option value="${c.code}" ${compareRange().cnf===c.code?'selected':''}>${c.name} · ${c.code}</option>`).join('')}</select></div>
+    </div>
+    <button class="btn btn-primary" id="btnExportCompare" style="margin-top:12px;">⬇ Download Comparison Report</button>
+    <div id="cmpProg" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
   <div class="panel-card">
@@ -5999,6 +6035,155 @@ function buildMisExportRows(rows){
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
+
+/* ---------------- Date-range export + Comparison (anomaly) report ---------------- */
+const CMP_SEVERITY_COLORS = {
+  'High':   {bg:'#c0392b', fg:'#ffffff'},
+  'Medium': {bg:'#e67e22', fg:'#ffffff'},
+  'Low':    {bg:'#5dade2', fg:'#0b2b40'},
+};
+function subsInRange(fromDate, toDate, cnfCode){
+  return state.submissions
+    .filter(s=>s.date>=fromDate && s.date<=toDate && (cnfCode==='ALL' || String(s.cnfCode)===String(cnfCode)))
+    .sort((a,b)=> a.date===b.date ? new Date(a.timestamp)-new Date(b.timestamp) : (a.date<b.date?-1:1));
+}
+// Same row shape allCurrentStockRows() produces, so buildMisExportRows() /
+// buildMisPivotSummaryRows() work on historical data unchanged.
+function buildRangeStockRows(subs){
+  const rows = [];
+  subs.forEach(sub=>{
+    const cnf = state.masters.cnfs.find(c=>String(c.code)===String(sub.cnfCode)) || {name: sub.cnfName||sub.cnfCode, code: sub.cnfCode};
+    sub.items.forEach(it=>{
+      const product = state.masters.products.find(p=>p.code===it.code);
+      if(!product) return;
+      rows.push({cnf, sub, item:it, product, ageStatus: ageingStatus(product, it.mfd), safetyStatus: safetyStatusFor(it, product)});
+    });
+  });
+  return rows;
+}
+function cmpBatchText(batches){
+  const keys = Object.keys(batches).sort();
+  return keys.length ? keys.map(m=>`${m} (${Number(batches[m].toFixed(1))} kg)`).join('; ') : '—';
+}
+// For every CNF + product, compares each submission inside the date range
+// with the one right before it for that same product (the baseline may be
+// from before the range). Only differences that look unusual come out.
+function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline){
+  const groups = {};
+  const pool = (allSubsForBaseline||subs).filter(s=>s.date<=toDate);
+  pool.forEach(sub=>{
+    const byCode = {};
+    sub.items.forEach(it=>{
+      const o = byCode[it.code] || (byCode[it.code] = {name:it.name, cat:it.category||'', batches:{}, kg:0, sap:0, hasSap:false, reason:''});
+      const m = it.mfd || 'No MFD';
+      const kg = Number(it.kgQty)||0;
+      o.batches[m] = (o.batches[m]||0) + kg; o.kg += kg;
+      if(it.sapQtyKg!=null && it.sapQtyKg!==''){ o.sap += Number(it.sapQtyKg)||0; o.hasSap = true; }
+      if(it.varianceReason) o.reason = it.varianceReason;
+    });
+    Object.entries(byCode).forEach(([code,o])=>{
+      const k = String(sub.cnfCode)+'|'+code;
+      (groups[k] = groups[k]||[]).push(Object.assign({sub, code}, o));
+    });
+  });
+  const out = [], pairsCompared = {n:0};
+  const sevRank = {High:3, Medium:2, Low:1};
+  Object.values(groups).forEach(list=>{
+    list.sort((a,b)=> new Date(a.sub.timestamp)-new Date(b.sub.timestamp));
+    for(let i=1;i<list.length;i++){
+      const prev = list[i-1], cur = list[i];
+      if(cur.sub.date<fromDate || cur.sub.date>toDate || prev.sub.id===cur.sub.id) continue;
+      pairsCompared.n++;
+      const flags = [];
+      const pM = Object.keys(prev.batches), cM = Object.keys(cur.batches);
+      const added = cM.filter(m=>!(m in prev.batches)), removed = pM.filter(m=>!(m in cur.batches));
+      const delta = cur.kg - prev.kg;
+      const pct = prev.kg>0 ? delta/prev.kg*100 : (cur.kg>0?100:0);
+      const mfdChanged = added.length>0 || removed.length>0;
+      if(mfdChanged){
+        if(added.length && removed.length && Math.abs(pct)<=2){
+          flags.push({sev:'High', type:'Same qty, MFD changed', text:`Same stock (${Number(prev.kg.toFixed(1))} → ${Number(cur.kg.toFixed(1))} kg) but MFD changed: ${removed.join(', ')} → ${added.join(', ')}`});
+        } else if(added.length && removed.length){
+          flags.push({sev:'Medium', type:'MFD changed', text:`MFD changed: ${removed.join(', ')} → ${added.join(', ')}`});
+        }
+        const realPrev = pM.filter(m=>m!=='No MFD').sort();
+        const newestPrev = realPrev.length ? realPrev[realPrev.length-1] : null;
+        added.forEach(m=>{
+          if(m==='No MFD') flags.push({sev:'Medium', type:'MFD missing', text:'Batch entered without an MFD'});
+          else if(newestPrev && m<newestPrev) flags.push({sev:'Medium', type:'Older MFD appeared', text:`Older batch ${m} appeared although newer batch ${newestPrev} was already held`});
+        });
+        if(added.length && !removed.length && !flags.length){
+          flags.push({sev:'Low', type:'New batch', text:`New batch added: ${added.join(', ')}`});
+        }
+        if(removed.length && !added.length){
+          flags.push({sev:'Low', type:'Batch cleared', text:`Batch no longer listed: ${removed.join(', ')}`});
+        }
+      }
+      // an existing batch can only go down; going UP means a wrong entry (or an unrecorded receipt)
+      pM.filter(m=>m in cur.batches).forEach(m=>{
+        const inc = cur.batches[m] - prev.batches[m];
+        if(inc > 1 && inc > prev.batches[m]*0.01){
+          const big = inc > prev.batches[m]*0.25;
+          flags.push({sev: big?'High':'Medium', type:'Batch qty increased', text:`Batch ${m} grew ${Number(prev.batches[m].toFixed(1))} → ${Number(cur.batches[m].toFixed(1))} kg with no new receipt batch`});
+        }
+      });
+      if(!mfdChanged && Math.abs(pct)>=50 && Math.abs(delta)>1){
+        flags.push({sev:'Medium', type:'Big qty swing', text:`Stock ${delta>0?'rose':'fell'} ${Math.abs(Math.round(pct))}% (${Number(prev.kg.toFixed(1))} → ${Number(cur.kg.toFixed(1))} kg)`});
+      }
+      if(cur.hasSap && cur.sap>0 && Math.abs(cur.kg-cur.sap)/cur.sap > 0.2){
+        flags.push({sev:'Medium', type:'Far from SAP qty', text:`Entered ${Number(cur.kg.toFixed(1))} kg vs SAP ${Number(cur.sap.toFixed(1))} kg${cur.reason?` — reason: ${cur.reason}`:''}`});
+      }
+      if(!flags.length) continue;
+      const sev = flags.reduce((m,f)=>sevRank[f.sev]>sevRank[m]?f.sev:m,'Low');
+      out.push({sev, flags, prev, cur, delta, pct, mfdChanged});
+    }
+  });
+  out.sort((a,b)=> sevRank[b.sev]-sevRank[a.sev] || String(a.cur.sub.cnfCode).localeCompare(String(b.cur.sub.cnfCode)) || String(a.cur.code).localeCompare(String(b.cur.code),undefined,{numeric:true}) );
+  const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed'];
+  const rows = out.map(x=>{
+    const cnf = state.masters.cnfs.find(c=>String(c.code)===String(x.cur.sub.cnfCode));
+    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, x.prev.sub.date, x.cur.sub.date, cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | ')];
+  });
+  const byType = {}, byCnf = {};
+  const sevCount = {High:0, Medium:0, Low:0};
+  out.forEach((x,i)=>{
+    sevCount[x.sev]++;
+    x.flags.forEach(f=>{ byType[f.type] = (byType[f.type]||0)+1; });
+    const nm = rows[i][1] + ' (' + rows[i][2] + ')';
+    byCnf[nm] = (byCnf[nm]||0)+1;
+  });
+  const summaryRows = [
+    ['COMPARISON PERIOD',''],
+    ['From', fromDate], ['To', toDate],
+    ['',''],
+    ['AT A GLANCE',''],
+    ['Product comparisons made', pairsCompared.n],
+    ['Flagged (differences found)', out.length],
+    ['High — review first', sevCount.High],
+    ['Medium', sevCount.Medium],
+    ['Low (informational)', sevCount.Low],
+    ['',''],
+    ['FLAGS BY TYPE',''],
+    ...Object.entries(byType).sort((a,b)=>b[1]-a[1]),
+    ['',''],
+    ['FLAGGED LINES BY CNF',''],
+    ...Object.entries(byCnf).sort((a,b)=>b[1]-a[1]),
+  ];
+  const mfdCols = [headers.indexOf('Previous MFD (kg)'), headers.indexOf('Current MFD (kg)')];
+  const cellStyleFn = (ri, ci, val)=>{
+    const x = out[ri]; if(!x) return null;
+    if(x.mfdChanged && mfdCols.includes(ci)) return {bg:'#fff2a8', fg:'#5c3b00', bold:true};
+    if(ci===headers.indexOf('Change kg') && val!==0) return val>0 ? {bg:'#fde2d4', fg:'#8a3b0a'} : {bg:'#dff0e0', fg:'#1e5b2b'};
+    return null;
+  };
+  return {headers, rows, summaryRows, cellStyleFn, flagged: out.length, compared: pairsCompared.n, sevCount};
+}
+async function loadHistoryForReport(){
+  const ok = await ensureAllHistory({retry:false, timeoutMs:60000});
+  if(!ok) showToast('⚠ Could not load the full history from the server — using the submissions already loaded on this device.');
+  return ok;
+}
+
 function toCsv(rows){
   const {headers, dataRows} = buildMisExportRows(rows);
   const esc = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g,'""')}"` : v;
@@ -7547,6 +7732,66 @@ function bindGlobal(){
   if(misStatus) misStatus.onchange = ()=>{ state.misFilters.status = misStatus.value; render(); };
   const btnExport = document.getElementById('btnExportCsv');
   if(btnExport) btnExport.onclick = runExport;
+  const bindRange = (getter, ids)=>{
+    const [f,t,c] = ids.map(i=>document.getElementById(i));
+    if(f) f.onchange = ()=>{ getter().from = f.value; };
+    if(t) t.onchange = ()=>{ getter().to = t.value; };
+    if(c) c.onchange = ()=>{ getter().cnf = c.value; };
+  };
+  bindRange(exportRange, ['rngFrom','rngTo','rngCnf']);
+  bindRange(compareRange, ['cmpFrom','cmpTo','cmpCnf']);
+  const btnExportRange = document.getElementById('btnExportRange');
+  if(btnExportRange) btnExportRange.onclick = async ()=>{
+    const sel = exportRange(), prog = document.getElementById('rngProg');
+    if(!sel.from || !sel.to || sel.from>sel.to){ showToast('Pick a valid date range — From must be on or before To.'); return; }
+    prog.style.display='block'; prog.textContent='Loading submission history…';
+    try{
+      await loadHistoryForReport();
+      const subs = subsInRange(sel.from, sel.to, sel.cnf);
+      if(!subs.length){ prog.style.display='none'; showToast(`No submissions found between ${sel.from} and ${sel.to}.`); return; }
+      prog.textContent='Building report…';
+      const rows = buildRangeStockRows(subs);
+      const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
+      const wb = await buildXlsxWorkbook({
+        title: 'CNF Stock Export — Date Range',
+        subtitle: `${sel.from} to ${sel.to} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${subs.length} submission(s), ${rows.length} line(s)`,
+        headers, rows: dataRows, summaryRows: buildMisPivotSummaryRows(rows), statusColIndex,
+      });
+      await downloadRealXlsx(`cnf-stock-${sel.from}-to-${sel.to}`, wb);
+      prog.style.display='none';
+      showToast(`✓ ${subs.length} submission(s), ${rows.length} line(s) exported`);
+    }catch(e){
+      prog.style.display='none';
+      showToast(`⚠ Export failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
+  };
+  const btnExportCompare = document.getElementById('btnExportCompare');
+  if(btnExportCompare) btnExportCompare.onclick = async ()=>{
+    const sel = compareRange(), prog = document.getElementById('cmpProg');
+    if(!sel.from || !sel.to || sel.from>sel.to){ showToast('Pick a valid date range — From must be on or before To.'); return; }
+    prog.style.display='block'; prog.textContent='Loading submission history…';
+    try{
+      await loadHistoryForReport();
+      const inRange = subsInRange(sel.from, sel.to, sel.cnf);
+      const pool = state.submissions.filter(s=>sel.cnf==='ALL' || String(s.cnfCode)===String(sel.cnf));
+      if(!inRange.length){ prog.style.display='none'; showToast(`No submissions found between ${sel.from} and ${sel.to}.`); return; }
+      prog.textContent='Comparing…';
+      const rep = buildComparisonReport(inRange, sel.from, sel.to, pool);
+      if(!rep.flagged){ prog.style.display='none'; showToast(`✓ No differences found — ${rep.compared} product comparison(s) all consistent.`); return; }
+      const wb = await buildXlsxWorkbook({
+        title: 'Comparison Report — Unusual Changes Between Submissions',
+        subtitle: `${sel.from} to ${sel.to} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${rep.flagged} flagged of ${rep.compared} comparisons`,
+        headers: rep.headers, rows: rep.rows, summaryRows: rep.summaryRows,
+        statusColIndex: 0, statusColors: CMP_SEVERITY_COLORS, cellStyleFn: rep.cellStyleFn,
+      });
+      await downloadRealXlsx(`cnf-comparison-${sel.from}-to-${sel.to}`, wb);
+      prog.style.display='none';
+      showToast(`✓ Comparison downloaded — ${rep.sevCount.High} High, ${rep.sevCount.Medium} Medium, ${rep.sevCount.Low} Low`);
+    }catch(e){
+      prog.style.display='none';
+      showToast(`⚠ Comparison failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
+  };
 
   // Approved/Pending Orders — Merged Report: purely client-side. Uploading
   // only ever parses the file and builds an in-memory lookup — nothing is
