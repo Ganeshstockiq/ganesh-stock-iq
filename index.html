@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.51';
+const APP_VERSION = '2026-08-24.52';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -5902,7 +5902,7 @@ function MisExport(){
       <div class="fg"><label>${compareRange().mode==='single'?'Date':'Period ends on'}</label><input type="date" id="cmpDate" value="${compareRange().date}" max="${todayISO()}"></div>`}
       <div class="fg"><label>CNF</label><select id="cmpCnf"><option value="ALL">All CNFs</option>${state.masters.cnfs.map(c=>`<option value="${c.code}" ${compareRange().cnf===c.code?'selected':''}>${c.name} · ${c.code}</option>`).join('')}</select></div>
       <div class="fg"><label>Compare against</label><select id="cmpBaseline">
-        <option value="before" ${compareRange().baseline==='before'?'selected':''}>Last submission BEFORE the From date (recommended)</option>
+        <option value="before" ${compareRange().baseline==='before'?'selected':''}>Last submission BEFORE the From date (recommended; if none, the one before it inside the period)</option>
         <option value="within" ${compareRange().baseline==='within'?'selected':''}>Only inside the period (nothing older than From date)</option>
         <option value="chain" ${compareRange().baseline==='chain'?'selected':''}>Step by step — each submission vs the one before it</option>
       </select></div>
@@ -6140,7 +6140,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
       (groups[k] = groups[k]||[]).push(Object.assign({sub, code}, o));
     });
   });
-  const out = [], pairsCompared = {n:0}, pairsByCnf = {};
+  const out = [], pairsCompared = {n:0}, pairsByCnf = {}, fallbackPairs = {n:0};
   const sevRank = {High:3, Medium:2, Low:1};
   Object.values(groups).forEach(list=>{
     list.sort((a,b)=> new Date(a.sub.timestamp)-new Date(b.sub.timestamp));
@@ -6162,6 +6162,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
         let pi = -1;
         for(let i=ci-1;i>=0;i--) if(list[i].sub.date<fromDate){ pi = i; break; }
         if(pi>=0) pairIdx.push([pi,ci]);
+        else if(ci>0){ pairIdx.push([ci-1,ci]); fallbackPairs.n++; } // no submission before the period exists for this CNF — use the one just before it inside the period
       }
     }
     for(const [pIdx,i] of pairIdx){
@@ -6253,6 +6254,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const summaryRows = [
     ['COMPARISON PERIOD',''],
     ['Compared submissions dated', fromDate===toDate ? fromDate : `${fromDate}  to  ${toDate}`],
+    ...(baselineMode==='before' ? [['Fallback used', `${fallbackPairs.n} product comparison(s) had no submission before the period (CNF started submitting inside it), so they were compared with the previous submission inside the period instead`]] : []),
     ['Compared against', baselineMode==='within' ? 'Inside the period only — each product\'s latest submission against the one before it, both dated inside the period' : baselineMode==='chain' ? 'Step by step — each submission against the one right before it' : 'Each CNF/CFA\'s last submission BEFORE this period (only CNFs that submitted in the period are included)'],
     ['CNF / CFA', cnfLabel||'All CNFs'],
     ['Data source', histOk ? 'Full submission history loaded from the server' : '⚠ SERVER HISTORY NOT LOADED — built only from submissions already on this device; many CNFs can be missing. Press Sync and download again.'],
