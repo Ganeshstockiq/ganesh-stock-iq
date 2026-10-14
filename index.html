@@ -880,7 +880,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.49';
+const APP_VERSION = '2026-08-24.51';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -5902,7 +5902,8 @@ function MisExport(){
       <div class="fg"><label>${compareRange().mode==='single'?'Date':'Period ends on'}</label><input type="date" id="cmpDate" value="${compareRange().date}" max="${todayISO()}"></div>`}
       <div class="fg"><label>CNF</label><select id="cmpCnf"><option value="ALL">All CNFs</option>${state.masters.cnfs.map(c=>`<option value="${c.code}" ${compareRange().cnf===c.code?'selected':''}>${c.name} · ${c.code}</option>`).join('')}</select></div>
       <div class="fg"><label>Compare against</label><select id="cmpBaseline">
-        <option value="before" ${compareRange().baseline==='before'?'selected':''}>Last submission before the period (recommended)</option>
+        <option value="before" ${compareRange().baseline==='before'?'selected':''}>Last submission BEFORE the From date (recommended)</option>
+        <option value="within" ${compareRange().baseline==='within'?'selected':''}>Only inside the period (nothing older than From date)</option>
         <option value="chain" ${compareRange().baseline==='chain'?'selected':''}>Step by step — each submission vs the one before it</option>
       </select></div>
     </div>
@@ -6120,7 +6121,8 @@ function cmpBatchText(batches){
 // from before the range). Only differences that look unusual come out.
 function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLabel, opts){
   opts = opts || {};
-  const baselineMode = opts.baseline==='chain' ? 'chain' : 'before';
+  const histOk = opts.histOk!==false;
+  const baselineMode = opts.baseline==='chain' ? 'chain' : opts.baseline==='within' ? 'within' : 'before';
   const groups = {};
   const pool = (allSubsForBaseline||subs).filter(s=>s.date<=toDate);
   pool.forEach(sub=>{
@@ -6149,6 +6151,10 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     const pairIdx = [];
     if(baselineMode==='chain'){
       for(let i=1;i<list.length;i++) if(list[i].sub.date>=fromDate && list[i].sub.date<=toDate) pairIdx.push([i-1,i]);
+    } else if(baselineMode==='within'){
+      let ci = -1;
+      for(let i=list.length-1;i>=0;i--) if(list[i].sub.date>=fromDate && list[i].sub.date<=toDate){ ci = i; break; }
+      if(ci>0 && list[ci-1].sub.date>=fromDate) pairIdx.push([ci-1,ci]);
     } else {
       let ci = -1;
       for(let i=list.length-1;i>=0;i--) if(list[i].sub.date>=fromDate && list[i].sub.date<=toDate){ ci = i; break; }
@@ -6247,10 +6253,11 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const summaryRows = [
     ['COMPARISON PERIOD',''],
     ['Compared submissions dated', fromDate===toDate ? fromDate : `${fromDate}  to  ${toDate}`],
-    ['Compared against', baselineMode==='chain' ? 'Step by step — each submission against the one right before it' : 'Each CNF/CFA\'s last submission BEFORE this period (only CNFs that submitted in the period are included)'],
+    ['Compared against', baselineMode==='within' ? 'Inside the period only — each product\'s latest submission against the one before it, both dated inside the period' : baselineMode==='chain' ? 'Step by step — each submission against the one right before it' : 'Each CNF/CFA\'s last submission BEFORE this period (only CNFs that submitted in the period are included)'],
     ['CNF / CFA', cnfLabel||'All CNFs'],
+    ['Data source', histOk ? 'Full submission history loaded from the server' : '⚠ SERVER HISTORY NOT LOADED — built only from submissions already on this device; many CNFs can be missing. Press Sync and download again.'],
     ['Previous submission dates used', baselineDates.length ? (baselineDates[0]===baselineDates[baselineDates.length-1] ? baselineDates[0] : `${baselineDates[0]}  to  ${baselineDates[baselineDates.length-1]}`) : '—'],
-    ['How it is compared', baselineMode==='chain' ? 'Every submission dated inside the period is compared with the PREVIOUS submission of the same product by the same CNF/CFA (that one may be dated before the period).' : 'For each product, the latest submission inside the period is compared with the same CNF/CFA\'s most recent submission before the period. The exact previous submission date and time is shown in the "Compared With" columns.'],
+    ['How it is compared', baselineMode==='within' ? 'Only submissions dated inside the period are used: the latest one for each product is compared with the one just before it. Nothing dated before the period start is used.' : baselineMode==='chain' ? 'Every submission dated inside the period is compared with the PREVIOUS submission of the same product by the same CNF/CFA (that one may be dated before the period).' : 'For each product, the latest submission inside the period is compared with the same CNF/CFA\'s most recent submission before the period. The exact previous submission date and time is shown in the "Compared With" columns.'],
     ['Sheets in this file', '1 Summary · 2 Data (every difference with logic and reason) · 3 CNF Email View (short product-wise MFD and stock timeline, ready to send to the CNF/CFA)'],
     ['',''],
     ['AT A GLANCE',''],
@@ -6362,8 +6369,10 @@ function noSubsMessage(sel, histOk){
   return `No submissions between ${sel.from} and ${sel.to} — ${span}.${histOk?'':' The server history could NOT be fetched just now (try Sync, then retry).'} Widen the date range.`;
 }
 async function loadHistoryForReport(){
-  const ok = await ensureAllHistory({retry:false, timeoutMs:60000});
-  if(!ok) showToast('⚠ Could not load the full history from the server — using the submissions already loaded on this device.');
+  // The full history is large; give the server real time, and try once more before giving up.
+  let ok = await ensureAllHistory({retry:false, timeoutMs:120000});
+  if(!ok) ok = await ensureAllHistory({retry:false, timeoutMs:120000});
+  if(!ok) showToast('⚠ Could not load the full history from the server — this report is built from only the submissions already loaded on this device, so most CNFs may be missing. Press Sync and try again.');
   return ok;
 }
 
@@ -7965,13 +7974,13 @@ function bindGlobal(){
       const inRange = subsInRange(sel.from, sel.to, sel.cnf);
       const pool = state.submissions.filter(s=>sel.cnf==='ALL' || String(s.cnfCode)===String(sel.cnf));
       if(!inRange.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
-      prog.textContent='Comparing…';
+      prog.textContent = histOk ? 'Comparing…' : '⚠ Server history not loaded — comparing only what is on this device…';
       const cnfObj = state.masters.cnfs.find(c=>String(c.code)===String(sel.cnf));
-      const rep = buildComparisonReport(inRange, sel.from, sel.to, pool, sel.cnf==='ALL'?'All CNFs':(cnfObj?`${cnfObj.name} (${cnfObj.code})`:sel.cnf), {baseline: sel0.baseline});
+      const rep = buildComparisonReport(inRange, sel.from, sel.to, pool, sel.cnf==='ALL'?'All CNFs':(cnfObj?`${cnfObj.name} (${cnfObj.code})`:sel.cnf), {baseline: sel0.baseline, histOk});
       if(!rep.flagged){ prog.style.display='none'; showToast(`✓ No differences found — ${rep.compared} product comparison(s) all consistent.`); return; }
       const wb = await buildXlsxWorkbook({
         title: 'Comparison Report — Unusual Changes Between Submissions',
-        subtitle: `Submissions dated ${sel.from===sel.to?sel.from:sel.from+' to '+sel.to} compared with ${sel0.baseline==='chain'?'the submission right before each one':'each CNF/CFA\'s last submission before the period'} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${rep.flagged} flagged of ${rep.compared} comparisons`,
+        subtitle: `Submissions dated ${sel.from===sel.to?sel.from:sel.from+' to '+sel.to} compared with ${sel0.baseline==='within'?'the one before it, inside the period':sel0.baseline==='chain'?'the submission right before each one':'each CNF/CFA\'s last submission before the period'} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${rep.flagged} flagged of ${rep.compared} comparisons`,
         headers: rep.headers, rows: rep.rows, summaryRows: rep.summaryRows,
         statusColIndex: 0, statusColors: CMP_SEVERITY_COLORS, cellStyleFn: rep.cellStyleFn, wrapCols: [8,9,14,15,16], extraSheets: rep.emailSheet?[rep.emailSheet]:[],
       });
