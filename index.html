@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.60';
+const APP_VERSION = '2026-08-24.61';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -6282,7 +6282,7 @@ function buildOrdersLookup(rows){
 // as the plain export would show it — this only ever fills gaps, never
 // invents data for a combination the file didn't include.
 function buildMergedOrdersExportRows(rows, lookup){
-  const {headers, dataRows} = buildMisExportRows(rows);
+  const {headers, dataRows} = buildMisExportRowsBase_(rows);
   const cnfCodeIdx = headers.indexOf('CNF Code');
   const prodCodeIdx = headers.indexOf('Product Code');
   const apprIdx = headers.indexOf('Approved Order');
@@ -6361,7 +6361,14 @@ async function broadcastReportsToAllCnfs(onProgress){
 // CSV path and the new styled-Excel path build from this exact same
 // function, so there's no risk of the two ever silently disagreeing on a
 // number. Only the presentation differs downstream.
+// Every detailed stock export goes through here. Once an Approved/Pending Orders
+// file has been uploaded, Approved/Pending Order - Kg and Order To Be Taken are
+// filled in automatically (KG − Approved − Pending), in every export.
 function buildMisExportRows(rows){
+  const o = state.pendingOrdersOverride;
+  return o && o.lookup ? buildMergedOrdersExportRows(rows, o.lookup) : buildMisExportRowsBase_(rows);
+}
+function buildMisExportRowsBase_(rows){
   const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Variance Reason','Approved Order','Pending Order','Submission ID','Audit By'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
@@ -7328,13 +7335,13 @@ async function runExport(){
       await new Promise(r=>setTimeout(r, 220));
     }
     const rows = filteredRows();
-    const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
+    const {headers, dataRows, statusColIndex, cellStyleFn} = buildMisExportRows(rows);
     const summaryRows = buildMisPivotSummaryRows(rows);
     const wb = await buildXlsxWorkbook({
       title: 'CNF Stock Export',
-      subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}`,
+      subtitle: `Filtered view — ${rows.length} line${rows.length!==1?'s':''}${state.pendingOrdersOverride?' · orders from '+state.pendingOrdersOverride.fileName:''}`,
       headers, rows: dataRows,
-      summaryRows, statusColIndex
+      summaryRows, statusColIndex, cellStyleFn
     });
     await downloadRealXlsx(`cnf-stock-export-${todayISO()}`, wb);
     prog.style.display='none';
@@ -8814,11 +8821,11 @@ function bindGlobal(){
       if(!subs.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
       prog.textContent='Building report…';
       const rows = buildRangeStockRows(subs);
-      const {headers, dataRows, statusColIndex} = buildMisExportRows(rows);
+      const {headers, dataRows, statusColIndex, cellStyleFn} = buildMisExportRows(rows);
       const wb = await buildXlsxWorkbook({
         title: 'CNF Stock Export — Date Range',
         subtitle: `${sel.from} to ${sel.to} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${subs.length} submission(s), ${rows.length} line(s)`,
-        headers, rows: dataRows, summaryRows: buildMisPivotSummaryRows(rows), statusColIndex,
+        headers, rows: dataRows, summaryRows: buildMisPivotSummaryRows(rows), statusColIndex, cellStyleFn,
       });
       await downloadRealXlsx(`cnf-stock-${sel.from}-to-${sel.to}`, wb);
       prog.style.display='none';
