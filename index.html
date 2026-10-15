@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.71';
+const APP_VERSION = '2026-08-24.73';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -4980,7 +4980,7 @@ const AGEING_STATUS_COLORS = {
   'Near Expiry':  {bg:'#c0392b', fg:'#ffffff'},
   'Critical':     {bg:'#e67e22', fg:'#2b1400'},
   'Ageing':       {bg:'#f0c419', fg:'#3a2c00'},
-  'Normal':       {bg:'#5dade2', fg:'#0b2b40'},
+  'Normal':       {bg:'#2874a6', fg:'#ffffff'},
   'Fresh':        {bg:'#1e8449', fg:'#ffffff'},
   'No MFD':       {bg:'#bdc3c7', fg:'#2c2c2c'},
 };
@@ -7074,7 +7074,7 @@ function warnIfStale(fresh){
 /* ---------------- Email-body stock report (light, inline-styled) ----------------
    Active only once the Approved/Pending Orders file is uploaded — Order To Be
    Taken needs it. Always computed in KG: KG − Approved Order (Kg) − Pending Order (Kg). */
-const EML_AGE_COL = {expired:['#7b241c','#ffffff'], expiring:['#c0392b','#ffffff'], critical:['#e67e22','#2b1400'], ageing:['#f0c419','#3a2c00'], normal:['#5dade2','#0b2b40'], fresh:['#1e8449','#ffffff']};
+const EML_AGE_COL = {expired:['#7b241c','#ffffff'], expiring:['#c0392b','#ffffff'], critical:['#e67e22','#2b1400'], ageing:['#f0c419','#3a2c00'], normal:['#2874a6','#ffffff'], fresh:['#1e8449','#ffffff']};
 const EML_SAFE_COL = {low:['#c0392b','#ffffff'], ok:['#1e8449','#ffffff'], 'no-norm':['#bdc3c7','#2c2c2c']};
 function ordersFor_(cnfCode, productCode){
   const o = state.pendingOrdersOverride && state.pendingOrdersOverride.lookup[String(cnfCode).trim()+'||'+normalizeMaterialCode(productCode)];
@@ -7113,6 +7113,10 @@ const EML_COLS = [
   {k:'subid',   label:'Submission ID',       def:false, get:r=>r.sub.id},
   {k:'auditby', label:'Audit By',            def:false, get:r=>auditByLabel(r.sub)},
 ];
+const EML_STATUSES = [['expired','Expired'],['expiring','Near Expiry'],['critical','Critical'],['ageing','Ageing'],['normal','Normal'],['fresh','Fresh']];
+// Which Ageing Status lines are LISTED in the email table. The status cards always count everything.
+function emailStatuses_(){ return state.emailStatuses || ['expired','expiring','critical','ageing','normal']; }
+function emailShow_(r){ return emailStatuses_().includes(r.ageStatus.cls); }
 function emailCols_(){
   const sel = state.emailCols || EML_COLS.filter(c=>c.def).map(c=>c.k);
   const list = EML_COLS.filter(c=>sel.includes(c.k));
@@ -7157,6 +7161,10 @@ function EmailReportCard(){
       ${EML_COLS.map(c=>`<label style="${box}"><input type="checkbox" data-emlcol="${c.k}" ${selCols.has(c.k)?'checked':''}> ${c.label}${c.def?' <span style="color:var(--ink-soft);">(default)</span>':''}</label>`).join('')}
       <button class="btn" id="emlColReset" type="button" style="margin-left:6px;">Default columns</button>
     </div>
+    <div style="font-weight:600;font-size:12.5px;margin-top:10px;">Ageing Status to list in the table <span style="font-weight:400;color:var(--ink-soft);">(the status cards at the top always show every status; Fresh is off by default)</span></div>
+    <div id="emlStatusList" style="margin-top:2px;">
+      ${EML_STATUSES.map(([k,l])=>`<label style="${box}"><input type="checkbox" data-emlstat="${k}" ${emailStatuses_().includes(k)?'checked':''}> ${l}</label>`).join('')}
+    </div>
     <div class="filters" style="margin-top:8px;">
       <div class="fg"><label>Detail level</label><select id="emlMode">
         <option value="batch">Batch-wise (har MFD line)</option>
@@ -7198,24 +7206,25 @@ function buildEmailStockHtmlRaw_(rows, mode){
   const pillTd = (txt,c)=>`<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${E(txt)}</td>`;
   const orderTd = (v,bg)=>{ const c = v<0?'#fadbd8':'#d5f5e3'; return `<td bgcolor="${c}" style="${TD}background:${c};text-align:right;font-weight:bold;">${E(kgf(v))}</td>`; };
   const kgf = n=>(Number(n)||0).toLocaleString('en-IN',{maximumFractionDigits:2});
-  const cnt = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}; let totalKg=0;
+  const cnt = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}, kgBy = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}; let totalKg=0;
   const byCnf = {};
   rows.forEach(r=>{
     const k = r.cnf.code; (byCnf[k] = byCnf[k] || {cnf:r.cnf, rows:[], kg:0, c:{expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}, date:r.sub.date});
     const g = byCnf[k]; g.rows.push(r); g.kg += r.item.kgQty; if(r.sub.date>g.date) g.date=r.sub.date;
     if(g.c[r.ageStatus.cls]!==undefined) g.c[r.ageStatus.cls]++;
-    if(cnt[r.ageStatus.cls]!==undefined) cnt[r.ageStatus.cls]++;
+    if(cnt[r.ageStatus.cls]!==undefined){ cnt[r.ageStatus.cls]++; kgBy[r.ageStatus.cls] += r.item.kgQty; }
     totalKg += r.item.kgQty;
   });
   const groups = Object.values(byCnf).sort((a,b)=>String(a.cnf.name).localeCompare(String(b.cnf.name)));
-  const kpi = (label,n,c,sub)=>`<td bgcolor="${c[0]}" align="center" style="background:${c[0]};color:${c[1]};padding:6px 10px;text-align:center;border:2px solid #ffffff;${F}"><b style="font-size:18px;">${n}</b><br><span style="font-size:11px;">${label}</span>${sub?`<br><span style="font-size:9px;">${sub}</span>`:''}</td>`;
+  const kpi = (label,n,c,sub,unit)=>`<td bgcolor="${c[0]}" align="center" style="background:${c[0]};color:${c[1]};padding:6px 10px;text-align:center;border:2px solid #ffffff;${F}"><b style="font-size:17px;color:${c[1]};">${n}</b>${unit?` <span style="font-size:11px;color:${c[1]};">${unit}</span>`:''}<br><span style="font-size:11px;color:${c[1]};">${label}</span>${sub?`<br><span style="font-size:9px;color:${c[1]};">${sub}</span>`:''}</td>`;
+  const lines = n=>`${n} line${n===1?'':'s'}`;
   const th = state.masters.thresholds || {fresh:70,normal:40,ageing:20,critical:10};
   let h = `<div style="${F}color:#1f2933;background:#ffffff;">`
-    + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;${F}width:100%;"><tr><td bgcolor="#1f3a5f" style="background:#1f3a5f;color:#ffffff;padding:10px 12px;font-size:16px;font-weight:bold;${F}">CNF Stock Report &mdash; ${E(todayISO())}</td></tr></table>`
+    + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;${F}width:100%;"><tr><td bgcolor="#1f3a5f" style="background:#1f3a5f;color:#ffffff;padding:10px 12px;font-size:16px;font-weight:bold;${F}">CNF Stock Report &mdash; ${E(todayISO())} <span style="font-size:11px;font-weight:normal;">(all quantities in kg)</span></td></tr></table>`
     + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:6px 0;"><tr>`
-    + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock (kg)',kgf(totalKg),['#34495e','#ffffff'])
-    + kpi('Expired',cnt.expired,EML_AGE_COL.expired,'Left days &le; 0') + kpi('Near Expiry',cnt.expiring,EML_AGE_COL.expiring,`Left % &le; ${th.critical}`) + kpi('Critical',cnt.critical,EML_AGE_COL.critical,`Left % &gt; ${th.critical} to ${th.ageing}`)
-    + kpi('Ageing',cnt.ageing,EML_AGE_COL.ageing,`Left % &gt; ${th.ageing} to ${th.normal}`) + kpi('Normal',cnt.normal,EML_AGE_COL.normal,`Left % &gt; ${th.normal} to ${th.fresh}`) + kpi('Fresh',cnt.fresh,EML_AGE_COL.fresh,`Left % &gt; ${th.fresh}`)
+    + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock',kgf(totalKg),['#34495e','#ffffff'],'all quantities in kg','kg')
+    + kpi('Expired &middot; '+lines(cnt.expired),kgf(kgBy.expired),EML_AGE_COL.expired,'Left days &le; 0','kg') + kpi('Near Expiry &middot; '+lines(cnt.expiring),kgf(kgBy.expiring),EML_AGE_COL.expiring,`Left % &le; ${th.critical}`,'kg') + kpi('Critical &middot; '+lines(cnt.critical),kgf(kgBy.critical),EML_AGE_COL.critical,`Left % &gt; ${th.critical} to ${th.ageing}`,'kg')
+    + kpi('Ageing &middot; '+lines(cnt.ageing),kgf(kgBy.ageing),EML_AGE_COL.ageing,`Left % &gt; ${th.ageing} to ${th.normal}`,'kg') + kpi('Normal &middot; '+lines(cnt.normal),kgf(kgBy.normal),EML_AGE_COL.normal,`Left % &gt; ${th.normal} to ${th.fresh}`,'kg') + kpi('Fresh &middot; '+lines(cnt.fresh),kgf(kgBy.fresh),EML_AGE_COL.fresh,`Left % &gt; ${th.fresh}`,'kg')
     + `</tr></table>`
     + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:2px 0 10px 0;"><tr>`
     + `<td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #1f3a5f;padding:5px 9px;font-size:11px;${F}"><b>Left %</b> (shelf life left) = (Shelf life &minus; Days since MFD) &divide; Shelf life &times; 100</td>`
@@ -7235,11 +7244,12 @@ function buildEmailStockHtmlRaw_(rows, mode){
     });
     return h + `</table></div>`;
   }
+  const shownGroups = groups.map(g=>Object.assign({}, g, {rows: g.rows.filter(emailShow_)})).map(g=>Object.assign(g,{kg: g.rows.reduce((t,r)=>t+r.item.kgQty,0)})).filter(g=>g.rows.length);
   const cols = mode==='product' ? null : emailCols_();
   const heads = mode==='product' ? ['Code','Product','Category','Total kg','Batches','Worst Ageing','Approved Order - Kg','Pending Order - Kg','Order To Be Taken'] : cols.map(c=>c.label);
   const span = heads.length;
   h += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;">`;
-  groups.forEach(g=>{
+  shownGroups.forEach(g=>{
     h += `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock date ${E(g.date)} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr>`;
     h += `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
     if(mode==='product'){
@@ -7269,6 +7279,7 @@ function buildEmailStockHtmlRaw_(rows, mode){
     }
     h += `<tr><td colspan="${span}" style="height:8px;font-size:4px;line-height:4px;">&nbsp;</td></tr>`;
   });
+  if(!shownGroups.length) h += `<tr><td style="padding:8px;font-size:12px;color:#52606d;">No lines match the selected Ageing Statuses.</td></tr>`;
   return h + `</table></div>`;
 }
 async function copyEmailHtml_(html){
@@ -7291,9 +7302,10 @@ async function copyEmailHtml_(html){
 // roughly maxLines lines each (whole CNFs stay together) — copy and paste one part at a time.
 function splitRowsForPaste_(rows, maxLines){
   const byCnf = {}; rows.forEach(r=>{ (byCnf[r.cnf.code] = byCnf[r.cnf.code] || []).push(r); });
+  const w = list=>list.filter(emailShow_).length;
   const parts = []; let cur = [];
   Object.values(byCnf).sort((a,b)=>String(a[0].cnf.name).localeCompare(String(b[0].cnf.name))).forEach(list=>{
-    if(cur.length && cur.length + list.length > maxLines){ parts.push(cur); cur = []; }
+    if(cur.length && w(cur) + w(list) > maxLines){ parts.push(cur); cur = []; }
     cur = cur.concat(list);
   });
   if(cur.length) parts.push(cur);
@@ -7315,6 +7327,8 @@ function bindEmailReport_(){
   if(srch) srch.oninput = ()=>{ const q = srch.value.trim().toLowerCase(); document.querySelectorAll('#emlCnfList label').forEach(l=>{ l.style.display = !q || l.getAttribute('data-n').includes(q) ? '' : 'none'; }); };
   const colBoxes = ()=>Array.from(document.querySelectorAll('[data-emlcol]'));
   colBoxes().forEach(x=>x.onchange = ()=>{ state.emailCols = colBoxes().filter(y=>y.checked).map(y=>y.getAttribute('data-emlcol')); });
+  const statBoxes = ()=>Array.from(document.querySelectorAll('[data-emlstat]'));
+  statBoxes().forEach(x=>x.onchange = ()=>{ state.emailStatuses = statBoxes().filter(y=>y.checked).map(y=>y.getAttribute('data-emlstat')); });
   const rst = document.getElementById('emlColReset');
   if(rst) rst.onclick = ()=>{ state.emailCols = null; colBoxes().forEach(x=>{ x.checked = !!EML_COLS.find(c=>c.k===x.getAttribute('data-emlcol')).def; }); };
   b.onclick = async ()=>{
