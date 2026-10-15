@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://*.supabase.co https://script.google.com https://*.googleusercontent.com; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -801,8 +803,12 @@ function normalizeMasters(m){
   const userHeaderWord = v => ['userid','user id','user_id','id','name','password'].includes(String(v==null?'':v).trim().toLowerCase());
   m.adminUsers = (m.adminUsers||[]).filter(u=>!userHeaderWord(u.userId));
   m.misUsers = (m.misUsers||[]).filter(u=>!userHeaderWord(u.userId));
-  if(!m.adminUsers || !m.adminUsers.length) m.adminUsers = [{userId:'admin', name:'Administrator', password:'admin123', status:'Active'}];
-  if(!m.misUsers || !m.misUsers.length) m.misUsers = [{userId:'mis', name:'Back Office', password:'mis123', status:'Active'}];
+  // Built-in demo logins only exist for the offline demo. On Supabase the server owns the accounts: inventing a
+  // default one here would get saved back to the database with a known password.
+  if(!isSupabaseMode()){
+    if(!m.adminUsers || !m.adminUsers.length) m.adminUsers = [{userId:'admin', name:'Administrator', password:'admin123', status:'Active'}];
+    if(!m.misUsers || !m.misUsers.length) m.misUsers = [{userId:'mis', name:'Back Office', password:'mis123', status:'Active'}];
+  }
   if(!m.categories || !m.categories.length) m.categories = Object.keys(m.categorySelfLife||{}).length ? Object.keys(m.categorySelfLife) : CATS.slice();
   if(!m.categoryThresholds) m.categoryThresholds = {};
   // A header row pasted back into CNF_Master as if it were data shows up as a
@@ -880,7 +886,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.52';
+const APP_VERSION = '2026-08-24.54';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1008,6 +1014,31 @@ function withTimeout(promise, ms){
 // Everything the Apps Script backend did is one door on Supabase: the
 // app_call(action, payload) function in supabase_schema.sql. Same action names,
 // same JSON shapes — so nothing else in the app needed to learn a new protocol.
+// ---- Sign-in token (Supabase mode) ----
+// The server checks the password and hands back a random token. It lives in sessionStorage only (gone when the
+// tab closes), never in localStorage, and is attached to every call. Passwords are never held by the browser.
+let _authTokenMem = null;
+function getAuthToken(){ try{ return sessionStorage.getItem('gsi:tok') || _authTokenMem; }catch(e){ return _authTokenMem; } }
+function setAuthToken(t){ _authTokenMem = t || null; try{ if(t) sessionStorage.setItem('gsi:tok', t); else sessionStorage.removeItem('gsi:tok'); }catch(e){} }
+// Last line of defence against stored XSS: whatever HTML the app builds (including text typed by other users —
+// names, messages, SAP file contents) is stripped of scripts, event handlers and javascript: links before it
+// reaches the page. The app itself uses no inline handlers, so nothing legitimate is removed.
+function sanitizeHtml_(html){
+  try{
+    const t = document.createElement('template');
+    t.innerHTML = String(html==null?'':html);
+    t.content.querySelectorAll('script,iframe,frame,object,embed,link,meta,base,applet,form').forEach(n=>n.remove());
+    t.content.querySelectorAll('*').forEach(el=>{
+      Array.from(el.attributes).forEach(a=>{
+        const n = a.name.toLowerCase(), v = String(a.value).replace(/[\s\u0000-\u001f]+/g,'').toLowerCase();
+        if(n.startsWith('on') || n==='srcdoc' || n==='formaction'){ el.removeAttribute(a.name); return; }
+        if((n==='href'||n==='src'||n==='xlink:href'||n==='action') && (/^(javascript|vbscript):/.test(v) || /^data:(?!image\/(png|jpe?g|gif|webp|svg\+xml);)/.test(v))) el.removeAttribute(a.name);
+      });
+    });
+    return t.innerHTML;
+  }catch(e){ return escapeHtml(html); }
+}
+function setHtml_(el, html){ el.innerHTML = sanitizeHtml_(html); }
 const SUPABASE_EMAIL_ACTIONS = ['sendTestEmail','sendOverdueReminders','sendSubmissionReport'];
 async function supabaseCall(action, payload, timeoutMs){
   if(SUPABASE_EMAIL_ACTIONS.includes(action)){
@@ -1024,7 +1055,7 @@ async function supabaseCall(action, payload, timeoutMs){
   // keys are not JWTs and must go in the apikey header only.
   if(/^eyJ/.test(key)) headers['Authorization'] = 'Bearer '+key;
   const res = await withTimeout(fetch(base+'/rest/v1/rpc/app_call', {
-    method:'POST', headers, body: JSON.stringify({p_action:action, p_payload:payload||{}})
+    method:'POST', headers, body: JSON.stringify({p_action:action, p_payload: (action==='ping'||action==='login') ? (payload||{}) : Object.assign({}, payload||{}, {_t:getAuthToken()||''})})
   }), timeoutMs||25000);
   const rawText = await res.text();
   let data;
@@ -1035,8 +1066,18 @@ async function supabaseCall(action, payload, timeoutMs){
     const msg = data && (data.message || data.error);
     throw new Error(msg ? String(msg)+(data.hint?` — ${data.hint}`:'') : `Supabase error (HTTP ${res.status})`);
   }
-  if(data && data.error) throw new Error(data.error);
+  if(data && data.error){
+    const err = new Error(data.error); err.code = data.code || '';
+    if(data.code==='AUTH' && action!=='login') onSessionExpired_();
+    throw err;
+  }
   return data;
+}
+// The server no longer recognises our token (idle too long, signed out elsewhere, account switched off).
+function onSessionExpired_(){
+  if(!getAuthToken() && !state.role) return;          // nobody was signed in — nothing to undo
+  setAuthToken(null);
+  if(state.role){ doLogout(true); state.loginError = 'Your session has ended. Please sign in again.'; try{ render(); }catch(e){} }
 }
 // The Google Apps Script path (the Sheet) — exactly what apiGet always was.
 async function appsScriptGet(action, params, opts){
@@ -1233,7 +1274,7 @@ async function loadAll(){
     if(restored){
       tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored).then(()=>render()).catch(()=>{});
     }
-    if(apiUrl) maybeBackgroundSyncMasters(); // silent, throttled, never blocks the UI
+    if(apiUrl && !(isSupabaseMode() && !getAuthToken())) maybeBackgroundSyncMasters(); // silent, throttled, never blocks the UI
     if(state.role) checkForNewVersion(); // fire-and-forget — "sync" for the app's own code, not just its data
     return;
   }
@@ -1241,7 +1282,11 @@ async function loadAll(){
   // COLD START — nothing cached yet on this device, so a real fetch is
   // unavoidable exactly once.
   startFakeProgress(['Connecting to Google Sheet…','Loading CNF list…','Loading product catalog…','Almost ready…']);
-  if(apiUrl){
+  if(apiUrl && isSupabaseMode() && !getAuthToken()){
+    // Supabase hands out nothing before sign-in. Show the login screen; the real data loads right after sign-in.
+    state.masters = normalizeMasters(seedMasters()); state.mastersAreDemo = true;
+    state.submissions = []; state.backendConnected = true;
+  } else if(apiUrl){
     try{
       const boot = await apiGet('bootstrap');
       state.masters = normalizeMasters(boot.masters);
@@ -1300,6 +1345,7 @@ async function loadAll(){
 // (to keep the cache warm) but holds off re-rendering until they're back
 // on the dashboard, so nothing shifts under their fingers while typing.
 async function maybeBackgroundSyncMasters(){
+  if(isSupabaseMode() && !getAuthToken()) return;
   const lastSync = Number(lsGet('masterSyncedAt')) || 0;
   if(Date.now() - lastSync < MASTER_SYNC_INTERVAL_MS) return;
   try{
@@ -1352,13 +1398,23 @@ async function legacyWindowStorageMasters(){
   }catch(e){ return null; }
 }
 
+// On Supabase no password is ever kept in the browser: after a save, the plain-text one just typed is dropped.
+function stripPasswords_(m){
+  ['cnfs','adminUsers','misUsers'].forEach(k=>(m[k]||[]).forEach(r=>{ delete r.password; }));
+}
 async function saveMasters(){
-  lsSet('masters', state.masters);
-  lsSet('masterSyncedAt', Date.now());
+  const sb = isSupabaseMode();
+  if(!sb){ lsSet('masters', state.masters); lsSet('masterSyncedAt', Date.now()); }
   if(getApiUrl()){
     try{ await apiPost('saveMasters', {masters: state.masters}); }
-    catch(e){ showToast('⚠ Could not sync to server — saved on this device only'); }
+    catch(e){
+      showToast(sb ? '⚠ Not saved: '+((e&&e.message)||'server error') : '⚠ Could not sync to server — saved on this device only');
+      if(sb){ stripPasswords_(state.masters); try{ await forceSyncMasters({fresh:true}); }catch(e2){} }  // put back what the server really has
+      return false;
+    }
   }
+  if(sb){ stripPasswords_(state.masters); lsSet('masters', state.masters); lsSet('masterSyncedAt', Date.now()); }
+  return true;
 }
 
 // Called right after a CNF's Final Submit. Optimistically already in
@@ -1675,8 +1731,12 @@ async function flushSheetQueue_(){
   if(!getApiUrl()) return;
   const queue = lsGet('pendingSubmissions') || [];
   if(!queue.length) return;
+  if(isSupabaseMode() && !getAuthToken()) return;        // nobody signed in: the server would refuse, and the queue stays safe on the device
   const remaining = [];
   for(const sub of queue){
+    // Supabase files a CNF's stock under the CNF that is signed in — never send another CNF's queued stock through this login.
+    if(isSupabaseMode() && state.role==='cnf' && state.cnfUser && String(sub.cnfCode)!==String(state.cnfUser.code)){ remaining.push(sub); continue; }
+    if(isSupabaseMode() && state.role==='mis'){ remaining.push(sub); continue; }
     try{
       const result = await apiPost('addSubmission', {submission: sub});
       if(!result || result.ok!==true) throw new Error('Server did not confirm the save.');
@@ -2193,7 +2253,7 @@ function render(){
   // screen with a reload button is always better than silently frozen HTML
   // that still LOOKS like progress is happening.
   try{
-    app.innerHTML = `
+    setHtml_(app, `
       ${Topbar()}
       ${DemoBanner()}
       ${NewVersionBanner()}
@@ -2201,8 +2261,9 @@ function render(){
       <main>
         ${!loggedIn ? UnifiedLoginScreen() : state.role==='cnf' ? CnfPanel() : state.role==='admin' ? AdminPanel() : MisPanel()}
       </main>
-    `;
+    `);
     bindGlobal();
+    wireIdleLogout_(); if(loggedIn) armIdleLogout_();
   }catch(e){
     console.error('Render failed:', e);
     app.innerHTML = `<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--silo-dark);gap:16px;padding:24px;text-align:center;">
@@ -2272,6 +2333,15 @@ function BackendErrorBanner(){
 // A password <input> with a built-in 👁 show/hide toggle — used everywhere
 // a password is typed (login, resets, new-user forms) so people can check
 // exactly what they typed before submitting.
+function passwordProblem_(pw){
+  pw = String(pw==null?'':pw);
+  if(isSupabaseMode()){
+    if(pw.length<8 || !/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return 'Password must be at least 8 characters and contain a letter and a number.';
+    if(/^(password|admin|ganesh|12345678)/i.test(pw)) return 'That password is too easy to guess — choose another.';
+    return '';
+  }
+  return pw.length<4 ? 'Password must be at least 4 characters.' : '';
+}
 function PasswordField(id, opts){
   opts = opts || {};
   const value = opts.value ? ` value="${opts.value}"` : '';
@@ -2484,9 +2554,21 @@ function clearAppCache(){
 }
 
 /* ---------------- Remember Me — session persists across reloads on this device ---------------- */
-function saveRememberedSession(role, id){ try{ localStorage.setItem('gsi:session', JSON.stringify({role, id})); }catch(e){} }
-function clearRememberedSession(){ try{ localStorage.removeItem('gsi:session'); }catch(e){} }
-function getRememberedSession(){ try{ const v = localStorage.getItem('gsi:session'); return v ? JSON.parse(v) : null; }catch(e){ return null; } }
+// Supabase mode: the "session" is the server token + who it belongs to, kept in sessionStorage (this tab only,
+// gone when it closes). A role+id pair in localStorage proved nothing, so it is no longer used there.
+function saveRememberedSession(role, id){
+  try{
+    if(isSupabaseMode()) sessionStorage.setItem('gsi:session', JSON.stringify({role, id}));
+    else localStorage.setItem('gsi:session', JSON.stringify({role, id}));
+  }catch(e){}
+}
+function clearRememberedSession(){ try{ localStorage.removeItem('gsi:session'); sessionStorage.removeItem('gsi:session'); }catch(e){} }
+function getRememberedSession(){
+  try{
+    if(isSupabaseMode()){ if(!getAuthToken()) return null; const v = sessionStorage.getItem('gsi:session'); return v ? JSON.parse(v) : null; }
+    const v = localStorage.getItem('gsi:session'); return v ? JSON.parse(v) : null;
+  }catch(e){ return null; }
+}
 
 // Split deliberately: the FAST part (role/user/draft — all local, no
 // network) runs first and is all that's needed to actually SHOW the
@@ -2680,8 +2762,41 @@ function loginCheckedAgainst_(){
   else src = dataSourceNote() || 'built-in DEMO data — your real data has not loaded on this device';
   return ` [Checked against ${n} CNFs · ${src}]`;
 }
+// Supabase mode: the SERVER checks the password (bcrypt), applies the lock-out, decides the role, and returns a token.
+async function serverLogin_(userId, password){
+  let res;
+  try{ res = await supabaseCall('login', {userId: userId, password: password}, 25000); }
+  catch(e){
+    if(e && e.code){ state.loginError = e.message; return {ok:false}; }   // wrong password / locked / inactive: the server's own wording
+    state.backendConnected = false; state.backendError = String((e&&e.message)||e);
+    state.loginError = `Could not reach the server, so you could not be signed in. Reason: ${state.backendError}. If this persists, contact IT: 1800-121-0144`;
+    return {ok:false};
+  }
+  setAuthToken(res.token);
+  state.backendConnected = true; state.backendError = null; state.loginError = null;
+  const u = res.user || {};
+  try{ await forceSyncMasters({fresh:true}); }catch(e){ /* sign-in worked; the data refresh below will retry */ }
+  if(res.role==='cnf'){
+    const cnf = (state.masters.cnfs||[]).find(c=>c.code===u.code) || u;
+    saveRememberedSession('cnf', cnf.code);
+    restoreCnfSessionFast_(cnf);
+    return {ok:true, syncPromise: loadMessagesForCnf(cnf.code)};
+  }
+  if(res.role==='admin'){
+    const a = (state.masters.adminUsers||[]).find(x=>x.userId===u.userId) || u;
+    saveRememberedSession('admin', a.userId);
+    state.role = 'admin'; state.adminUser = a;
+    return {ok:true, syncPromise: loadAllMessages()};
+  }
+  const m = (state.masters.misUsers||[]).find(x=>x.userId===u.userId) || u;
+  saveRememberedSession('mis', m.userId);
+  state.role = 'mis'; state.misUser = m;
+  if(lsGet('misLastSeenAt')===null) lsSet('misLastSeenAt', Date.now());
+  return {ok:true, syncPromise: loadAllMessages()};
+}
 async function tryLoginOnce_(userId, password, remember){
   userId = (userId||'').trim();
+  if(isSupabaseMode()) return await serverLogin_(userId, password);
   // Demo masters on a device that should have real ones: don't pretend to check credentials against
   // them. credentialFailure makes tryLogin() fetch the real data first and then try again.
   if(state.mastersAreDemo && getApiUrl()){
@@ -2730,6 +2845,7 @@ async function tryLoginOnce_(userId, password, remember){
 // and check again; and if that refresh itself fails, say so plainly (with
 // the actual reason) instead of blaming the password.
 async function tryLogin(userId, password, remember){
+  if(isSupabaseMode()) return await tryLoginOnce_(userId, password, remember);
   const first = await tryLoginOnce_(userId, password, remember);
   if(first.ok || !first.credentialFailure || !getApiUrl()) return first;
   try{
@@ -2745,7 +2861,30 @@ async function tryLogin(userId, password, remember){
   return tryLoginOnce_(userId, password, remember);
 }
 
-function doLogout(){
+let _idleTimer = null, _idleWired = false;
+function armIdleLogout_(){
+  // Signs out after 30 minutes with no touch/keyboard/mouse. A half-filled stock entry is kept (it is saved on the device).
+  if(!isSupabaseMode()) return;
+  clearTimeout(_idleTimer);
+  if(!state.role) return;
+  _idleTimer = setTimeout(()=>{ if(state.role){ doLogout(); state.loginError = 'You were signed out after 30 minutes of inactivity.'; render(); } }, 30*60*1000);
+}
+function wireIdleLogout_(){
+  if(_idleWired || typeof document==='undefined') return; _idleWired = true;
+  ['click','keydown','touchstart','mousemove'].forEach(ev=>document.addEventListener(ev, ()=>{ if(state.role) armIdleLogout_(); }, {passive:true}));
+}
+function doLogout(sessionAlreadyDead){
+  if(isSupabaseMode()){
+    const tok = getAuthToken();
+    if(tok && !sessionAlreadyDead){ try{ supabaseCall('logout', {}, 8000).catch(()=>{}); }catch(e){} }
+    setAuthToken(null);
+    clearTimeout(_idleTimer);
+    state.masters = normalizeMasters(seedMasters()); state.mastersAreDemo = true;
+    state.submissions = []; state.currentSnapshots = {}; state.messages = []; state.employeeMappings = []; state.emailLog = []; state.emailConfig = null;
+    state.importedBackup = null; state.reportSync = null; state.reportRows = null;
+    // the next person on this device must not see the last person's cached data
+    ['masters','submissions','currentSnapshots','masterSyncedAt','importedBackup','reportSync'].forEach(k=>{ try{ localStorage.removeItem(LS_PREFIX+k); }catch(e){} });
+  }
   state.role = null; state.cnfUser = null; state.adminUser = null; state.misUser = null;
   state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {};
   state.loginError = null; state.sideOpen = false;
@@ -2788,8 +2927,8 @@ function CnfHeader(){
     <div class="cnf-header-inner">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div>
-          <div style="font-family:var(--disp);font-weight:700;font-size:16px;">${state.cnfUser.name} <span style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);">· ${state.cnfUser.code}</span></div>
-          <div style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);">${state.cnfUser.location}</div>
+          <div style="font-family:var(--disp);font-weight:700;font-size:16px;">${escapeHtml(state.cnfUser.name)} <span style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);">· ${escapeHtml(state.cnfUser.code)}</span></div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);">${escapeHtml(state.cnfUser.location)}</div>
         </div>
         <button class="btn btn-ghost btn-sm" id="btnCnfLogout">Log out</button>
       </div>
@@ -2813,9 +2952,9 @@ function CnfMessages(){
   return `<div class="section-title">Messages <span class="num">${msgs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">rates, schemes, and updates from Admin/Back Office</span></div>
   ${msgs.map(m=>`
     <div class="msg-card">
-      <div class="msg-card-top"><b>${m.subject||'(no subject)'}</b><span class="msg-card-time">${new Date(m.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div>
-      <div class="msg-card-body">${(m.body||'').replace(/\n/g,'<br>')}</div>
-      <div class="msg-card-from">— ${m.fromName||m.fromRole} (${m.fromRole==='admin'?'Admin':'Back Office'})${m.targetType==='SPECIFIC'?' · sent just to you':' · sent to all CNFs'}</div>
+      <div class="msg-card-top"><b>${escapeHtml(m.subject||'(no subject)')}</b><span class="msg-card-time">${new Date(m.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div>
+      <div class="msg-card-body">${escapeHtml(m.body||'').replace(/\n/g,'<br>')}</div>
+      <div class="msg-card-from">— ${escapeHtml(m.fromName||m.fromRole)} (${m.fromRole==='admin'?'Admin':'Back Office'})${m.targetType==='SPECIFIC'?' · sent just to you':' · sent to all CNFs'}</div>
     </div>`).join('') || '<div class="empty">No messages yet.</div>'}
   `;
 }
@@ -3927,7 +4066,7 @@ function parseBackupMasters(wb){
     return out;
   };
   res.cnfs = take('CNF_Master', r=>({
-    code:String(r[0]).trim(), name:String(r[1]).trim(), userId:String(r[2]===''?r[0]:r[2]).trim(), password:String(r[3]===''?'demo':r[3]),
+    code:String(r[0]).trim(), name:String(r[1]).trim(), userId:String(r[2]===''?r[0]:r[2]).trim(), password:String(r[3]===''?'':r[3]),
     status:r[4]||'Active', location:r[5]||'', submissionFrequencyDays: backupNum(r[6])||7, email:String(r[7]||'').trim()
   }), c=>c.name!=='', c=>c.code);
   res.products = take('Product_Master', r=>{
@@ -4755,7 +4894,7 @@ function generatedByLabel(){
 // genuinely valid .xlsx file that never triggers Excel's "format and
 // extension don't match, could be corrupted" warning the way an HTML file
 // wearing an .xls extension used to.
-async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex, statusColors, cellStyleFn, wrapCols, extraSheets}){
+async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex, statusColors, cellStyleFn, wrapCols, extraSheets, dataSheetName, colWidths}){
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Ganesh Stock IQ';
   const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
@@ -4830,8 +4969,8 @@ async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, s
     }
   }
 
-  const wsData = wb.addWorksheet(summaryRows&&summaryRows.length ? 'Data' : 'Report');
-  wsData.columns = headers.map((h,i)=>({width: (wrapCols&&wrapCols.includes(i)) ? 60 : Math.max(12, String(h).length+2)}));
+  const wsData = wb.addWorksheet(dataSheetName || (summaryRows&&summaryRows.length ? 'Data' : 'Report'));
+  wsData.columns = headers.map((h,i)=>({width: (colWidths && colWidths[i]) ? colWidths[i] : (wrapCols&&wrapCols.includes(i)) ? 60 : Math.max(12, String(h).length+2)}));
   let r = writeMeta(wsData, headers.length);
   const headerRow = wsData.getRow(r);
   headers.forEach((h,i)=>{
@@ -4912,8 +5051,8 @@ function sampleProductsCsv(){
 function sampleCnfsCsv(){
   return [
     'code,name,userId,location,password,status,email',
-    '3600,Malda,3600,West Bengal,demo,Active,malda@example.com',
-    '3700,Kolkata Central,3700,West Bengal,demo,Active,kolkata@example.com',
+    '3600,Malda,3600,West Bengal,,Active,malda@example.com',
+    '3700,Kolkata Central,3700,West Bengal,,Active,kolkata@example.com',
   ].join('\n');
 }
 
@@ -5164,7 +5303,7 @@ function validateCnfRows(objs){
     if(!name){ errors.push(`Row ${rowNum} (${code}): missing CNF name — skipped.`); return; }
     if(state.masters.cnfs.some(c=>c.code===code) || seenCodes.has(code)){ errors.push(`Row ${rowNum}: code "${code}" already exists — skipped.`); return; }
     const userId = o.userid || code;
-    const password = o.password || 'demo';
+    const password = o.password || '';   // blank = the server sets an unguessable one; Admin then uses Reset Password
     let status = o.status && ['Active','Inactive'].includes(o.status) ? o.status : 'Active';
     if(o.status && !['Active','Inactive'].includes(o.status)) warnings.push(`Row ${rowNum} (${code}): unknown status "${o.status}" — set to Active.`);
     const location = o.location || '';
@@ -5257,7 +5396,7 @@ function AddFormModal(){
       <div class="fg"><label>User ID</label><input id="afUserId" placeholder="3600"></div>
       <div class="fg"><label>Location</label><input id="afLocation" placeholder="West Bengal"></div>
       <div class="fg"><label>Email (for reminders)</label><input id="afEmail" type="email" placeholder="cnf@example.com"></div>
-      <div class="fg" style="grid-column:1/-1;"><label>Initial Password</label><input id="afPassword" type="text" placeholder="demo"></div>
+      <div class="fg" style="grid-column:1/-1;"><label>Initial Password</label><input id="afPassword" type="password" autocomplete="new-password" placeholder="Min 8 characters, letters + a number"></div>
     </div>
     <p id="addFormErr" style="color:var(--red);font-size:12px;min-height:16px;margin:6px 0 0;"></p>
     <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-ghost btn-block" id="btnCancelAddForm">Cancel</button><button class="btn btn-primary btn-block" id="btnSaveAddForm">Add CNF</button></div>
@@ -5295,7 +5434,7 @@ function AddFormModal(){
     <div class="formgrid" style="grid-template-columns:1fr 1fr;">
       <div class="fg"><label>User ID</label><input id="afUserId" placeholder="e.g. priya"></div>
       <div class="fg"><label>Name</label><input id="afName" placeholder="e.g. Priya Sharma"></div>
-      <div class="fg" style="grid-column:1/-1;"><label>Initial Password</label><input id="afPassword" type="text" placeholder="Set a starting password"></div>
+      <div class="fg" style="grid-column:1/-1;"><label>Initial Password</label><input id="afPassword" type="password" autocomplete="new-password" placeholder="Min 8 characters, letters + a number"></div>
     </div>
     <p id="addFormErr" style="color:var(--red);font-size:12px;min-height:16px;margin:6px 0 0;"></p>
     <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-ghost btn-block" id="btnCancelAddForm">Cancel</button><button class="btn btn-primary btn-block" id="btnSaveAddForm">${title}</button></div>
@@ -5909,6 +6048,8 @@ function MisExport(){
     </div>
     <div style="font-size:12px;color:var(--ink-soft);margin-top:8px;font-family:var(--mono);">Will compare submissions dated: <b>${(()=>{const r=effectiveCompareRange(compareRange()); return r.from===r.to ? r.from : r.from+' → '+r.to;})()}</b></div>
     <button class="btn btn-primary" id="btnExportCompare" style="margin-top:12px;">⬇ Download Comparison Report</button>
+    <button class="btn btn-dark" id="btnExportCnfRisk" style="margin-top:12px;margin-left:8px;" title="Uses the period, CNF and 'compare against' choices above">⬇ CNF-wise Summary (Comparison + Ageing)</button>
+    <div style="font-size:11.5px;color:var(--ink-soft);margin-top:8px;">The <b>CNF-wise Summary</b> is a management view in one file: every CNF/CFA with a High / Medium / Low risk rating, its ageing split in kg (Expired, Near Expiry, Critical, Ageing), its comparison flags, the reason and the action required — plus detail sheets for ageing lines and flagged entries. It uses the period, CNF and "compare against" choices above.</div>
     <div id="cmpProg" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
@@ -6233,8 +6374,11 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   });
   const byType = {}, byCnf = {};
   const sevCount = {High:0, Medium:0, Low:0};
+  const cnfStats = {};
   out.forEach((x,i)=>{
     sevCount[x.sev]++;
+    const cs0 = cnfStats[x.cur.sub.cnfCode] || (cnfStats[x.cur.sub.cnfCode] = {High:0, Medium:0, Low:0, types:{}});
+    cs0[x.sev]++; x.flags.forEach(f=>{ cs0.types[f.type] = (cs0.types[f.type]||0)+1; });
     x.flags.forEach(f=>{ byType[f.type] = (byType[f.type]||0)+1; });
     const nm = rows[i][1] + ' (' + rows[i][2] + ')';
     byCnf[nm] = (byCnf[nm]||0)+1;
@@ -6363,7 +6507,180 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     if(ci===headers.indexOf('Change kg') && val!==0) return val>0 ? {bg:'#fde2d4', fg:'#8a3b0a'} : {bg:'#dff0e0', fg:'#1e5b2b'};
     return null;
   };
-  return {headers, rows, summaryRows, cellStyleFn, emailSheet, flagged: out.length, compared: pairsCompared.n, sevCount};
+  return {headers, rows, summaryRows, cellStyleFn, emailSheet, flagged: out.length, compared: pairsCompared.n, sevCount, cnfStats, pairsByCnf};
+}
+
+/* ---------------- CNF-wise management summary: Comparison + Ageing in one file ---------------- */
+const CNF_RISK_COLORS = {
+  'High Risk':     {bg:'#c0392b', fg:'#ffffff'},
+  'Medium Risk':   {bg:'#e67e22', fg:'#ffffff'},
+  'Low Risk':      {bg:'#27ae60', fg:'#ffffff'},
+  'No Submission': {bg:'#bdc3c7', fg:'#2c2c2c'},
+};
+// The stock a CNF holds at the end of the period, product by product: for each product, the lines of the
+// most recent submission (inside the period) that mentions it — so a Final followed by a Partial still gives
+// the full picture. Ageing is worked out as of TODAY, the same way every other report here does it.
+function cnfHeldStock_(subsOfCnf){
+  const byProduct = new Map();
+  subsOfCnf.slice().sort((a,b)=> new Date(a.timestamp)-new Date(b.timestamp)).forEach(sub=>{
+    const mine = {};
+    (sub.items||[]).forEach(it=>{ (mine[it.code] = mine[it.code] || []).push(it); });
+    Object.entries(mine).forEach(([code, items])=> byProduct.set(code, {sub, items}));
+  });
+  const lines = [];
+  byProduct.forEach(({sub, items})=> items.forEach(it=> lines.push({sub, it})));
+  return lines;
+}
+function buildCnfSummaryReport(inRange, fromDate, toDate, pool, cnfLabel, opts){
+  opts = opts || {};
+  const rep = buildComparisonReport(inRange, fromDate, toDate, pool, cnfLabel, opts);
+  const kg1 = n => Number((Number(n)||0).toFixed(1));
+  const today = todayISO();
+  const subsByCnf = {};
+  inRange.forEach(sb=>{ (subsByCnf[sb.cnfCode] = subsByCnf[sb.cnfCode] || []).push(sb); });
+  const cnfCodes = new Set(Object.keys(subsByCnf));
+  const wanted = opts.cnf && opts.cnf!=='ALL' ? [opts.cnf] : null;
+  state.masters.cnfs.filter(c=> c.status==='Active' && (!wanted || String(c.code)===String(wanted[0]))).forEach(c=>cnfCodes.add(String(c.code)));
+  const agedRows = [], agedStyles = [];
+  const per = [];
+  [...cnfCodes].forEach(code=>{
+    const cnf = state.masters.cnfs.find(c=>String(c.code)===String(code));
+    const subs = subsByCnf[code] || [];
+    const name = cnf ? cnf.name : ((subs[0]&&subs[0].cnfName) || code);
+    const st = {code, name, nSubs: new Set(subs.map(x=>x.id)).size, lastDate:'', daysSince:'', total:0,
+      kg:{expired:0, expiring:0, critical:0, ageing:0, ok:0, nomfd:0}, belowSafety:0, products:new Set(), aged:[]};
+    if(subs.length){
+      st.lastDate = subs.map(x=>x.date).sort().slice(-1)[0];
+      st.daysSince = Math.max(0, Math.round((new Date(today+'T00:00:00') - new Date(st.lastDate+'T00:00:00'))/86400000));
+      cnfHeldStock_(subs).forEach(({sub, it})=>{
+        const product = state.masters.products.find(p=>p.code===it.code);
+        const kg = Number(it.kgQty)||0;
+        st.total += kg; st.products.add(it.code);
+        const a = ageingStatus(product, it.mfd);
+        if(!it.mfd) st.kg.nomfd += kg;
+        else if(a.cls==='expired') st.kg.expired += kg;
+        else if(a.cls==='expiring') st.kg.expiring += kg;
+        else if(a.cls==='critical') st.kg.critical += kg;
+        else if(a.cls==='ageing') st.kg.ageing += kg;
+        else st.kg.ok += kg;
+        const low = product && safetyStatusFor(it, product)==='low';
+        if(low) st.belowSafety++;
+        if(it.mfd && ['expired','expiring','critical','ageing'].includes(a.cls)){
+          st.aged.push({cls:a.cls, label:a.label, row:[name, code, it.code, product?product.name:(it.name||''), product?product.category:(it.category||''), it.mfd, a.age??'', a.remaining??'', kg1(kg), ageingStatusCell(a), recommendedAction(a.cls, low), sub.date]});
+        }
+      });
+    }
+    const cs = rep.cnfStats[code] || {High:0, Medium:0, Low:0, types:{}};
+    const atRiskKg = st.kg.expired + st.kg.expiring + st.kg.critical;
+    const atRiskPct = st.total>0 ? atRiskKg/st.total*100 : 0;
+    let rating, why = [];
+    if(!subs.length){ rating = 'No Submission'; }
+    else {
+      if(st.kg.expired>0) why.push(`Expired stock ${kg1(st.kg.expired)} kg`);
+      if(st.kg.expiring+st.kg.critical>0) why.push(`Near-expiry/critical ${kg1(st.kg.expiring+st.kg.critical)} kg`);
+      if(cs.High) why.push(`${cs.High} High comparison flag${cs.High>1?'s':''}`);
+      if(cs.Medium) why.push(`${cs.Medium} Medium comparison flag${cs.Medium>1?'s':''}`);
+      if(st.kg.nomfd>0) why.push(`${kg1(st.kg.nomfd)} kg without MFD`);
+      if(st.kg.expired>0 || cs.High>0 || atRiskPct>=20) rating = 'High Risk';
+      else if(st.kg.expiring+st.kg.critical>0 || cs.Medium>0 || atRiskPct>=5) rating = 'Medium Risk';
+      else rating = 'Low Risk';
+    }
+    const topTypes = Object.entries(cs.types).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([t,n])=>`${t} ×${n}`).join(', ');
+    let action;
+    if(rating==='No Submission') action = 'No stock submitted in this period — follow up with the CNF/CFA.';
+    else {
+      const acts = [];
+      if(cs.High||cs.Medium) acts.push('Ask the CNF/CFA to verify the highlighted MFD / quantity entries (see "Comparison Flags" and the Comparison Report\'s CNF Email View)');
+      if(st.kg.expired>0) acts.push('Find out why expired stock is still held and arrange disposal / return');
+      if(st.kg.expiring+st.kg.critical+st.kg.ageing>0) acts.push('Push the ageing lines for early movement (oldest MFD first)');
+      action = acts.length ? acts.join('. ')+'.' : 'No action needed — stock is fresh and entries are consistent.';
+    }
+    per.push({st, cs, rating, atRiskKg, atRiskPct, why, topTypes, action, pairs: rep.pairsByCnf[code]||0});
+  });
+  const rank = {'High Risk':0, 'Medium Risk':1, 'Low Risk':2, 'No Submission':3};
+  per.sort((a,b)=> rank[a.rating]-rank[b.rating] || b.atRiskKg-a.atRiskKg || (b.cs.High-a.cs.High) || String(a.st.code).localeCompare(String(b.st.code),undefined,{numeric:true}));
+
+  const headers = ['Risk Rating','CNF Name','CNF Code','Submissions in Period','Last Submission','Days Since Last','Products Held','Total Stock (kg)','Expired (kg)','Near Expiry (kg)','Critical (kg)','Ageing (kg)','Normal / Fresh (kg)','No MFD (kg)','At-Risk % (Expired+Near Expiry+Critical)','Lines Below Safety','Compared Products','High Flags','Medium Flags','Low Flags','Main Comparison Issues','Why this rating','Action Required'];
+  const rows = per.map(x=>[x.rating, x.st.name, x.st.code, x.st.nSubs, x.st.lastDate||'—', x.st.daysSince, x.st.products.size, kg1(x.st.total), kg1(x.st.kg.expired), kg1(x.st.kg.expiring), kg1(x.st.kg.critical), kg1(x.st.kg.ageing), kg1(x.st.kg.ok), kg1(x.st.kg.nomfd), x.st.total>0 ? Number(x.atRiskPct.toFixed(1)) : '', x.st.belowSafety, x.pairs, x.cs.High, x.cs.Medium, x.cs.Low, x.topTypes||'—', x.why.join('; ')||'—', x.action]);
+  const sum = i => per.reduce((t,x)=>t+(Number(rows[per.indexOf(x)][i])||0),0);
+  const totTotal = sum(7), totRisk = sum(8)+sum(9)+sum(10);
+  rows.push(['TOTAL','All CNFs shown','', sum(3), '', '', '', kg1(totTotal), kg1(sum(8)), kg1(sum(9)), kg1(sum(10)), kg1(sum(11)), kg1(sum(12)), kg1(sum(13)), totTotal>0 ? Number((totRisk/totTotal*100).toFixed(1)) : '', sum(15), sum(16), sum(17), sum(18), sum(19), '', '', '']);
+  const lastIdx = rows.length-1;
+  const cellStyleFn = (ri, ci, val)=>{
+    if(ri===lastIdx) return {bg:'#e8e0cc', fg:'#1c1712', bold:true};
+    const h = headers[ci];
+    if(h==='Expired (kg)' && val>0) return {bg:'#f8d0cc', fg:'#8a1f11', bold:true};
+    if((h==='Near Expiry (kg)' || h==='Critical (kg)') && val>0) return {bg:'#fde2c4', fg:'#8a4b0a', bold:true};
+    if(h==='Ageing (kg)' && val>0) return {bg:'#fff2a8', fg:'#5c3b00'};
+    if(h==='High Flags' && val>0) return {bg:'#f8d0cc', fg:'#8a1f11', bold:true};
+    if(h==='Medium Flags' && val>0) return {bg:'#fde2c4', fg:'#8a4b0a'};
+    if(h.startsWith('At-Risk') && val!=='' && val>=20) return {bg:'#f8d0cc', fg:'#8a1f11', bold:true};
+    if(h.startsWith('At-Risk') && val!=='' && val>=5) return {bg:'#fde2c4', fg:'#8a4b0a'};
+    return null;
+  };
+  // ---- extra sheet: ageing lines, worst first ----
+  const sevOrder = {expired:0, expiring:1, critical:2, ageing:3};
+  const allAged = [];
+  per.forEach(x=> x.st.aged.forEach(a=> allAged.push(a)));
+  allAged.sort((a,b)=> sevOrder[a.cls]-sevOrder[b.cls] || String(a.row[1]).localeCompare(String(b.row[1]),undefined,{numeric:true}) || (Number(a.row[7])-Number(b.row[7])));
+  const AGE_UI = {expired:AGEING_STATUS_COLORS['Expired'], expiring:AGEING_STATUS_COLORS['Near Expiry'], critical:AGEING_STATUS_COLORS['Critical'], ageing:AGEING_STATUS_COLORS['Ageing']};
+  allAged.forEach(a=> agedStyles.push(a.row.map((_,i)=> i===9 ? {bg:AGE_UI[a.cls].bg, fg:AGE_UI[a.cls].fg, bold:true} : null)));
+  const agingSheet = {
+    name:'Ageing Detail', title:'Ageing Detail — every product line that is Expired, Near Expiry, Critical or Ageing',
+    subtitle:`Stock as held at the end of ${fromDate===toDate?fromDate:fromDate+' to '+toDate} (each product from its latest submission in the period) · ageing calculated as of ${today} · worst first`,
+    headers:['CNF Name','CNF Code','Product Code','Product Name','Category','MFD','Stock Age (d)','Remaining Shelf Life (d)','Stock (kg)','Ageing Status','Action','Submission Date'],
+    rows: allAged.map(a=>a.row), styles: agedStyles, widths:[22,10,13,36,16,12,12,14,12,48,16,14], wrapCols:[9],
+  };
+  // ---- extra sheet: comparison flags in short form ----
+  const sevCols = rep.headers;
+  const ix = n => sevCols.indexOf(n);
+  const flagRows = rep.rows.map(r=>[r[ix('Severity')], r[ix('CNF Name')], r[ix('CNF Code')], r[ix('Product Code')], r[ix('Product Name')], r[ix('Previous Date')], r[ix('Current Date')], r[ix('Previous MFD (kg)')], r[ix('Current MFD (kg)')], r[ix('What Changed')]]);
+  const flagStyles = flagRows.map(r=>{ const c = CMP_SEVERITY_COLORS[r[0]]; return r.map((_,i)=> i===0 && c ? {bg:c.bg, fg:c.fg, bold:true} : null); });
+  const flagSheet = {
+    name:'Comparison Flags', title:'Comparison Flags — what differs from each CNF/CFA\'s previous submission',
+    subtitle:'Full logic, calculation and reason for every line are in the Comparison Report download · High first',
+    headers:['Severity','CNF Name','CNF Code','Product Code','Product Name','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','What Changed'],
+    rows: flagRows, styles: flagStyles, widths:[11,22,10,13,34,13,13,34,34,70], wrapCols:[7,8,9],
+  };
+  const cnt = k => per.filter(x=>x.rating===k).length;
+  const worst = per.filter(x=>x.rating==='High Risk').slice(0,5);
+  const summaryRows = [
+    ['REPORT BASIS',''],
+    ['Submissions dated', fromDate===toDate ? fromDate : `${fromDate}  to  ${toDate}`],
+    ['CNF / CFA', cnfLabel||'All CNFs'],
+    ['Comparison', opts.baseline==='within' ? 'Latest submission vs the one before it, both inside the period' : opts.baseline==='chain' ? 'Each submission vs the one right before it' : 'Latest submission in the period vs the CNF/CFA\'s last submission before it'],
+    ['Ageing', `Stock held at the end of the period (each product from its latest submission in the period), ageing status as of ${today}`],
+    ['Data source', opts.histOk===false ? '⚠ SERVER HISTORY NOT LOADED — built only from submissions already on this device. Press Sync and download again.' : 'Full submission history loaded from the server'],
+    ['',''],
+    ['AT A GLANCE',''],
+    ['CNFs / CFAs covered', per.length],
+    ['High Risk', cnt('High Risk')],
+    ['Medium Risk', cnt('Medium Risk')],
+    ['Low Risk', cnt('Low Risk')],
+    ['No submission in period', cnt('No Submission')],
+    ['Total stock held (kg)', kg1(totTotal)],
+    ['Expired (kg)', kg1(sum(8))],
+    ['Near Expiry + Critical (kg)', kg1(sum(9)+sum(10))],
+    ['Ageing (kg)', kg1(sum(11))],
+    ['At-risk share of stock', totTotal>0 ? `${(totRisk/totTotal*100).toFixed(1)}%  (Expired + Near Expiry + Critical)` : '—'],
+    ['Comparison flags (High / Medium / Low)', `${rep.sevCount.High} / ${rep.sevCount.Medium} / ${rep.sevCount.Low}   of ${rep.compared} product comparisons`],
+    ['',''],
+    ['CNFs NEEDING ATTENTION FIRST',''],
+    ...(worst.length ? worst.map(x=>[`${x.st.name} (${x.st.code})`, x.why.join('; ')||'—']) : [['None','No CNF/CFA is rated High Risk']]),
+    ['',''],
+    ['HOW THE RISK RATING IS DECIDED',''],
+    ['High Risk', 'Any expired stock, OR at least one High comparison flag, OR 20% or more of the stock is Expired / Near Expiry / Critical'],
+    ['Medium Risk', 'Any Near Expiry or Critical stock, OR a Medium comparison flag, OR 5% or more of the stock is at risk'],
+    ['Low Risk', 'None of the above (Ageing stock and Low flags alone do not raise the rating)'],
+    ['No Submission', 'Active CNF/CFA that submitted nothing inside the period'],
+    ['',''],
+    ['SHEETS IN THIS FILE',''],
+    ['1  Summary', 'This page'],
+    ['2  CNF Summary', 'One row per CNF/CFA: rating, stock, ageing split in kg, comparison flags, why, and the action required'],
+    ['3  Ageing Detail', 'Every Expired / Near Expiry / Critical / Ageing product line, worst first'],
+    ['4  Comparison Flags', 'Every product whose MFD or quantity differs unusually from the previous submission'],
+  ];
+  return {headers, rows, summaryRows, cellStyleFn, extraSheets:[agingSheet, flagSheet], counts:{high:cnt('High Risk'), medium:cnt('Medium Risk'), low:cnt('Low Risk'), none:cnt('No Submission')}, n: per.length, rep};
 }
 function noSubsMessage(sel, histOk){
   const dates = state.submissions.filter(x=>sel.cnf==='ALL' || String(x.cnfCode)===String(sel.cnf)).map(x=>x.date).filter(Boolean).sort();
@@ -7482,13 +7799,16 @@ function bindGlobal(){
       const pw1 = document.getElementById('pwNew').value;
       const pw2 = document.getElementById('pwConfirm').value;
       const err = document.getElementById('pwResetErr');
-      if(!pw1 || pw1.length<4){ err.textContent = 'Password must be at least 4 characters.'; return; }
+      const pwProblem = passwordProblem_(pw1);
+      if(pwProblem){ err.textContent = pwProblem; return; }
       if(pw1 !== pw2){ err.textContent = 'Passwords do not match.'; return; }
       const t = state.pwResetTarget;
       const list = t.type==='cnf' ? state.masters.cnfs : t.type==='mis' ? state.masters.misUsers : state.masters.adminUsers;
       const keyField = t.type==='cnf' ? 'code' : 'userId';
       const rec = list.find(r=>r[keyField]===t.code);
-      if(rec){ rec.password = pw1; await saveMasters(); }
+      let saved = true;
+      if(rec){ rec.password = pw1; saved = await saveMasters(); }
+      if(saved===false){ err.textContent = 'Password was not saved — see the message above and try again.'; return; }
       state.pwResetTarget = null; render();
       showToast('Password updated');
     };
@@ -7507,8 +7827,10 @@ function bindGlobal(){
       const type = state.addFormTarget.type;
       const val = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
       if(type==='cnf'){
-        const code = val('afCode'), name = val('afName'), userId = val('afUserId')||code, location = val('afLocation'), password = val('afPassword')||'demo', email = val('afEmail');
+        const code = val('afCode'), name = val('afName'), userId = val('afUserId')||code, location = val('afLocation'), password = val('afPassword'), email = val('afEmail');
         if(!code || !name){ err.textContent = 'CNF Code and Name are required.'; return; }
+        const cnfPwProblem = passwordProblem_(password);
+        if(cnfPwProblem){ err.textContent = cnfPwProblem; return; }
         if(state.masters.cnfs.some(c=>c.code===code)){ err.textContent = 'A CNF with that code already exists.'; return; }
         state.masters.cnfs.push({code, name, userId, password, status:'Active', location, email});
         await saveMasters(); state.addFormTarget=null; render(); showToast('CNF added');
@@ -7527,6 +7849,8 @@ function bindGlobal(){
       } else if(type==='misuser' || type==='adminuser'){
         const userId = val('afUserId'), name = val('afName'), password = val('afPassword');
         if(!userId || !name || !password){ err.textContent = 'User ID, Name, and Password are all required.'; return; }
+        const usrPwProblem = passwordProblem_(password);
+        if(usrPwProblem){ err.textContent = usrPwProblem; return; }
         const list = type==='misuser' ? state.masters.misUsers : state.masters.adminUsers;
         if(list.some(u=>u.userId===userId)){ err.textContent = 'That User ID is already in use.'; return; }
         list.push({userId, name, password, status:'Active'});
@@ -7995,6 +8319,36 @@ function bindGlobal(){
     }
   };
 
+  const btnExportCnfRisk = document.getElementById('btnExportCnfRisk');
+  if(btnExportCnfRisk) btnExportCnfRisk.onclick = async ()=>{
+    const sel0 = compareRange(), eff = effectiveCompareRange(sel0), sel = {from:eff.from, to:eff.to, cnf:sel0.cnf}, prog = document.getElementById('cmpProg');
+    if(!sel.from || !sel.to || sel.from>sel.to){ showToast('Pick a valid date range — From must be on or before To.'); return; }
+    prog.style.display='block'; prog.textContent='Loading submission history…';
+    try{
+      const histOk = await loadHistoryForReport();
+      const inRange = subsInRange(sel.from, sel.to, sel.cnf);
+      const pool = state.submissions.filter(s=>sel.cnf==='ALL' || String(s.cnfCode)===String(sel.cnf));
+      if(!inRange.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
+      prog.textContent = 'Building CNF-wise summary…';
+      const cnfObj = state.masters.cnfs.find(c=>String(c.code)===String(sel.cnf));
+      const out = buildCnfSummaryReport(inRange, sel.from, sel.to, pool, sel.cnf==='ALL'?'All CNFs':(cnfObj?`${cnfObj.name} (${cnfObj.code})`:sel.cnf), {baseline: sel0.baseline, histOk, cnf: sel.cnf});
+      const wb = await buildXlsxWorkbook({
+        title: 'CNF-wise Summary — Comparison & Ageing',
+        subtitle: `Submissions dated ${sel.from===sel.to?sel.from:sel.from+' to '+sel.to} · ${sel.cnf==='ALL'?'All CNFs':'CNF '+sel.cnf} · ${out.n} CNF/CFA · ${out.counts.high} High, ${out.counts.medium} Medium, ${out.counts.low} Low risk, ${out.counts.none} with no submission`,
+        headers: out.headers, rows: out.rows, summaryRows: out.summaryRows, dataSheetName:'CNF Summary',
+        statusColIndex: 0, statusColors: CNF_RISK_COLORS, cellStyleFn: out.cellStyleFn, wrapCols:[20,21,22],
+        colWidths: [14,24,10,12,13,10,10,13,11,12,11,11,13,11,18,10,11,9,9,9,34,44,60],
+        extraSheets: out.extraSheets,
+      });
+      await downloadRealXlsx(`cnf-wise-summary-${sel.from}${sel.from===sel.to?'':'-to-'+sel.to}`, wb);
+      prog.style.display='none';
+      showToast(`✓ CNF-wise summary downloaded — ${out.counts.high} High, ${out.counts.medium} Medium, ${out.counts.low} Low risk`);
+    }catch(e){
+      prog.style.display='none';
+      showToast(`⚠ Summary failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
+  };
+
   // Approved/Pending Orders — Merged Report: purely client-side. Uploading
   // only ever parses the file and builds an in-memory lookup — nothing is
   // sent to the server here, nothing about it is saved anywhere. The
@@ -8416,7 +8770,7 @@ function rerenderOneRow(code){
   const row = document.querySelector(`[data-prow="${code}"]`);
   if(!row) return;
   const sapRow = state.sapUpload && state.sapUpload.rows.find(r=>r.code===code);
-  row.outerHTML = sapRow ? SapProductRow(sapRow) : '';
+  if(sapRow){ const t_=document.createElement('template'); t_.innerHTML=sanitizeHtml_(SapProductRow(sapRow)); row.replaceWith(t_.content); } else row.remove();
   bindRowInputs();
   updateProgress();
 }
@@ -8440,11 +8794,11 @@ function updateUomWarning(code, idx, uom){
   if(notWhole){
     warnEl.style.display = '';
     warnEl.classList.add('uom-warn-blocking');
-    warnEl.innerHTML = uom==='BAG' ? `⚠️ Bag opened. Submit stock in KG or PC.` : `⚠️ PC must be a whole number. Submit stock in KG instead.`;
+    setHtml_(warnEl, uom==='BAG' ? `⚠️ Bag opened. Submit stock in KG or PC.` : `⚠️ PC must be a whole number. Submit stock in KG instead.`);
   } else if(noConversion){
     warnEl.style.display = '';
     warnEl.classList.remove('uom-warn-blocking');
-    warnEl.innerHTML = `⚠ No ${uom} size set for this product yet — Admin can add it in Product Master or via UOM Converter import. Until then, this ${uom} quantity is <b>not converted</b>, it's used as-is.`;
+    setHtml_(warnEl, `⚠ No ${uom} size set for this product yet — Admin can add it in Product Master or via UOM Converter import. Until then, this ${uom} quantity is <b>not converted</b>, it's used as-is.`);
   } else {
     warnEl.style.display = 'none';
     warnEl.classList.remove('uom-warn-blocking');
@@ -8502,8 +8856,8 @@ function updateRowMeta(code){
 
   const meta = row.querySelector('.pmeta');
   if(meta){
-    meta.innerHTML = `${p.code} · SAP Current Stock <b>${fmtKg(sapRow.currentStockKg)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${fmtKg(totalKg)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
-      ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${fmtKg(diff)}kg vs SAP</span>`) : ''}`;
+    setHtml_(meta, `${p.code} · SAP Current Stock <b>${fmtKg(sapRow.currentStockKg)}kg</b>${formatUomEquivalents(sapRow.currentStockKg, p)}${filled?` · Entered <b>${fmtKg(totalKg)}kg</b>${formatUomEquivalents(totalKg, p)}`:''}
+      ${filled ? (withinTolerance(diff) ? ' · <span class="badge ok">Matches SAP</span>' : ` · <span class="badge low">Δ ${diff>0?'+':''}${fmtKg(diff)}kg vs SAP</span>`) : ''}`);
   }
 
   // The Safety Norm / Below-Safety badge lives on the SECOND meta line
@@ -8518,14 +8872,14 @@ function updateRowMeta(code){
     const safetyNorm = safetyNormFor(sapRow, p);
     const hasSafetyNorm = safetyNorm>0;
     const belowSafety = filled && hasSafetyNorm && totalKg < safetyNorm;
-    meta2.innerHTML = `Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${fmtKg(safetyNorm-totalKg)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}`;
+    setHtml_(meta2, `Approved Order <b>${(sapRow.approvedOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · Pending Order <b>${(sapRow.pendingOrder||0).toLocaleString('en-IN',{maximumFractionDigits:1})}</b> · ${hasSafetyNorm ? `Safety Norm <b>${safetyNorm}kg</b>` : `<span class="badge unknown">No Safety Norm Set</span>`}${belowSafety?` · <span class="badge low">Below Safety — short ${fmtKg(safetyNorm-totalKg)}kg</span>`:''}${pcPerBag(p) ? ` · 1 BAG = ${p.bagToKg}kg = ${pcPerBag(p)} PC` : ''}`);
   }
 
   let reasonRow = row.querySelector('.reason-row');
   if(filled && !reasonRow){
     const div = document.createElement('div');
     div.className = needsReason ? 'reason-row' : 'reason-row reason-row-optional';
-    div.innerHTML = `<label>${needsReason?'Reason for difference (required)':'Note (optional)'}</label><input type="text" data-reasoncode="${code}" placeholder="${needsReason?'e.g. Damage, unrecorded dispatch, counting error…':'Matches SAP — add a note if you want to record anything'}" value="${state.varianceReasons[code]||''}">`;
+    setHtml_(div, `<label>${needsReason?'Reason for difference (required)':'Note (optional)'}</label><input type="text" data-reasoncode="${code}" placeholder="${needsReason?'e.g. Damage, unrecorded dispatch, counting error…':'Matches SAP — add a note if you want to record anything'}" value="${escapeHtml(state.varianceReasons[code]||'')}">`);
     row.appendChild(div);
     div.querySelector('input').oninput = (e)=>{ state.varianceReasons[code] = e.target.value; autoSaveDraft(); };
   } else if(filled && reasonRow){
@@ -8561,7 +8915,7 @@ function renderRowsOnly(){
   }
   let rows = state.sapMissingOnlyFilter ? baseRows : baseRows.filter(r => state.sapShowZero || r.currentStockKg > 0);
   if(state.sapSearch) rows = rows.filter(r => r.name.toLowerCase().includes(state.sapSearch.toLowerCase()) || r.code.toLowerCase().includes(state.sapSearch.toLowerCase()));
-  wrap.innerHTML = rows.map(r=>SapProductRow(r)).join('') || '<div class="empty"><div class="big">No items</div>Try another search term, or enable "Show all".</div>';
+  setHtml_(wrap, rows.map(r=>SapProductRow(r)).join('') || '<div class="empty"><div class="big">No items</div>Try another search term, or enable "Show all".</div>');
   bindRowInputs();
 }
 
