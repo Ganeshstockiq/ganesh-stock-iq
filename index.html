@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.76';
+const APP_VERSION = '2026-08-24.79';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7115,7 +7115,7 @@ const EML_COLS = [
 ];
 const EML_STATUSES = [['expired','Expired'],['expiring','Near Expiry'],['critical','Critical'],['ageing','Ageing'],['normal','Normal'],['fresh','Fresh']];
 // Which Ageing Status lines are LISTED in the email table. The status cards always count everything.
-function emailStatuses_(){ return state.emailStatuses || ['expired','expiring','critical','ageing','normal']; }
+function emailStatuses_(){ return state.emailStatuses || ['expired','expiring','critical','ageing']; }
 function emailShow_(r){ return emailStatuses_().includes(r.ageStatus.cls); }
 function emailCols_(){
   const sel = state.emailCols || EML_COLS.filter(c=>c.def).map(c=>c.k);
@@ -7161,7 +7161,7 @@ function EmailReportCard(){
       ${EML_COLS.map(c=>`<label style="${box}"><input type="checkbox" data-emlcol="${c.k}" ${selCols.has(c.k)?'checked':''}> ${c.label}${c.def?' <span style="color:var(--ink-soft);">(default)</span>':''}</label>`).join('')}
       <button class="btn" id="emlColReset" type="button" style="margin-left:6px;">Default columns</button>
     </div>
-    <div style="font-weight:600;font-size:12.5px;margin-top:10px;">Ageing Status to list in the table <span style="font-weight:400;color:var(--ink-soft);">(the status cards at the top always show every status; Fresh is off by default)</span></div>
+    <div style="font-weight:600;font-size:12.5px;margin-top:10px;">Ageing Status to list in the table <span style="font-weight:400;color:var(--ink-soft);">(the status cards at the top always show every status; Fresh and Normal are off by default)</span></div>
     <div id="emlStatusList" style="margin-top:2px;">
       ${EML_STATUSES.map(([k,l])=>`<label style="${box}"><input type="checkbox" data-emlstat="${k}" ${emailStatuses_().includes(k)?'checked':''}> ${l}</label>`).join('')}
     </div>
@@ -7189,7 +7189,7 @@ function EmailReportCard(){
 function hardenEmailHtml_(html){
   return html.replace(/<(td|th)\b([^>]*)>([^]*?)<\/\1>/g, (m,tag,attrs,inner)=>{
     const st = (attrs.match(/style="([^"]*)"/)||[])[1]||'';
-    const col = (st.match(/(?:^|;)\s*color:\s*(#[0-9a-fA-F]{3,6})/)||[])[1];
+    const cm = Array.from(st.matchAll(/(?:^|;)\s*color:\s*(#[0-9a-fA-F]{3,6})/g)); const col = cm.length ? cm[cm.length-1][1] : undefined;
     if(!col) return m;
     let body = inner;
     if(/font-weight:\s*bold/.test(st) && !/^<b[ >]/.test(body)) body = '<b>'+body+'</b>';
@@ -7201,7 +7201,7 @@ function buildEmailStockHtml(rows, mode){ return hardenEmailHtml_(buildEmailStoc
 function buildEmailStockHtmlRaw_(rows, mode){
   const E = excelEsc_;
   const F = 'font-family:Calibri,Arial,sans-serif;';
-  const TD = 'border:1px solid #d5d9de;padding:3px 6px;font-size:12px;';
+  const TD = 'border:1px solid #d5d9de;padding:3px 6px;font-size:12px;color:#1f2933;';
   const TH = 'border:1px solid #1f3a5f;padding:5px 7px;font-size:12px;font-weight:bold;background:#1f3a5f;color:#ffffff;text-align:left;'+F;
   const pillTd = (txt,c)=>`<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${E(txt)}</td>`;
   const orderTd = (v,bg)=>{ const c = v<0?'#fadbd8':'#d5f5e3'; return `<td bgcolor="${c}" style="${TD}background:${c};text-align:right;font-weight:bold;">${E(kgf(v))}</td>`; };
@@ -7235,16 +7235,33 @@ function buildEmailStockHtmlRaw_(rows, mode){
     });
     return r;
   };
+  const CARD_TINT = {cnfs:'#dde5f0', total:'#e1e6ec', expired:'#f3d3cf', expiring:'#f9d9d5', critical:'#fde3cc', ageing:'#fff3c4', normal:'#d6e8f5', fresh:'#d8f3e3'};
+  // Status cards: a coloured name strip + a light body with the kg figure. Built as FLAT table rows
+  // (no nested tables) so every mail client keeps the colours and the layout.
+  const cardsHtml_ = ()=>{
+    const cardsDef = [
+      {k:'cnfs',    name:'CNFs',                 col:['#1f3a5f','#ffffff'], big:String(groups.length), unit:'',   l3:'Reporting',            rule:'&nbsp;'},
+      {k:'total',   name:'Total Stock',          col:['#34495e','#ffffff'], big:kg0(totalKg),          unit:'kg', l3:lines(rows.length),     rule:'All quantities in kg'},
+      {k:'expired', name:'Expired',              col:EML_AGE_COL.expired,   big:kg0(kgBy.expired),     unit:'kg', l3:lines(cnt.expired),     rule:'Left days &le; 0'},
+      {k:'expiring',name:'Near Expiry',          col:EML_AGE_COL.expiring,  big:kg0(kgBy.expiring),    unit:'kg', l3:lines(cnt.expiring),    rule:`Left % &le; ${th.critical}`},
+      {k:'critical',name:'Critical',             col:EML_AGE_COL.critical,  big:kg0(kgBy.critical),    unit:'kg', l3:lines(cnt.critical),    rule:`Left % &gt; ${th.critical} to ${th.ageing}`},
+      {k:'ageing',  name:'Ageing',               col:EML_AGE_COL.ageing,    big:kg0(kgBy.ageing),      unit:'kg', l3:lines(cnt.ageing),      rule:`Left % &gt; ${th.ageing} to ${th.normal}`},
+      {k:'normal',  name:'Normal',               col:EML_AGE_COL.normal,    big:kg0(kgBy.normal),      unit:'kg', l3:lines(cnt.normal),      rule:`Left % &gt; ${th.normal} to ${th.fresh}`},
+      {k:'fresh',   name:'Fresh',                col:EML_AGE_COL.fresh,     big:kg0(kgBy.fresh),       unit:'kg', l3:lines(cnt.fresh),       rule:`Left % &gt; ${th.fresh}`},
+    ];
+    const bd = 'border:2px solid #ffffff;';
+    const row = fn=>'<tr>'+cardsDef.map(fn).join('')+'</tr>';
+    return `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:8px 0;">`
+      + row(c=>`<td width="112" bgcolor="${c.col[0]}" align="center" style="background:${c.col[0]};color:${c.col[1]};${bd}padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">${c.name}</td>`)
+      + row(c=>`<td bgcolor="${CARD_TINT[c.k]}" align="center" style="background:${CARD_TINT[c.k]};color:#14212e;${bd}padding:8px 8px 2px 8px;text-align:center;font-size:20px;font-weight:bold;${F}">${c.big}${c.unit?` <span style="font-size:11px;font-weight:normal;color:#14212e;">${c.unit}</span>`:''}</td>`)
+      + row(c=>`<td bgcolor="${CARD_TINT[c.k]}" align="center" style="background:${CARD_TINT[c.k]};color:#3b4752;${bd}padding:0 8px 6px 8px;text-align:center;font-size:11px;${F}">${c.l3}</td>`)
+      + row(c=>`<td bgcolor="${c.col[0]}" align="center" style="background:${c.col[0]};color:${c.col[1]};${bd}padding:3px 6px;text-align:center;font-size:10px;${F}">${c.rule}</td>`)
+      + `</table>`;
+  };
   const th = state.masters.thresholds || {fresh:70,normal:40,ageing:20,critical:10};
   let h = `<div style="${F}color:#1f2933;background:#ffffff;">`
     + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;${F}width:100%;"><tr><td bgcolor="#1f3a5f" style="background:#1f3a5f;color:#ffffff;padding:10px 12px;font-size:16px;font-weight:bold;${F}">CNF Stock Report &mdash; ${E(todayISO())} <span style="font-size:11px;font-weight:normal;">(all quantities in kg)</span></td></tr></table>`
-    + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:6px 0;"><tr>`
-    + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock',kg0(totalKg),['#34495e','#ffffff'],'all quantities in kg','kg')
-    + kpi('Expired &middot; '+lines(cnt.expired),kg0(kgBy.expired),EML_AGE_COL.expired,'Left days &le; 0','kg') + kpi('Near Expiry &middot; '+lines(cnt.expiring),kg0(kgBy.expiring),EML_AGE_COL.expiring,`Left % &le; ${th.critical}`,'kg') + kpi('Critical &middot; '+lines(cnt.critical),kg0(kgBy.critical),EML_AGE_COL.critical,`Left % &gt; ${th.critical} to ${th.ageing}`,'kg')
-    + kpi('Ageing &middot; '+lines(cnt.ageing),kg0(kgBy.ageing),EML_AGE_COL.ageing,`Left % &gt; ${th.ageing} to ${th.normal}`,'kg') + kpi('Normal &middot; '+lines(cnt.normal),kg0(kgBy.normal),EML_AGE_COL.normal,`Left % &gt; ${th.normal} to ${th.fresh}`,'kg') + kpi('Fresh &middot; '+lines(cnt.fresh),kg0(kgBy.fresh),EML_AGE_COL.fresh,`Left % &gt; ${th.fresh}`,'kg')
-    + `</tr>`
-    + catRows_()
-    + `</table>`
+    + cardsHtml_()
     + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:2px 0 10px 0;"><tr>`
     + `<td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #1f3a5f;padding:5px 9px;font-size:11px;${F}"><b>Left %</b> (shelf life left) = (Shelf life &minus; Days since MFD) &divide; Shelf life &times; 100</td>`
     + `<td width="8"></td>`
@@ -7257,8 +7274,8 @@ function buildEmailStockHtmlRaw_(rows, mode){
       + `<tr>${['CNF','Code','Stock Date','Total kg','Expired','Near Expiry','Critical','Ageing'].map(x=>`<th style="${TH}">${x}</th>`).join('')}</tr>`;
     groups.forEach((g,i)=>{
       const bg = i%2 ? '#f4f6f8' : '#ffffff';
-      const cell = (n,c)=> n>0 ? `<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${n}</td>` : `<td style="${TD}text-align:center;color:#999;">0</td>`;
-      h += `<tr bgcolor="${bg}"><td style="${TD}font-weight:bold;">${E(g.cnf.name)}</td><td style="${TD}">${E(g.cnf.code)}</td><td style="${TD}">${E(g.date)}</td><td style="${TD}text-align:right;">${kgf(g.kg)}</td>`
+      const cell = (n,c)=> n>0 ? `<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${n}</td>` : `<td bgcolor="${bg}" style="${TD}text-align:center;color:#999;">0</td>`;
+      h += `<tr bgcolor="${bg}"><td bgcolor="${bg}" style="${TD}font-weight:bold;">${E(g.cnf.name)}</td><td bgcolor="${bg}" style="${TD}">${E(g.cnf.code)}</td><td bgcolor="${bg}" style="${TD}">${E(g.date)}</td><td bgcolor="${bg}" style="${TD}text-align:right;">${kgf(g.kg)}</td>`
         + cell(g.c.expired,EML_AGE_COL.expired)+cell(g.c.expiring,EML_AGE_COL.expiring)+cell(g.c.critical,EML_AGE_COL.critical)+cell(g.c.ageing,EML_AGE_COL.ageing)+`</tr>`;
     });
     return h + `</table></div>`;
@@ -7280,9 +7297,9 @@ function buildEmailStockHtmlRaw_(rows, mode){
       Object.values(bp).sort((a,b)=>a.p.name.localeCompare(b.p.name)).forEach((o,i)=>{
         const bg = i%2 ? '#f4f6f8' : '#ffffff';
         const od = ordersFor_(g.cnf.code, o.p.code);
-        h += `<tr bgcolor="${bg}"><td style="${TD}">${E(o.p.code)}</td><td style="${TD}">${E(o.p.name)}</td><td style="${TD}">${E(o.p.category)}</td><td style="${TD}text-align:right;">${kgf(o.kg)}</td><td style="${TD}text-align:center;">${o.n}</td>`
+        h += `<tr bgcolor="${bg}"><td bgcolor="${bg}" style="${TD}">${E(o.p.code)}</td><td bgcolor="${bg}" style="${TD}">${E(o.p.name)}</td><td bgcolor="${bg}" style="${TD}">${E(o.p.category)}</td><td bgcolor="${bg}" style="${TD}text-align:right;">${kgf(o.kg)}</td><td bgcolor="${bg}" style="${TD}text-align:center;">${o.n}</td>`
           + pillTd(o.worst.label, EML_AGE_COL[o.worst.cls]||['#bdc3c7','#2c2c2c'])
-          + `<td style="${TD}text-align:right;">${kgf(od.appr)}</td><td style="${TD}text-align:right;">${kgf(od.pend)}</td>` + orderTd(orderToBeTaken_(o.kg,od.appr,od.pend)) + `</tr>`;
+          + `<td bgcolor="${bg}" style="${TD}text-align:right;">${kgf(od.appr)}</td><td bgcolor="${bg}" style="${TD}text-align:right;">${kgf(od.pend)}</td>` + orderTd(orderToBeTaken_(o.kg,od.appr,od.pend)) + `</tr>`;
       });
     }else{
       g.rows.slice().sort((a,b)=>a.product.name.localeCompare(b.product.name)||String(a.item.mfd).localeCompare(String(b.item.mfd))).forEach((r,i)=>{
@@ -7292,7 +7309,7 @@ function buildEmailStockHtmlRaw_(rows, mode){
           if(c.pill) return pillTd(v, c.pill(r)||['#bdc3c7','#2c2c2c']);
           if(c.order) return orderTd(v);
           const al = c.num||c.right ? 'text-align:right;' : c.center ? 'text-align:center;' : '';
-          return `<td style="${TD}${al}">${E(c.num ? kgf(v) : v)}</td>`;
+          return `<td bgcolor="${bg}" style="${TD}${al}">${E(c.num ? kgf(v) : v)}</td>`;
         }).join('') + '</tr>';
       });
     }
