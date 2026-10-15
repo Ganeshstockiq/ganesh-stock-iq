@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.73';
+const APP_VERSION = '2026-08-24.76';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7207,25 +7207,44 @@ function buildEmailStockHtmlRaw_(rows, mode){
   const orderTd = (v,bg)=>{ const c = v<0?'#fadbd8':'#d5f5e3'; return `<td bgcolor="${c}" style="${TD}background:${c};text-align:right;font-weight:bold;">${E(kgf(v))}</td>`; };
   const kgf = n=>(Number(n)||0).toLocaleString('en-IN',{maximumFractionDigits:2});
   const cnt = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}, kgBy = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}; let totalKg=0;
+  const catBy = {all:{}, expired:{}, expiring:{}, critical:{}, ageing:{}, normal:{}, fresh:{}};
   const byCnf = {};
   rows.forEach(r=>{
     const k = r.cnf.code; (byCnf[k] = byCnf[k] || {cnf:r.cnf, rows:[], kg:0, c:{expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}, date:r.sub.date});
     const g = byCnf[k]; g.rows.push(r); g.kg += r.item.kgQty; if(r.sub.date>g.date) g.date=r.sub.date;
     if(g.c[r.ageStatus.cls]!==undefined) g.c[r.ageStatus.cls]++;
     if(cnt[r.ageStatus.cls]!==undefined){ cnt[r.ageStatus.cls]++; kgBy[r.ageStatus.cls] += r.item.kgQty; }
+    { const cat = r.product.category || 'Other', cl = r.ageStatus.cls; catBy.all[cat] = (catBy.all[cat]||0) + r.item.kgQty; if(catBy[cl]) catBy[cl][cat] = (catBy[cl][cat]||0) + r.item.kgQty; }
     totalKg += r.item.kgQty;
   });
   const groups = Object.values(byCnf).sort((a,b)=>String(a.cnf.name).localeCompare(String(b.cnf.name)));
-  const kpi = (label,n,c,sub,unit)=>`<td bgcolor="${c[0]}" align="center" style="background:${c[0]};color:${c[1]};padding:6px 10px;text-align:center;border:2px solid #ffffff;${F}"><b style="font-size:17px;color:${c[1]};">${n}</b>${unit?` <span style="font-size:11px;color:${c[1]};">${unit}</span>`:''}<br><span style="font-size:11px;color:${c[1]};">${label}</span>${sub?`<br><span style="font-size:9px;color:${c[1]};">${sub}</span>`:''}</td>`;
+  const catLines = (o,c)=>{ const e = Object.entries(o||{}).sort((a,b)=>b[1]-a[1]); return e.length ? `<br><span style="font-size:9px;color:${c[1]};">&#8212;&#8212;&#8212;&#8212;&#8212;</span>` + e.map(([k,v])=>`<br><span style="font-size:10px;color:${c[1]};">${E(k)}: <b style="color:${c[1]};">${kg0(v)}</b></span>`).join('') : ''; };
+  const kpi = (label,n,c,sub,unit,cats)=>`<td bgcolor="${c[0]}" align="center" valign="top" style="background:${c[0]};color:${c[1]};padding:6px 10px;text-align:center;border:2px solid #ffffff;${F}"><b style="font-size:15px;color:${c[1]};">${n}</b>${unit?` <span style="font-size:11px;color:${c[1]};">${unit}</span>`:''}<br><span style="font-size:11px;color:${c[1]};">${label}</span>${sub?`<br><span style="font-size:9px;color:${c[1]};">${sub}</span>`:''}${cats?catLines(cats,c):''}</td>`;
   const lines = n=>`${n} line${n===1?'':'s'}`;
+  const kg0 = n=>(Math.round(Number(n)||0)).toLocaleString('en-IN');
+  const TINT = {expired:'#f1c6c0',expiring:'#f8cfcb',critical:'#fce0c4',ageing:'#fdf1b8',normal:'#d4e6f1',fresh:'#d5f5e3'};
+  const catRows_ = ()=>{
+    const cats = Object.entries(catBy.all).sort((x,y)=>y[1]-x[1]).map(e=>e[0]);
+    if(!cats.length) return '';
+    const cell = (v,bg,bold)=>`<td bgcolor="${bg}" align="right" style="background:${bg};color:#1f2933;padding:4px 10px;border:2px solid #ffffff;font-size:12px;text-align:right;${bold?'font-weight:bold;':''}${F}">${v>0?kg0(v):'<span style="color:#8a96a3;">&ndash;</span>'}</td>`;
+    let r = `<tr><td colspan="8" bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;padding:4px 10px;border:2px solid #ffffff;font-size:11px;font-weight:bold;${F}">Category-wise stock (kg) under each Ageing Status</td></tr>`;
+    cats.forEach(c=>{
+      r += `<tr><td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;padding:4px 10px;border:2px solid #ffffff;font-size:12px;font-weight:bold;text-align:left;${F}">${E(c)}</td>`
+        + cell(catBy.all[c],'#e5e8ec',true)
+        + ['expired','expiring','critical','ageing','normal','fresh'].map(k=>cell(catBy[k][c]||0,TINT[k])).join('') + `</tr>`;
+    });
+    return r;
+  };
   const th = state.masters.thresholds || {fresh:70,normal:40,ageing:20,critical:10};
   let h = `<div style="${F}color:#1f2933;background:#ffffff;">`
     + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;${F}width:100%;"><tr><td bgcolor="#1f3a5f" style="background:#1f3a5f;color:#ffffff;padding:10px 12px;font-size:16px;font-weight:bold;${F}">CNF Stock Report &mdash; ${E(todayISO())} <span style="font-size:11px;font-weight:normal;">(all quantities in kg)</span></td></tr></table>`
     + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:6px 0;"><tr>`
-    + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock',kgf(totalKg),['#34495e','#ffffff'],'all quantities in kg','kg')
-    + kpi('Expired &middot; '+lines(cnt.expired),kgf(kgBy.expired),EML_AGE_COL.expired,'Left days &le; 0','kg') + kpi('Near Expiry &middot; '+lines(cnt.expiring),kgf(kgBy.expiring),EML_AGE_COL.expiring,`Left % &le; ${th.critical}`,'kg') + kpi('Critical &middot; '+lines(cnt.critical),kgf(kgBy.critical),EML_AGE_COL.critical,`Left % &gt; ${th.critical} to ${th.ageing}`,'kg')
-    + kpi('Ageing &middot; '+lines(cnt.ageing),kgf(kgBy.ageing),EML_AGE_COL.ageing,`Left % &gt; ${th.ageing} to ${th.normal}`,'kg') + kpi('Normal &middot; '+lines(cnt.normal),kgf(kgBy.normal),EML_AGE_COL.normal,`Left % &gt; ${th.normal} to ${th.fresh}`,'kg') + kpi('Fresh &middot; '+lines(cnt.fresh),kgf(kgBy.fresh),EML_AGE_COL.fresh,`Left % &gt; ${th.fresh}`,'kg')
-    + `</tr></table>`
+    + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock',kg0(totalKg),['#34495e','#ffffff'],'all quantities in kg','kg')
+    + kpi('Expired &middot; '+lines(cnt.expired),kg0(kgBy.expired),EML_AGE_COL.expired,'Left days &le; 0','kg') + kpi('Near Expiry &middot; '+lines(cnt.expiring),kg0(kgBy.expiring),EML_AGE_COL.expiring,`Left % &le; ${th.critical}`,'kg') + kpi('Critical &middot; '+lines(cnt.critical),kg0(kgBy.critical),EML_AGE_COL.critical,`Left % &gt; ${th.critical} to ${th.ageing}`,'kg')
+    + kpi('Ageing &middot; '+lines(cnt.ageing),kg0(kgBy.ageing),EML_AGE_COL.ageing,`Left % &gt; ${th.ageing} to ${th.normal}`,'kg') + kpi('Normal &middot; '+lines(cnt.normal),kg0(kgBy.normal),EML_AGE_COL.normal,`Left % &gt; ${th.normal} to ${th.fresh}`,'kg') + kpi('Fresh &middot; '+lines(cnt.fresh),kg0(kgBy.fresh),EML_AGE_COL.fresh,`Left % &gt; ${th.fresh}`,'kg')
+    + `</tr>`
+    + catRows_()
+    + `</table>`
     + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:2px 0 10px 0;"><tr>`
     + `<td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #1f3a5f;padding:5px 9px;font-size:11px;${F}"><b>Left %</b> (shelf life left) = (Shelf life &minus; Days since MFD) &divide; Shelf life &times; 100</td>`
     + `<td width="8"></td>`
