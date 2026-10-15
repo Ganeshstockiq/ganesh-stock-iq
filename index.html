@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.56';
+const APP_VERSION = '2026-08-24.57';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -6130,23 +6130,7 @@ function MisExport(){
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
-  <div class="panel-card">
-    <h4>📧 Email Body Report — Stock (Colour, paste-ready)</h4>
-    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Upar ke CNF / category / status filters ke hisaab se ek <b>halka, full-colour table</b> banata hai jo seedha email body me paste hota hai (Outlook / Gmail / Zoho). Excel se copy karne par email hang hota hai kyunki Excel bhari hui formatting saath le aata hai — ye report sirf simple inline-colour table hai, isliye hang nahi hota.</p>
-    <div class="filters">
-      <div class="fg"><label>Detail level</label><select id="emlMode">
-        <option value="batch">Batch-wise (har MFD line)</option>
-        <option value="product">Product-wise (batches jod kar)</option>
-        <option value="summary">Sirf CNF Summary</option></select></div>
-    </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-      <button class="btn btn-primary" id="btnEmailBuild">📧 Build Email Report</button>
-      <button class="btn" id="btnEmailCopy" style="display:none;">📋 Copy for Email</button>
-      <button class="btn" id="btnEmailDownload" style="display:none;">⬇ Save as .html</button>
-    </div>
-    <div id="emlMsg" style="margin-top:8px;font-size:12px;color:var(--ink-soft);"></div>
-    <div id="emlPreview" style="margin-top:12px;overflow:auto;max-height:520px;background:#fff;border-radius:6px;display:none;"></div>
-  </div>
+  ${EmailReportCard()}
 
   <div class="panel-card">
     <h4>Old Data — Date Range Export</h4>
@@ -6319,7 +6303,16 @@ function buildMergedOrdersExportRows(rows, lookup){
     }
     return copy;
   });
-  return {headers, dataRows: mergedRows, statusColIndex: headers.indexOf('Ageing Status'), matched, unmatched};
+  // Order To Be Taken = KG − Approved Order − Pending Order. Always the KG column
+  // (Approved/Pending are in kg, so Entered Qty in any other UOM is never used).
+  const kgIdx = headers.indexOf('KG');
+  const outHeaders = headers.slice(), outRows = mergedRows.map(r=>r.slice());
+  outHeaders[apprIdx] = 'Approved Order - Kg'; outHeaders[pendIdx] = 'Pending Order - Kg';
+  const ordIdx = pendIdx + 1;
+  outHeaders.splice(ordIdx, 0, 'Order To Be Taken');
+  outRows.forEach(r=>{ r.splice(ordIdx, 0, orderToBeTaken_(r[kgIdx], r[apprIdx], r[pendIdx])); });
+  const cellStyleFn = (ri, ci, val)=> ci===ordIdx && typeof val==='number' ? (val<0 ? {bg:'#fadbd8', fg:'#922b21', bold:true} : {bg:'#d5f5e3', fg:'#1e5b2b', bold:true}) : null;
+  return {headers: outHeaders, dataRows: outRows, statusColIndex: headers.indexOf('Ageing Status'), matched, unmatched, cellStyleFn};
 }
 
 // Sends every active CNF's current report right now, on demand — the exact
@@ -7067,24 +7060,109 @@ function warnIfStale(fresh){
   }
 }
 
-/* ---------------- Email-body stock report (light, inline-styled) ---------------- */
+/* ---------------- Email-body stock report (light, inline-styled) ----------------
+   Active only once the Approved/Pending Orders file is uploaded — Order To Be
+   Taken needs it. Always computed in KG: KG − Approved Order (Kg) − Pending Order (Kg). */
 const EML_AGE_COL = {expired:['#c0392b','#ffffff'], expiring:['#e67e22','#ffffff'], critical:['#e67e22','#ffffff'], ageing:['#f0c419','#3a2c00'], normal:['#5dade2','#0b2b40'], fresh:['#27ae60','#ffffff']};
 const EML_SAFE_COL = {low:['#c0392b','#ffffff'], ok:['#27ae60','#ffffff'], 'no-norm':['#bdc3c7','#2c2c2c']};
+function ordersFor_(cnfCode, productCode){
+  const o = state.pendingOrdersOverride && state.pendingOrdersOverride.lookup[String(cnfCode).trim()+'||'+normalizeMaterialCode(productCode)];
+  return {appr: o && o.approvedOrder!=null ? Number(o.approvedOrder)||0 : 0, pend: o && o.pendingOrder!=null ? Number(o.pendingOrder)||0 : 0};
+}
+const orderToBeTaken_ = (kg, appr, pend)=> Number(((Number(kg)||0) - (Number(appr)||0) - (Number(pend)||0)).toFixed(2));
+// pick-and-choose columns for the Batch-wise table; def = ticked by default
+const EML_COLS = [
+  {k:'code',    label:'Code',               def:true,  get:r=>r.product.code},
+  {k:'product', label:'Product',            def:true,  get:r=>r.product.name},
+  {k:'category',label:'Category',           def:false, get:r=>r.product.category},
+  {k:'mfd',     label:'MFD',                def:true,  get:r=>r.item.mfd||''},
+  {k:'qty',     label:'Entered Qty + UOM',  def:false, get:r=>`${r.item.qty} ${safeUomLabel(r.item.uom)}`, right:true},
+  {k:'kg',      label:'kg',                 def:true,  get:r=>r.item.kgQty, num:true},
+  {k:'age',     label:'Stock Age (d)',      def:false, get:r=>r.ageStatus.age??'', center:true},
+  {k:'left',    label:'Left (d)',           def:true,  get:r=>r.ageStatus.remaining??'', center:true},
+  {k:'ageing',  label:'Ageing Status',      def:true,  get:r=>r.ageStatus.label, pill:r=>EML_AGE_COL[r.ageStatus.cls]},
+  {k:'action',  label:'Recommended Action', def:true,  get:r=>recommendedAction(r.ageStatus.cls, r.safetyStatus==='low')},
+  {k:'safety',  label:'Safety Status',      def:false, get:r=>safetyStatusLabel(r.safetyStatus), pill:r=>EML_SAFE_COL[r.safetyStatus]||EML_SAFE_COL['no-norm']},
+  {k:'norm',    label:'Safety Stock (kg)',  def:false, get:r=>safetyNormFor(r.item,r.product), num:true},
+  {k:'appr',    label:'Approved Order - Kg',def:true,  get:r=>ordersFor_(r.cnf.code,r.product.code).appr, num:true},
+  {k:'pend',    label:'Pending Order - Kg', def:true,  get:r=>ordersFor_(r.cnf.code,r.product.code).pend, num:true},
+  {k:'order',   label:'Order To Be Taken',  def:true,  get:r=>{const o=ordersFor_(r.cnf.code,r.product.code); return orderToBeTaken_(r.item.kgQty,o.appr,o.pend);}, num:true, order:true},
+];
+function emailCols_(){
+  const sel = state.emailCols || EML_COLS.filter(c=>c.def).map(c=>c.k);
+  const list = EML_COLS.filter(c=>sel.includes(c.k));
+  return list.length ? list : EML_COLS.filter(c=>c.def);
+}
+function emailCnfCodes_(){
+  if(state.emailCnfSel) return state.emailCnfSel;
+  return state.masters.cnfs.filter(c=>!isDemoCnf(c) && latestSubmissionFor(c.code)).map(c=>c.code);
+}
+function emailRows_(){
+  let rows = allCurrentStockRows(emailCnfCodes_());
+  if(state.misFilters.category!=='ALL') rows = rows.filter(r=>r.product.category===state.misFilters.category);
+  if(state.misFilters.status!=='ALL') rows = rows.filter(r=>r.ageStatus.cls===state.misFilters.status);
+  return rows;
+}
+function EmailReportCard(){
+  if(!state.pendingOrdersOverride){
+    return `<div class="panel-card" style="opacity:.85;">
+    <h4>📧 Email Body Report — Stock (Colour, paste-ready)</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin:0;">🔒 Ye report tab active hota hai jab <b>Approved/Pending Orders file</b> upload ho jaye (neeche "Approved/Pending Orders — Merged Report" card me), kyunki <b>Order To Be Taken = KG − Approved Order − Pending Order</b> usi file se banta hai. File upload hote hi ye report apne aap ban jayegi.</p>
+  </div>`;
+  }
+  const selCols = new Set(emailCols_().map(c=>c.k));
+  const selCnf = new Set(emailCnfCodes_());
+  const cnfs = state.masters.cnfs.filter(c=>latestSubmissionFor(c.code)).slice().sort((a,b)=>(isDemoCnf(a)-isDemoCnf(b))||String(a.name).localeCompare(String(b.name)));
+  const box = 'display:inline-flex;align-items:center;gap:5px;margin:3px 12px 3px 0;font-size:12.5px;white-space:nowrap;';
+  return `<div class="panel-card">
+    <h4>📧 Email Body Report — Stock (Colour, paste-ready)</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">✓ Orders file loaded (<b>${escapeHtml(state.pendingOrdersOverride.fileName)}</b>). Order To Be Taken = <b>KG − Approved − Pending</b> (hamesha KG me). Category / status filter upar wale filters se lagte hain; CNF neeche se chunein.</p>
+    <div style="font-weight:600;font-size:12.5px;margin-top:6px;">CNF chunein <span style="font-weight:400;color:var(--ink-soft);">(tick = include, untick = exclude)</span></div>
+    <div style="margin:4px 0;display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn" id="emlCnfAll" type="button">Sab select</button>
+      <button class="btn" id="emlCnfNone" type="button">Sab hatao</button>
+      <input id="emlCnfSearch" placeholder="CNF search…" style="max-width:180px;">
+      <span id="emlCnfCount" style="align-self:center;font-size:12px;color:var(--ink-soft);"></span>
+    </div>
+    <div id="emlCnfList" style="max-height:170px;overflow:auto;border:1px solid var(--line,#ddd);border-radius:6px;padding:6px 8px;">
+      ${cnfs.map(c=>`<label style="${box}" data-n="${escapeHtml((c.name+' '+c.code).toLowerCase())}"><input type="checkbox" data-emlcnf="${escapeHtml(c.code)}" ${selCnf.has(c.code)?'checked':''}> ${escapeHtml(c.name)} · ${escapeHtml(c.code)}${isDemoCnf(c)?' <i>(demo)</i>':''}</label>`).join('')}
+    </div>
+    <div style="font-weight:600;font-size:12.5px;margin-top:10px;">Columns chunein <span style="font-weight:400;color:var(--ink-soft);">(✓ = default; Batch-wise table me lagta hai)</span></div>
+    <div id="emlColList" style="margin-top:2px;">
+      ${EML_COLS.map(c=>`<label style="${box}"><input type="checkbox" data-emlcol="${c.k}" ${selCols.has(c.k)?'checked':''}> ${c.label}${c.def?' <span style="color:var(--ink-soft);">(default)</span>':''}</label>`).join('')}
+      <button class="btn" id="emlColReset" type="button" style="margin-left:6px;">Default columns</button>
+    </div>
+    <div class="filters" style="margin-top:8px;">
+      <div class="fg"><label>Detail level</label><select id="emlMode">
+        <option value="batch">Batch-wise (har MFD line)</option>
+        <option value="product">Product-wise (batches jod kar)</option>
+        <option value="summary">Sirf CNF Summary</option></select></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      <button class="btn btn-primary" id="btnEmailBuild">📧 Build Email Report</button>
+      <button class="btn" id="btnEmailCopy" style="display:none;">📋 Copy for Email</button>
+      <button class="btn btn-primary" id="btnEmailImage" style="display:none;">🖼 Copy as Image (hang nahi hota)</button>
+      <button class="btn" id="btnEmailDownload" style="display:none;">⬇ Save as .html</button>
+    </div>
+    <div id="emlMsg" style="margin-top:8px;font-size:12px;color:var(--ink-soft);"></div>
+    <div id="emlPreview" style="margin-top:12px;overflow:auto;max-height:520px;background:#fff;border-radius:6px;display:none;"></div>
+  </div>`;
+}
 function buildEmailStockHtml(rows, mode){
   const E = excelEsc_;
   const F = 'font-family:Calibri,Arial,sans-serif;';
   const TD = 'border:1px solid #d5d9de;padding:4px 7px;font-size:12px;'+F;
   const TH = 'border:1px solid #1f3a5f;padding:5px 7px;font-size:12px;font-weight:bold;background:#1f3a5f;color:#ffffff;text-align:left;'+F;
-  const pill = (txt,c)=>`<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${E(txt)}</td>`;
-  const kgf = n=>(Number(n)||0).toLocaleString('en-IN',{maximumFractionDigits:1});
-  const cnt = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}; let totalKg=0, low=0;
+  const pillTd = (txt,c)=>`<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${E(txt)}</td>`;
+  const orderTd = (v,bg)=>{ const c = v<0?'#fadbd8':'#d5f5e3'; return `<td bgcolor="${c}" style="${TD}background:${c};text-align:right;font-weight:bold;">${E(kgf(v))}</td>`; };
+  const kgf = n=>(Number(n)||0).toLocaleString('en-IN',{maximumFractionDigits:2});
+  const cnt = {expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}; let totalKg=0;
   const byCnf = {};
   rows.forEach(r=>{
-    const k = r.cnf.code; (byCnf[k] = byCnf[k] || {cnf:r.cnf, rows:[], kg:0, c:{expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}, low:0, date:r.sub.date});
+    const k = r.cnf.code; (byCnf[k] = byCnf[k] || {cnf:r.cnf, rows:[], kg:0, c:{expired:0,expiring:0,critical:0,ageing:0,normal:0,fresh:0}, date:r.sub.date});
     const g = byCnf[k]; g.rows.push(r); g.kg += r.item.kgQty; if(r.sub.date>g.date) g.date=r.sub.date;
     if(g.c[r.ageStatus.cls]!==undefined) g.c[r.ageStatus.cls]++;
     if(cnt[r.ageStatus.cls]!==undefined) cnt[r.ageStatus.cls]++;
-    if(r.safetyStatus==='low'){ g.low++; low++; }
     totalKg += r.item.kgQty;
   });
   const groups = Object.values(byCnf).sort((a,b)=>String(a.cnf.name).localeCompare(String(b.cnf.name)));
@@ -7095,43 +7173,48 @@ function buildEmailStockHtml(rows, mode){
     + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock (kg)',kgf(totalKg),['#34495e','#ffffff'])
     + kpi('Expired',cnt.expired,EML_AGE_COL.expired) + kpi('Near Expiry',cnt.expiring,EML_AGE_COL.expiring) + kpi('Critical',cnt.critical,EML_AGE_COL.critical)
     + kpi('Ageing',cnt.ageing,EML_AGE_COL.ageing) + kpi('Normal',cnt.normal,EML_AGE_COL.normal) + kpi('Fresh',cnt.fresh,EML_AGE_COL.fresh)
-    + kpi('Replenish',low,EML_SAFE_COL.low) + `</tr></table></td></tr></table>`;
+    + `</tr></table></td></tr></table>`;
   if(mode==='summary'){
     h += `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;max-width:1000px;">`
-      + `<tr>${['CNF','Code','Stock Date','Total kg','Expired','Near Expiry','Critical','Ageing','Replenish'].map(x=>`<th style="${TH}">${x}</th>`).join('')}</tr>`;
+      + `<tr>${['CNF','Code','Stock Date','Total kg','Expired','Near Expiry','Critical','Ageing'].map(x=>`<th style="${TH}">${x}</th>`).join('')}</tr>`;
     groups.forEach((g,i)=>{
       const bg = i%2 ? '#f4f6f8' : '#ffffff';
       const cell = (n,c)=> n>0 ? `<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${n}</td>` : `<td style="${TD}background:${bg};text-align:center;color:#999;">0</td>`;
       h += `<tr><td style="${TD}background:${bg};font-weight:bold;">${E(g.cnf.name)}</td><td style="${TD}background:${bg};">${E(g.cnf.code)}</td><td style="${TD}background:${bg};">${E(g.date)}</td><td style="${TD}background:${bg};text-align:right;">${kgf(g.kg)}</td>`
-        + cell(g.c.expired,EML_AGE_COL.expired)+cell(g.c.expiring,EML_AGE_COL.expiring)+cell(g.c.critical,EML_AGE_COL.critical)+cell(g.c.ageing,EML_AGE_COL.ageing)+cell(g.low,EML_SAFE_COL.low)+`</tr>`;
+        + cell(g.c.expired,EML_AGE_COL.expired)+cell(g.c.expiring,EML_AGE_COL.expiring)+cell(g.c.critical,EML_AGE_COL.critical)+cell(g.c.ageing,EML_AGE_COL.ageing)+`</tr>`;
     });
     return h + `</table></div>`;
   }
-  h += `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;max-width:1000px;">`;
-  const heads = mode==='product'
-    ? ['Product','Category','Total kg','Batches','Worst Ageing','Safety Status']
-    : ['Product','Category','MFD','Qty','kg','Age (d)','Left (d)','Ageing Status','Safety Status'];
+  const cols = mode==='product' ? null : emailCols_();
+  const heads = mode==='product' ? ['Code','Product','Category','Total kg','Batches','Worst Ageing','Approved Order - Kg','Pending Order - Kg','Order To Be Taken'] : cols.map(c=>c.label);
   const span = heads.length;
+  h += `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;max-width:1000px;">`;
   groups.forEach(g=>{
     h += `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock date ${E(g.date)} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr>`;
-    h += `<tr>${heads.map(x=>`<th style="${TH}">${x}</th>`).join('')}</tr>`;
+    h += `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
     if(mode==='product'){
+      const rank = {expired:6,expiring:5,critical:4,ageing:3,normal:2,fresh:1};
       const bp = {};
-      g.rows.forEach(r=>{ const o = bp[r.product.code] || (bp[r.product.code]={p:r.product,kg:0,n:0,worst:r.ageStatus,safe:r.safetyStatus,kgTot:0});
+      g.rows.forEach(r=>{ const o = bp[r.product.code] || (bp[r.product.code]={p:r.product,kg:0,n:0,worst:r.ageStatus});
         o.kg += r.item.kgQty; o.n++;
-        const rank = {expired:6,expiring:5,critical:4,ageing:3,normal:2,fresh:1}; if((rank[r.ageStatus.cls]||0)>(rank[o.worst.cls]||0)) o.worst=r.ageStatus; });
+        if((rank[r.ageStatus.cls]||0)>(rank[o.worst.cls]||0)) o.worst=r.ageStatus; });
       Object.values(bp).sort((a,b)=>a.p.name.localeCompare(b.p.name)).forEach((o,i)=>{
         const bg = i%2 ? '#f4f6f8' : '#ffffff';
-        const lowS = g.rows.find(r=>r.product.code===o.p.code && r.safetyStatus==='low');
-        const sf = lowS ? 'low' : (g.rows.find(r=>r.product.code===o.p.code && r.safetyStatus==='ok') ? 'ok' : 'no-norm');
-        h += `<tr><td style="${TD}background:${bg};">${E(o.p.name)}</td><td style="${TD}background:${bg};">${E(o.p.category)}</td><td style="${TD}background:${bg};text-align:right;">${kgf(o.kg)}</td><td style="${TD}background:${bg};text-align:center;">${o.n}</td>`
-          + pill(o.worst.label, EML_AGE_COL[o.worst.cls]||['#bdc3c7','#2c2c2c']) + pill(safetyStatusLabel(sf), EML_SAFE_COL[sf]) + `</tr>`;
+        const od = ordersFor_(g.cnf.code, o.p.code);
+        h += `<tr><td style="${TD}background:${bg};">${E(o.p.code)}</td><td style="${TD}background:${bg};">${E(o.p.name)}</td><td style="${TD}background:${bg};">${E(o.p.category)}</td><td style="${TD}background:${bg};text-align:right;">${kgf(o.kg)}</td><td style="${TD}background:${bg};text-align:center;">${o.n}</td>`
+          + pillTd(o.worst.label, EML_AGE_COL[o.worst.cls]||['#bdc3c7','#2c2c2c'])
+          + `<td style="${TD}background:${bg};text-align:right;">${kgf(od.appr)}</td><td style="${TD}background:${bg};text-align:right;">${kgf(od.pend)}</td>` + orderTd(orderToBeTaken_(o.kg,od.appr,od.pend)) + `</tr>`;
       });
     }else{
       g.rows.slice().sort((a,b)=>a.product.name.localeCompare(b.product.name)||String(a.item.mfd).localeCompare(String(b.item.mfd))).forEach((r,i)=>{
         const bg = i%2 ? '#f4f6f8' : '#ffffff';
-        h += `<tr><td style="${TD}background:${bg};">${E(r.product.name)}</td><td style="${TD}background:${bg};">${E(r.product.category)}</td><td style="${TD}background:${bg};">${E(r.item.mfd||'')}</td><td style="${TD}background:${bg};text-align:right;">${E(r.item.qty)} ${E(safeUomLabel(r.item.uom))}</td><td style="${TD}background:${bg};text-align:right;">${kgf(r.item.kgQty)}</td><td style="${TD}background:${bg};text-align:center;">${E(r.ageStatus.age??'')}</td><td style="${TD}background:${bg};text-align:center;">${E(r.ageStatus.remaining??'')}</td>`
-          + pill(r.ageStatus.label, EML_AGE_COL[r.ageStatus.cls]||['#bdc3c7','#2c2c2c']) + pill(safetyStatusLabel(r.safetyStatus), EML_SAFE_COL[r.safetyStatus]||EML_SAFE_COL['no-norm']) + `</tr>`;
+        h += '<tr>' + cols.map(c=>{
+          const v = c.get(r);
+          if(c.pill) return pillTd(v, c.pill(r)||['#bdc3c7','#2c2c2c']);
+          if(c.order) return orderTd(v);
+          const al = c.num||c.right ? 'text-align:right;' : c.center ? 'text-align:center;' : '';
+          return `<td style="${TD}background:${bg};${al}">${E(c.num ? kgf(v) : v)}</td>`;
+        }).join('') + '</tr>';
       });
     }
     h += `<tr><td colspan="${span}" style="height:8px;font-size:4px;line-height:4px;">&nbsp;</td></tr>`;
@@ -7145,7 +7228,7 @@ async function copyEmailHtml_(html){
       return true;
     }
   }catch(e){}
-  try{ // fallback: select the rendered preview and copy
+  try{
     const el = document.getElementById('emlPreview'); const r = document.createRange(); r.selectNodeContents(el);
     const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
     const ok = document.execCommand('copy'); sel.removeAllRanges(); return ok;
@@ -7155,25 +7238,64 @@ function bindEmailReport_(){
   const b = document.getElementById('btnEmailBuild'); if(!b) return;
   const cp = document.getElementById('btnEmailCopy'), dl = document.getElementById('btnEmailDownload');
   const pv = document.getElementById('emlPreview'), msg = document.getElementById('emlMsg');
+  const cntEl = document.getElementById('emlCnfCount');
+  const refreshCount = ()=>{ if(cntEl) cntEl.textContent = emailCnfCodes_().length+' CNF selected'; };
+  refreshCount();
+  const cnfBoxes = ()=>Array.from(document.querySelectorAll('[data-emlcnf]'));
+  const syncCnf = ()=>{ state.emailCnfSel = cnfBoxes().filter(x=>x.checked).map(x=>x.getAttribute('data-emlcnf')); refreshCount(); };
+  cnfBoxes().forEach(x=>x.onchange = syncCnf);
+  const all = document.getElementById('emlCnfAll'), none = document.getElementById('emlCnfNone'), srch = document.getElementById('emlCnfSearch');
+  if(all) all.onclick = ()=>{ cnfBoxes().forEach(x=>{ if(!x.closest('label').querySelector('i')) x.checked = true; }); syncCnf(); };
+  if(none) none.onclick = ()=>{ cnfBoxes().forEach(x=>x.checked=false); syncCnf(); };
+  if(srch) srch.oninput = ()=>{ const q = srch.value.trim().toLowerCase(); document.querySelectorAll('#emlCnfList label').forEach(l=>{ l.style.display = !q || l.getAttribute('data-n').includes(q) ? '' : 'none'; }); };
+  const colBoxes = ()=>Array.from(document.querySelectorAll('[data-emlcol]'));
+  colBoxes().forEach(x=>x.onchange = ()=>{ state.emailCols = colBoxes().filter(y=>y.checked).map(y=>y.getAttribute('data-emlcol')); });
+  const rst = document.getElementById('emlColReset');
+  if(rst) rst.onclick = ()=>{ state.emailCols = null; colBoxes().forEach(x=>{ x.checked = !!EML_COLS.find(c=>c.k===x.getAttribute('data-emlcol')).def; }); };
   b.onclick = async ()=>{
     msg.textContent = 'Latest data la raha hoon…';
     try{
       const fresh = await refreshBeforeExport(); warnIfStale(fresh);
-      const rows = filteredRows();
-      if(!rows.length){ msg.textContent = 'Filters ke hisaab se koi stock nahi mila.'; return; }
+      const rows = emailRows_();
+      if(!rows.length){ msg.textContent = 'Chune hue CNF / filters ke hisaab se koi stock nahi mila.'; return; }
       const mode = document.getElementById('emlMode').value;
       const html = buildEmailStockHtml(rows, mode);
       setHtml_(pv, html); pv.style.display='block'; pv._html = html;
-      cp.style.display = dl.style.display = '';
-      msg.textContent = `${rows.length} line(s) · ${Math.round(html.length/1024)} KB (halka). "Copy for Email" dabayein, phir email body me Ctrl+V.`;
+      cp.style.display = dl.style.display = ''; document.getElementById('btnEmailImage').style.display='';
+      const nCnf = new Set(rows.map(r=>r.cnf.code)).size;
+      msg.textContent = (rows.length>400 ? '⚠ '+rows.length+' lines bahut zyada hain — Ctrl+V hang ho sakta hai, "Copy as Image" use karein ya CNF kam karein. ' : '') + `${nCnf} CNF · ${rows.length} line(s) · ${Math.round(html.length/1024)} KB.`;
     }catch(e){ msg.textContent = 'Report nahi ban paya: '+((e&&e.message)||e); }
   };
   cp.onclick = async ()=>{ const ok = await copyEmailHtml_(pv._html||''); showToast(ok ? '✓ Copied — ab email body me Ctrl+V karein' : '⚠ Copy nahi hua — preview select karke Ctrl+C karein'); };
+  const im = document.getElementById('btnEmailImage');
+  if(im) im.onclick = async ()=>{
+    const target = pv.firstElementChild; if(!target){ return; }
+    im.disabled = true; msg.textContent = 'Image bana raha hoon…';
+    try{
+      if(!window.html2canvas){
+        await new Promise((ok,bad)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'; sc.onload=ok; sc.onerror=()=>bad(new Error('html2canvas load nahi hua (internet check karein)')); document.head.appendChild(sc); });
+      }
+      const prevMax = pv.style.maxHeight; pv.style.maxHeight='none';
+      const canvas = await window.html2canvas(target,{backgroundColor:'#ffffff',scale:2,useCORS:true,logging:false});
+      pv.style.maxHeight = prevMax;
+      const blob = await new Promise(r=>canvas.toBlob(r,'image/png'));
+      let copied = false;
+      try{ if(navigator.clipboard && window.ClipboardItem){ await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]); copied = true; } }catch(e){}
+      if(copied){ showToast('✓ Image copied — email body me Ctrl+V karein'); msg.textContent='Image copy ho gayi — Outlook me Ctrl+V.'; }
+      else{
+        const u = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=u; a.download='cnf-stock-email-'+todayISO()+'.png'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+        msg.textContent='Browser ne copy nahi karne diya — PNG download ho gayi. Email me Insert → Pictures se lagayein.';
+      }
+    }catch(e){ msg.textContent = 'Image nahi ban paayi: '+((e&&e.message)||e); }
+    im.disabled = false;
+  };
   dl.onclick = ()=>{
     const doc = '<!doctype html><html><head><meta charset="utf-8"><title>CNF Stock Report</title></head><body>'+(pv._html||'')+'</body></html>';
     const blob = new Blob([doc],{type:'text/html'}); const u = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href=u; a.download='cnf-stock-email-'+todayISO()+'.html'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
   };
+  // Ready as soon as the orders file was just uploaded
+  if(state.emailAuto){ state.emailAuto = false; b.onclick(); }
 }
 async function runExport(){
   const prog = document.getElementById('exportProg');
@@ -8794,8 +8916,9 @@ function bindGlobal(){
         const rows = await parseOrdersBulkFile(file);
         const built = buildOrdersLookup(rows);
         state.pendingOrdersOverride = { count: rows.length, fileName: file.name, lookup: built.lookup };
+        state.emailAuto = true;
         if(prog) prog.style.display='none';
-        showToast(`✓ ${rows.length} row(s) loaded${built.duplicateLines?` (${built.duplicateLines} split line(s) added together)`:''} — click "Export Report" to download it with Approved/Pending filled in`);
+        showToast(`✓ ${rows.length} row(s) loaded${built.duplicateLines?` (${built.duplicateLines} split line(s) added together)`:''} — Email Body Report ready ho gayi, aur "Export Report" se detailed file download karein`);
         render();
       }catch(e){
         if(prog) prog.style.display='none';
@@ -8810,12 +8933,12 @@ function bindGlobal(){
       showToast('Fetching latest data from the server…');
       warnIfStale(await refreshBeforeExport());
       const rows = filteredRows();
-      const {headers, dataRows, statusColIndex, matched, unmatched} = buildMergedOrdersExportRows(rows, state.pendingOrdersOverride.lookup);
+      const {headers, dataRows, statusColIndex, matched, unmatched, cellStyleFn} = buildMergedOrdersExportRows(rows, state.pendingOrdersOverride.lookup);
       const summaryRows = buildMisPivotSummaryRows(rows);
       const wb = await buildXlsxWorkbook({
         title: 'CNF Stock Export — Approved/Pending Orders Filled',
         subtitle: `Filtered view — ${rows.length} line(s) · orders from ${state.pendingOrdersOverride.fileName}`,
-        headers, rows: dataRows, summaryRows, statusColIndex,
+        headers, rows: dataRows, summaryRows, statusColIndex, cellStyleFn,
       });
       await downloadRealXlsx(`cnf-stock-export-orders-filled-${todayISO()}`, wb);
       showToast(`✓ Report downloaded — ${matched} row(s) filled from the file${unmatched?`, ${unmatched} not listed in it (shown as 0)`:''}`);
