@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.69';
+const APP_VERSION = '2026-08-24.71';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7214,10 +7214,16 @@ function buildEmailStockHtmlRaw_(rows, mode){
     + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;${F}width:100%;"><tr><td bgcolor="#1f3a5f" style="background:#1f3a5f;color:#ffffff;padding:10px 12px;font-size:16px;font-weight:bold;${F}">CNF Stock Report &mdash; ${E(todayISO())}</td></tr></table>`
     + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:6px 0;"><tr>`
     + kpi('CNFs',groups.length,['#1f3a5f','#ffffff']) + kpi('Total Stock (kg)',kgf(totalKg),['#34495e','#ffffff'])
-    + kpi('Expired',cnt.expired,EML_AGE_COL.expired,'0 days left') + kpi('Near Expiry',cnt.expiring,EML_AGE_COL.expiring,`≤${th.critical}% life left`) + kpi('Critical',cnt.critical,EML_AGE_COL.critical,`${th.critical}–${th.ageing}% life left`)
-    + kpi('Ageing',cnt.ageing,EML_AGE_COL.ageing,`${th.ageing}–${th.normal}% life left`) + kpi('Normal',cnt.normal,EML_AGE_COL.normal,`${th.normal}–${th.fresh}% life left`) + kpi('Fresh',cnt.fresh,EML_AGE_COL.fresh,`&gt;${th.fresh}% life left`)
+    + kpi('Expired',cnt.expired,EML_AGE_COL.expired,'Left days &le; 0') + kpi('Near Expiry',cnt.expiring,EML_AGE_COL.expiring,`Left % &le; ${th.critical}`) + kpi('Critical',cnt.critical,EML_AGE_COL.critical,`Left % &gt; ${th.critical} to ${th.ageing}`)
+    + kpi('Ageing',cnt.ageing,EML_AGE_COL.ageing,`Left % &gt; ${th.ageing} to ${th.normal}`) + kpi('Normal',cnt.normal,EML_AGE_COL.normal,`Left % &gt; ${th.normal} to ${th.fresh}`) + kpi('Fresh',cnt.fresh,EML_AGE_COL.fresh,`Left % &gt; ${th.fresh}`)
     + `</tr></table>`
-    + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:0 0 8px 0;"><tr><td style="font-size:10px;color:#52606d;padding:2px 0;">Status = % of shelf life left &nbsp;|&nbsp; Left (d) = shelf life &minus; days since MFD &nbsp;|&nbsp; Order To Be Taken = KG &minus; Approved &minus; Pending</td></tr></table>`;
+    + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;margin:2px 0 10px 0;"><tr>`
+    + `<td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #1f3a5f;padding:5px 9px;font-size:11px;${F}"><b>Left %</b> (shelf life left) = (Shelf life &minus; Days since MFD) &divide; Shelf life &times; 100</td>`
+    + `<td width="8"></td>`
+    + `<td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #2e86c1;padding:5px 9px;font-size:11px;${F}"><b>Left (d)</b> = Shelf life &minus; Days since MFD</td>`
+    + `<td width="8"></td>`
+    + `<td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #1e8449;padding:5px 9px;font-size:11px;${F}"><b>Order To Be Taken</b> = KG &minus; Approved &minus; Pending</td>`
+    + `</tr></table>`;
   if(mode==='summary'){
     h += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;">`
       + `<tr>${['CNF','Code','Stock Date','Total kg','Expired','Near Expiry','Critical','Ageing'].map(x=>`<th style="${TH}">${x}</th>`).join('')}</tr>`;
