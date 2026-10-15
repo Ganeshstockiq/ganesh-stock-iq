@@ -683,6 +683,9 @@ const state = {
   cnfLineDetail: null, // {code, mfd} — CNF's own product-detail popup, from Reports screen
   syncFailureInfo: null, // {subId, error} — set when a submission's server sync fails, shown as a blocking popup so it's never missed
   adminUser: null,        // logged-in admin user record
+  scUser: null,           // logged-in Sales Coordinator
+  auditor: null,          // set while a Sales Coordinator is auditing a CNF (state.cnfUser is then the CNF being audited)
+  scMyAudits: [], scSearch: '',
   adminScreen: 'cnfs',
   misUser: null,          // logged-in MIS/Back Office user record
   misScreen: 'overview',
@@ -801,6 +804,7 @@ function normalizeMasters(m){
   // Anyone typing userId / password got in as Admin. Dropped before the
   // default-user fallback below so it can't be mistaken for a real account.
   const userHeaderWord = v => ['userid','user id','user_id','id','name','password'].includes(String(v==null?'':v).trim().toLowerCase());
+  m.scUsers = (m.scUsers||[]).filter(u=>!userHeaderWord(u.userId));
   m.adminUsers = (m.adminUsers||[]).filter(u=>!userHeaderWord(u.userId));
   m.misUsers = (m.misUsers||[]).filter(u=>!userHeaderWord(u.userId));
   // Built-in demo logins only exist for the offline demo. On Supabase the server owns the accounts: inventing a
@@ -886,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.54';
+const APP_VERSION = '2026-08-24.55';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1400,7 +1404,7 @@ async function legacyWindowStorageMasters(){
 
 // On Supabase no password is ever kept in the browser: after a save, the plain-text one just typed is dropped.
 function stripPasswords_(m){
-  ['cnfs','adminUsers','misUsers'].forEach(k=>(m[k]||[]).forEach(r=>{ delete r.password; }));
+  ['cnfs','adminUsers','misUsers','scUsers'].forEach(k=>(m[k]||[]).forEach(r=>{ delete r.password; }));
 }
 async function saveMasters(){
   const sb = isSupabaseMode();
@@ -1561,7 +1565,7 @@ function safeUomLabel(uom){
   return ['KG','PC','BAG'].includes(uom) ? uom : `${uom} (unrecognised — check Product Master)`;
 }
 function buildDetailedReportRows(sub){
-  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Recommended Action','Safety Norm (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason'];
+  const headers = ['Product Code','Product Name','Category','Entered Qty','UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Age (d)','Self-Life (d)','Remaining (d)','Status','Recommended Action','Safety Norm (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Approved Order','Pending Order','Variance Reason','Audit By'];
   const rows = sub.items.map(it=>{
     const p = state.masters.products.find(pp=>pp.code===it.code);
     const st = p ? ageingStatus(p, it.mfd) : {age:'',life:'',remaining:'',label:'',cls:''};
@@ -1570,7 +1574,7 @@ function buildDetailedReportRows(sub){
     const safetyStat = safetyStatusFor(it, p);
     const safetyNorm = safetyNormFor(it, p);
     const shortfall = safetyStat==='low' ? (safetyNorm - it.kgQty).toFixed(1) : safetyStat==='ok' ? 'No Shortfall' : '';
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||''];
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||'', auditByLabel(sub)];
   });
   // CNF/CFA-code-wise Summary — becomes sheet ONE of the workbook. Built from
   // the submission itself, so every download (fresh, re-download, History,
@@ -1595,6 +1599,7 @@ function buildDetailedReportRows(sub){
     ['CNF / CFA Name', sub.cnfName||''],
     ['Stock Date', sub.date||''],
     ['Submission ID', sub.id||''],
+    ['Audit By', auditByLabel(sub)],
     ['',''],
     ['AT A GLANCE',''],
     ['Total Stock (kg)', kf(totalKg)],
@@ -1727,6 +1732,13 @@ async function saveOrDownloadRealXlsx(filenameBase, wb){
   await downloadRealXlsx(filenameBase, wb);
 }
 
+// Whose queued submission may go out through the current sign-in: a CNF's own entry only through that CNF's login,
+// a Sales Coordinator's audit only through that same coordinator's login.
+function canSendQueued_(sub){
+  const a = parseAuditBy(sub.submittedBy);
+  if(a.role==='SC') return !!state.scUser && a.id===state.scUser.userId;
+  return !!(state.role==='cnf' && !state.auditor && state.cnfUser && String(sub.cnfCode)===String(state.cnfUser.code));
+}
 async function flushSheetQueue_(){
   if(!getApiUrl()) return;
   const queue = lsGet('pendingSubmissions') || [];
@@ -1735,8 +1747,7 @@ async function flushSheetQueue_(){
   const remaining = [];
   for(const sub of queue){
     // Supabase files a CNF's stock under the CNF that is signed in — never send another CNF's queued stock through this login.
-    if(isSupabaseMode() && state.role==='cnf' && state.cnfUser && String(sub.cnfCode)!==String(state.cnfUser.code)){ remaining.push(sub); continue; }
-    if(isSupabaseMode() && state.role==='mis'){ remaining.push(sub); continue; }
+    if(isSupabaseMode() && !canSendQueued_(sub)){ remaining.push(sub); continue; }
     try{
       const result = await apiPost('addSubmission', {submission: sub});
       if(!result || result.ok!==true) throw new Error('Server did not confirm the save.');
@@ -1789,7 +1800,7 @@ if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{
 // needs a whole different (service-worker + push-server) setup — but it's
 // a real improvement for the common "app's open somewhere" case.
 if(typeof window!=='undefined' && window.setInterval) setInterval(()=>{
-  if(state.loaded && state.cnfUser) loadMessagesForCnf(state.cnfUser.code).catch(()=>{});
+  if(state.loaded && state.cnfUser && !state.auditor) loadMessagesForCnf(state.cnfUser.code).catch(()=>{});
 }, 75000);
 
 // Full submission history for one CNF (History screen) or all CNFs
@@ -1833,8 +1844,8 @@ async function ensureAllHistory(opts){
   }catch(e){ return false; /* keep whatever we already have */ }
 }
 
-async function loadDraft(cnfCode){ return lsGet('draft:'+cnfCode); }
-async function saveDraft(cnfCode, draft){ lsSet('draft:'+cnfCode, draft); }
+async function loadDraft(cnfCode){ return lsGet(draftKey_(cnfCode)); }
+async function saveDraft(cnfCode, draft){ lsSet(draftKey_(cnfCode), draft); }
 
 /* ---------------- Domain logic ---------------- */
 function selfLifeFor(product){
@@ -2206,10 +2217,31 @@ function cnfSubmissionStatus(cnf){
   return {days, freq, overdue: days > freq, neverSubmitted:false};
 }
 
+// ---- Demo CNF (training) and Sales Coordinator audits ----
+// A CNF whose name starts with "Demo" is the training account. It is left OUT of every "All CNFs" export/report
+// and only appears when it is picked on purpose.
+function isDemoCnf(c){ return !!c && /^\s*demo\b/i.test(String(c.name||'')); }
+function isDemoCode_(code){ return isDemoCnf((state.masters&&state.masters.cnfs||[]).find(c=>String(c.code)===String(code))); }
+// Who made a submission. The server stamps a Sales Coordinator's audit as  SC|<id>|<name>;  anything else is the CNF's own entry.
+function parseAuditBy(by){
+  const t = String(by==null?'':by);
+  if(t.startsWith('SC|')){ const p = t.split('|'); return {role:'SC', id:p[1]||'', name:p.slice(2).join('|')||p[1]||''}; }
+  return {role:'CNF', id:t, name:''};
+}
+function auditByLabel(sub){ const a = parseAuditBy(sub && sub.submittedBy); return a.role==='SC' ? `Audit by SC - ${a.name}` : 'Audit by CNF'; }
+function submittedByText(sub){ const a = parseAuditBy(sub && sub.submittedBy); return a.role==='SC' ? `SC - ${a.name}` : String((sub&&sub.submittedBy)||''); }
+function submitterTag_(){ return state.auditor ? `SC|${state.auditor.userId}|${String(state.auditor.name||state.auditor.userId).replace(/\|/g,' ')}` : state.cnfUser.userId; }
+function draftKey_(code){ return 'draft:'+code+(state.auditor ? ':sc:'+state.auditor.userId : ''); }
+function userIdTaken_(id, exceptList){
+  const t = String(id||'').trim().toLowerCase(); if(!t) return false;
+  const m = state.masters;
+  return (m.cnfs||[]).some(c=>String(c.code).toLowerCase()===t || String(c.userId||'').toLowerCase()===t)
+    || ['adminUsers','misUsers','scUsers'].some(k=>(m[k]||[]).some(u=>String(u.userId).toLowerCase()===t));
+}
 function allCurrentStockRows(cnfFilterList){
   // one row per CNF x product, from each CNF's latest submission
   const rows = [];
-  const cnfs = state.masters.cnfs.filter(c => cnfFilterList==='ALL' ? true : cnfFilterList.includes(c.code));
+  const cnfs = state.masters.cnfs.filter(c => cnfFilterList==='ALL' ? !isDemoCnf(c) : cnfFilterList.includes(c.code));
   cnfs.forEach(cnf=>{
     const sub = latestSubmissionFor(cnf.code);
     if(!sub) return;
@@ -2241,7 +2273,7 @@ function render(){
   if(state.cnfUser && !state.sapUpload && Object.keys(state.draftItems||{}).length===0){
     state.submitDate = todayISO();
   }
-  const loggedIn = !!(state.cnfUser || state.adminUser || state.misUser);
+  const loggedIn = !!(state.cnfUser || state.adminUser || state.misUser || state.scUser);
   // A real, confirmed failure mode this guards against: if building the
   // actual app screen throws for ANY reason (a data shape one screen
   // doesn't expect, anything), the loading screen above had ALREADY been
@@ -2259,7 +2291,7 @@ function render(){
       ${NewVersionBanner()}
       ${BackendErrorBanner()}
       <main>
-        ${!loggedIn ? UnifiedLoginScreen() : state.role==='cnf' ? CnfPanel() : state.role==='admin' ? AdminPanel() : MisPanel()}
+        ${!loggedIn ? UnifiedLoginScreen() : state.role==='cnf' ? CnfPanel() : state.role==='admin' ? AdminPanel() : state.role==='sc' ? ScPanel() : MisPanel()}
       </main>
     `);
     bindGlobal();
@@ -2419,14 +2451,14 @@ function LoadingScreen(){
 }
 
 function Topbar(){
-  const loggedIn = !!(state.cnfUser || state.adminUser || state.misUser);
-  const roleLabel = state.role==='cnf' ? 'CNF Panel' : state.role==='admin' ? 'Admin' : state.role==='mis' ? 'Back Office / MIS' : '';
+  const loggedIn = !!(state.cnfUser || state.adminUser || state.misUser || state.scUser);
+  const roleLabel = state.role==='sc' ? 'Sales Coordinator' : state.role==='cnf' && state.auditor ? 'SC Audit' : state.role==='cnf' ? 'CNF Panel' : state.role==='admin' ? 'Admin' : state.role==='mis' ? 'Back Office / MIS' : '';
   return `
   <div class="topbar">
     <div class="brand"><div class="mark">${Mark()}</div><div><div class="name">Ganesh&nbsp;Stock&nbsp;IQ</div><div class="sub">Manage Stock · Reduce Ageing · Improve Planning</div></div></div>
     ${loggedIn ? `<div class="roletabs"><span class="roletab active" style="cursor:default;">${roleLabel} <span style="font-family:var(--mono);font-size:9.5px;opacity:.65;font-weight:400;">v${APP_VERSION}</span></span></div>` : ''}
     <div class="spacer"></div>
-    <div class="whoami">${state.role==='cnf' && state.cnfUser ? `CNF <b>${state.cnfUser.code}</b> · ${state.cnfUser.name}` : state.role==='admin' && state.adminUser ? `Admin · <b>${state.adminUser.name}</b>` : state.role==='mis' && state.misUser ? `MIS · <b>${state.misUser.name}</b>` : ''}</div>
+    <div class="whoami">${state.role==='sc' && state.scUser ? `SC · <b>${escapeHtml(state.scUser.name)}</b>` : state.role==='cnf' && state.cnfUser && state.auditor ? `Auditing <b>${escapeHtml(state.cnfUser.code)}</b> · ${escapeHtml(state.cnfUser.name)} · by ${escapeHtml(state.auditor.name)}` : state.role==='cnf' && state.cnfUser ? `CNF <b>${state.cnfUser.code}</b> · ${state.cnfUser.name}` : state.role==='admin' && state.adminUser ? `Admin · <b>${state.adminUser.name}</b>` : state.role==='mis' && state.misUser ? `MIS · <b>${state.misUser.name}</b>` : ''}</div>
     ${loggedIn ? NotifyPermissionButton() : ''}
     ${loggedIn ? TopbarSyncButton() : ''}
     ${state.role==='mis' ? NotificationBell() : ''}
@@ -2556,9 +2588,9 @@ function clearAppCache(){
 /* ---------------- Remember Me — session persists across reloads on this device ---------------- */
 // Supabase mode: the "session" is the server token + who it belongs to, kept in sessionStorage (this tab only,
 // gone when it closes). A role+id pair in localStorage proved nothing, so it is no longer used there.
-function saveRememberedSession(role, id){
+function saveRememberedSession(role, id, name){
   try{
-    if(isSupabaseMode()) sessionStorage.setItem('gsi:session', JSON.stringify({role, id}));
+    if(isSupabaseMode()) sessionStorage.setItem('gsi:session', JSON.stringify({role, id, name:name||''}));
     else localStorage.setItem('gsi:session', JSON.stringify({role, id}));
   }catch(e){}
 }
@@ -2583,7 +2615,7 @@ function getRememberedSession(){
 function restoreCnfSessionFast_(cnf){
   state.role = 'cnf'; state.cnfUser = cnf; state.cnfScreen = 'dashboard'; state.submitDate = todayISO();
   try{
-    const draft = lsGet('draft:'+cnf.code);
+    const draft = lsGet(draftKey_(cnf.code));
     const draftMatchesToday = draft && draft.date===state.submitDate;
     state.draftItems = draftMatchesToday ? draft.items : {};
     state.sapUpload = draftMatchesToday ? (draft.sapUpload||null) : null;
@@ -2591,7 +2623,7 @@ function restoreCnfSessionFast_(cnf){
   }catch(e){ state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {}; }
 }
 async function syncCnfSessionInBackground_(cnf){
-  await Promise.allSettled([forceSyncMasters(), loadMessagesForCnf(cnf.code)]);
+  await Promise.allSettled([forceSyncMasters(), state.auditor ? Promise.resolve() : loadMessagesForCnf(cnf.code)]);
 }
 async function restoreCnfSession(cnf){
   restoreCnfSessionFast_(cnf);
@@ -2705,6 +2737,9 @@ function tryRestoreSessionFast_(){
   if(remembered.role==='cnf'){
     const cnf = state.masters.cnfs.find(c=>c.code===remembered.id);
     if(cnf && cnf.status==='Active'){ restoreCnfSessionFast_(cnf); return {role:'cnf', cnf}; }
+  } else if(remembered.role==='sc'){
+    state.role='sc'; state.scUser={userId:remembered.id, name:remembered.name||remembered.id, status:'Active'};
+    return {role:'sc'};
   } else if(remembered.role==='admin'){
     const u = state.masters.adminUsers.find(a=>a.userId===remembered.id);
     if(u && u.status==='Active'){ state.role='admin'; state.adminUser=u; return {role:'admin'}; }
@@ -2722,6 +2757,7 @@ function tryRestoreSessionFast_(){
 async function tr9yMnTm4NSzvG9rrwjM2ec8xZgh1cafXH8_(restored){
   if(!restored) return;
   if(restored.role==='cnf') await syncCnfSessionInBackground_(restored.cnf);
+  else if(restored.role==='sc') await Promise.allSettled([forceSyncMasters(), loadMyAudits_()]);
   else await Promise.allSettled([forceSyncMasters(), loadAllMessages()]);
 }
 async function tryRestoreSession(){
@@ -2781,6 +2817,11 @@ async function serverLogin_(userId, password){
     saveRememberedSession('cnf', cnf.code);
     restoreCnfSessionFast_(cnf);
     return {ok:true, syncPromise: loadMessagesForCnf(cnf.code)};
+  }
+  if(res.role==='sc'){
+    saveRememberedSession('sc', u.userId, u.name);
+    state.role = 'sc'; state.scUser = u; state.auditor = null; state.cnfUser = null; state.scSearch = '';
+    return {ok:true, syncPromise: loadMyAudits_()};
   }
   if(res.role==='admin'){
     const a = (state.masters.adminUsers||[]).find(x=>x.userId===u.userId) || u;
@@ -2885,10 +2926,57 @@ function doLogout(sessionAlreadyDead){
     // the next person on this device must not see the last person's cached data
     ['masters','submissions','currentSnapshots','masterSyncedAt','importedBackup','reportSync'].forEach(k=>{ try{ localStorage.removeItem(LS_PREFIX+k); }catch(e){} });
   }
-  state.role = null; state.cnfUser = null; state.adminUser = null; state.misUser = null;
+  state.role = null; state.cnfUser = null; state.adminUser = null; state.misUser = null; state.scUser = null; state.auditor = null; state.scMyAudits = [];
   state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {};
   state.loginError = null; state.sideOpen = false;
   clearRememberedSession(); // an explicit logout always forgets, even if "remember me" was checked at login
+}
+
+/* ================= SALES COORDINATOR PANEL ================= */
+async function loadMyAudits_(){
+  try{ const r = await apiGet('myAudits'); state.scMyAudits = (r && r.audits) || []; }catch(e){ /* the list is a convenience; auditing itself does not depend on it */ }
+}
+function ScPanel(){
+  const u = state.scUser;
+  const q = String(state.scSearch||'').trim().toLowerCase();
+  const my = state.scMyAudits || [];
+  const monthStart = todayISO().slice(0,8)+'01';
+  const lastBy = {};
+  my.forEach(a=>{ if(!lastBy[a.cnfCode] || a.date>lastBy[a.cnfCode]) lastBy[a.cnfCode] = a.date; });
+  const monthVisits = new Set(my.filter(a=>a.date>=monthStart).map(a=>a.cnfCode+'|'+a.date));
+  const monthCnfs = new Set(my.filter(a=>a.date>=monthStart).map(a=>a.cnfCode));
+  const list = state.masters.cnfs.filter(c=>c.status==='Active' && (!q || (c.name+' '+c.code).toLowerCase().includes(q)));
+  return `<div class="cnf-shell">
+    <div class="cnf-header"><div class="cnf-header-inner">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-family:var(--disp);font-weight:700;font-size:16px;">${escapeHtml(u.name)} <span style="font-family:var(--mono);font-size:11px;color:var(--ink-soft);">· ${escapeHtml(u.userId)}</span></div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);">Sales Coordinator</div>
+        </div>
+        <button class="btn btn-ghost btn-sm" id="btnCnfLogout">Log out</button>
+      </div>
+    </div></div>
+    <div class="cnf-body">
+      <div class="kpi-row">
+        <div class="kpi"><div class="lbl">Audits this month</div><div class="val">${monthVisits.size}</div></div>
+        <div class="kpi"><div class="lbl">CNFs audited this month</div><div class="val">${monthCnfs.size}</div></div>
+      </div>
+      <div class="section-title">Which CNF / CFA are you auditing today? <span class="num">${list.length}</span></div>
+      <p style="color:var(--ink-soft);font-size:12.5px;margin:0 0 8px;">Pick the CNF/CFA godown you are visiting. You then upload that CNF's SAP stock file and enter the physical stock and MFD exactly as a CNF would — the audit is saved under <b>${escapeHtml(u.name)}</b>'s name.</p>
+      <input id="scSearch" type="search" placeholder="Search CNF name or code…" value="${escapeHtml(state.scSearch||'')}" style="width:100%;margin-bottom:10px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px;">
+        ${list.map(c=>`<button class="btn btn-ghost" data-scpick="${escapeHtml(c.code)}" style="text-align:left;display:block;padding:10px 12px;">
+          <b>${escapeHtml(c.name)}</b> <span style="font-family:var(--mono);font-size:11px;opacity:.7;">· ${escapeHtml(c.code)}</span>
+          <div style="font-family:var(--mono);font-size:10px;opacity:.7;margin-top:3px;">${lastBy[c.code] ? 'You last audited: '+escapeHtml(lastBy[c.code]) : 'Not audited by you yet'}</div>
+        </button>`).join('') || '<div class="empty">No CNF matches that search.</div>'}
+      </div>
+      <div class="section-title" style="margin-top:22px;">My recent audits <span class="num">${my.length}</span></div>
+      <div class="tablewrap"><table class="dtable">
+        <thead><tr><th>Date</th><th>CNF</th><th>Status</th><th>Lines</th><th>Stock (kg)</th></tr></thead>
+        <tbody>${my.slice(0,40).map(a=>`<tr><td class="mono">${escapeHtml(a.date)}</td><td>${escapeHtml(a.cnfName)} <span class="mono">· ${escapeHtml(a.cnfCode)}</span></td><td>${escapeHtml(a.status)}</td><td>${a.lines}</td><td>${a.kg}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No audits yet.</td></tr>'}</tbody>
+      </table></div>
+    </div>
+  </div>`;
 }
 
 /* ================= CNF PANEL ================= */
@@ -2921,9 +3009,13 @@ function SyncFailureModal(){
 }
 
 function CnfHeader(){
-  const nav = [['dashboard','Dashboard'],['submit','Submit Stock'],['reports','Reports'],['history','History'],['messages','Messages']];
-  const unreadCount = cnfUnreadMessageCount();
+  const nav = [['dashboard','Dashboard'],['submit','Submit Stock'],['reports','Reports'],['history','History'],['messages','Messages']].filter(n=>!(state.auditor && n[0]==='messages'));
+  const unreadCount = state.auditor ? 0 : cnfUnreadMessageCount();
   return `<div class="cnf-header">
+    ${state.auditor ? `<div style="background:#1c1712;color:#f0e6cc;font-family:var(--mono);font-size:11.5px;padding:7px 14px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span>🔎 <b>Audit mode</b> — you (${escapeHtml(state.auditor.name)}, Sales Coordinator) are auditing this CNF. Everything you submit is recorded as <b>Audit by SC - ${escapeHtml(state.auditor.name)}</b>.</span>
+      <button class="btn btn-ghost btn-sm" id="btnScChangeCnf" style="background:#f0e6cc;color:#1c1712;">⇄ Change CNF</button>
+    </div>` : ''}
     <div class="cnf-header-inner">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div>
@@ -3711,7 +3803,7 @@ function CnfFinalModal(){
 function AdminPanel(){
   const nav = [
     ['cnfs','CNF Master'],['products','Product Master'],['selflife','Self-Life & Thresholds'],['safety','Safety Stock'],
-    ['misusers','MIS Users'],['adminusers','Admin Users'],
+    ['misusers','MIS Users'],['adminusers','Admin Users'],['scusers','Sales Coordinators'],
     ['reports','Report Builder'],
     ['messages','Messages to CNFs'],['empmap','Employee Mapping'],['emailconfig','Email Configuration'],['emaillog','Email Follow-up'],
     ['api','API Connection'],['audit','Audit Log'],['import','Import Backup'],
@@ -3719,7 +3811,7 @@ function AdminPanel(){
   const navBtn = ([k,l])=>`<button class="navitem ${state.adminScreen===k?'active':''}" data-adminnav="${k}"><span class="dot"></span>${l}</button>`;
   const screens = {
     cnfs:AdminCnfs, products:AdminProducts, selflife:AdminSelfLife, safety:AdminSafety,
-    misusers:AdminMisUsers, adminusers:AdminAdminUsers, reports:AdminReportBuilder,
+    misusers:AdminMisUsers, adminusers:AdminAdminUsers, scusers:AdminScUsers, reports:AdminReportBuilder,
     messages:MessagingScreen, empmap:EmployeeMappingScreen, emailconfig:EmailConfigScreen, emaillog:EmailFollowUpScreen,
     api:AdminApi, audit:AdminAudit, import:AdminImport
   };
@@ -3729,13 +3821,13 @@ function AdminPanel(){
       <div class="grp">Masters</div>
       ${nav.slice(0,4).map(navBtn).join('')}
       <div class="grp">Users &amp; Access</div>
-      ${nav.slice(4,6).map(navBtn).join('')}
+      ${nav.slice(4,7).map(navBtn).join('')}
       <div class="grp">Reports</div>
-      ${nav.slice(6,7).map(navBtn).join('')}
+      ${nav.slice(7,8).map(navBtn).join('')}
       <div class="grp">Communication</div>
-      ${nav.slice(7,11).map(navBtn).join('')}
+      ${nav.slice(8,12).map(navBtn).join('')}
       <div class="grp">System</div>
-      ${nav.slice(11).map(navBtn).join('')}
+      ${nav.slice(12).map(navBtn).join('')}
       <div style="margin-top:18px;padding-top:12px;border-top:1px solid var(--line);">
         <div style="font-family:var(--mono);font-size:10px;color:var(--wheat-dim);padding:0 10px 6px;">Signed in as ${state.adminUser.name}</div>
         <button class="navitem" id="btnAdminLogout"><span class="dot"></span>Log out</button>
@@ -4698,6 +4790,31 @@ function AdminMisUsers(){
   </div>`;
 }
 
+function AdminScUsers(){
+  const visits = {};
+  const since = localDateISO(new Date(Date.now()-30*86400000));
+  (state.submissions||[]).forEach(sb=>{ const a = parseAuditBy(sb.submittedBy); if(a.role==='SC' && sb.date>=since){ (visits[a.id] = visits[a.id] || new Set()).add(sb.cnfCode+'|'+sb.date); } });
+  return `
+  <div class="panel-card">
+    <h4>Sales Coordinators <button class="btn btn-primary btn-sm" data-openadd="scuser">+ Add Sales Coordinator</button></h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Sales Coordinators visit a CNF/CFA godown (about once a month) and audit its stock. They sign in with the ID and password you set here, pick the CNF they are visiting, and submit the audited stock; the report then shows <b>Audit by SC - their name</b>. Who audited which CNF, and when, is in <b>Back Office → Export Centre → Sales Coordinator Audit Report</b>.</p>
+    <div class="tablewrap"><table class="dtable">
+      <thead><tr><th>User ID</th><th>Name</th><th>Status</th><th>Audits (last 30 days)</th><th></th></tr></thead>
+      <tbody>
+        ${(state.masters.scUsers||[]).map(u=>`<tr>
+          <td class="mono">${escapeHtml(u.userId)}</td><td>${escapeHtml(u.name)}</td>
+          <td><span class="badge ${u.status==='Active'?'ok':'low'}">${u.status}</span></td>
+          <td class="mono">${visits[u.userId] ? visits[u.userId].size : 0}</td>
+          <td class="small-btn-row">
+            <button class="btn btn-ghost btn-sm" data-toggle-scuser="${escapeHtml(u.userId)}">${u.status==='Active'?'Deactivate':'Activate'}</button>
+            <button class="btn btn-ghost btn-sm" data-resetpw="sc:${escapeHtml(u.userId)}">Reset Password</button>
+          </td>
+        </tr>`).join('') || '<tr><td colspan="5" class="empty">No Sales Coordinators yet — add the first one.</td></tr>'}
+      </tbody>
+    </table></div>
+  </div>`;
+}
+
 function AdminAdminUsers(){
   return `
   <div class="panel-card">
@@ -4786,7 +4903,7 @@ function buildReportRows(){
     safetyNorm:safetyNormFor(r.item, r.product), safetyStatus:safetyStatusLabel(r.safetyStatus),
     safetyShortfall: r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '',
     sapQtyKg:r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', varianceReason:r.item.varianceReason||'',
-    stockDate:r.sub.date, submissionId:r.sub.id, submittedBy:r.sub.submittedBy
+    stockDate:r.sub.date, submissionId:r.sub.id, submittedBy:submittedByText(r.sub)
   }));
 }
 
@@ -5368,7 +5485,7 @@ function ImportPreviewModal(){
 function PasswordResetModal(){
   if(!state.pwResetTarget) return '';
   const t = state.pwResetTarget;
-  const labels = {cnf:'CNF', mis:'MIS User', admin:'Admin User'};
+  const labels = {cnf:'CNF', mis:'MIS User', admin:'Admin User', sc:'Sales Coordinator'};
   return `<div class="modal-bg dark" id="pwResetBg"><div class="modal-dark" style="max-width:420px;">
     <h3>Reset Password</h3>
     <div class="msub">${labels[t.type]} · ${t.code}</div>
@@ -5428,9 +5545,9 @@ function AddFormModal(){
     <div style="display:flex;gap:8px;margin-top:10px;"><button class="btn btn-ghost btn-block" id="btnCancelAddForm">Cancel</button><button class="btn btn-primary btn-block" id="btnSaveAddForm">Add Category</button></div>
   </div></div>`;
   // misuser / adminuser share the same simple shape
-  const title = t==='misuser' ? 'Add MIS User' : 'Add Admin User';
+  const title = t==='misuser' ? 'Add MIS User' : t==='scuser' ? 'Add Sales Coordinator' : 'Add Admin User';
   return `<div class="modal-bg dark" id="addFormBg"><div class="modal-dark">
-    <h3>${title}</h3><div class="msub">${t==='misuser'?'Can sign in to Back Office / MIS':'Full Admin access'}</div>
+    <h3>${title}</h3><div class="msub">${t==='misuser'?'Can sign in to Back Office / MIS':t==='scuser'?'Audits CNF/CFA stock during godown visits — recorded under their name':'Full Admin access'}</div>
     <div class="formgrid" style="grid-template-columns:1fr 1fr;">
       <div class="fg"><label>User ID</label><input id="afUserId" placeholder="e.g. priya"></div>
       <div class="fg"><label>Name</label><input id="afName" placeholder="e.g. Priya Sharma"></div>
@@ -5453,7 +5570,7 @@ function AdminAudit(){
           <td class="mono">${s.id}</td><td class="mono"><b>${s.cnfCode}</b></td><td>${s.cnfName}</td><td class="mono">${s.date}</td>
           <td class="mono">${new Date(s.timestamp).toLocaleString('en-IN')}</td><td class="mono">${new Set(s.items.map(i=>i.code)).size}</td>
           <td class="mono">${s.items.length}</td>
-          <td class="mono">${s.submittedBy}</td><td><span class="badge ok">${s.status}</span></td>
+          <td class="mono">${escapeHtml(submittedByText(s))}</td><td><span class="badge ok">${s.status}</span></td>
         </tr>`).join('')}
       </tbody>
     </table></div>
@@ -5864,7 +5981,7 @@ function StockLineDetailModal(subId, itemIdx){
     <div class="drow"><span>Submission ID</span><b>${sub.id}</b></div>
     <div class="drow"><span>Stock Date</span><b>${sub.date}</b></div>
     <div class="drow"><span>Submitted At</span><b>${new Date(sub.timestamp).toLocaleString('en-IN')}</b></div>
-    <div class="drow"><span>Submitted By</span><b>${sub.submittedBy}</b></div>
+    <div class="drow"><span>Submitted By</span><b>${escapeHtml(submittedByText(sub))}</b></div>
 
     <button class="btn btn-dark modal-close" id="btnCloseMisDetail">Close</button>
   </div></div>`;
@@ -6054,6 +6171,19 @@ function MisExport(){
   </div>
 
   <div class="panel-card">
+    <h4>Sales Coordinator Audit Report</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Shows <b>which Sales Coordinator audited which CNF/CFA, how many times and on which dates</b> in the period you pick — with a CNF coverage sheet that lists the CNFs nobody audited. An audit is a stock submission made by a Sales Coordinator on a CNF's behalf; the normal stock exports also carry it in their last column (<b>Audit By</b>: "Audit by CNF" or "Audit by SC - name").</p>
+    <div class="filters">
+      <div class="fg"><label>From</label><input type="date" id="scFrom" value="${scRange().from}" max="${todayISO()}"></div>
+      <div class="fg"><label>To</label><input type="date" id="scTo" value="${scRange().to}" max="${todayISO()}"></div>
+      <div class="fg"><label>Sales Coordinator</label><select id="scWho"><option value="ALL">All Sales Coordinators</option>${(state.masters.scUsers||[]).map(u=>`<option value="${escapeHtml(u.userId)}" ${scRange().who===u.userId?'selected':''}>${escapeHtml(u.name)} · ${escapeHtml(u.userId)}${u.status==='Active'?'':' (inactive)'}</option>`).join('')}</select></div>
+      <div class="fg"><label>CNF</label><select id="scCnf"><option value="ALL">All CNFs</option>${state.masters.cnfs.map(c=>`<option value="${c.code}" ${scRange().cnf===c.code?'selected':''}>${escapeHtml(c.name)} · ${c.code}</option>`).join('')}</select></div>
+    </div>
+    <button class="btn btn-primary" id="btnExportScAudit" style="margin-top:12px;">⬇ Download Sales Coordinator Audit Report</button>
+    <div id="scProg" style="margin-top:12px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
+  </div>
+
+  <div class="panel-card">
     <h4>Approved / Pending Orders — Merged Report</h4>
     <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">Same file format each CNF uploads for their own stock — <b>Plant</b>, <b>Material</b>, <b>Approved Order</b>, <b>Unpproved Order</b> columns — except this one covers every CNF at once (the <b>Plant</b> column on each row says which CNF it belongs to). Matching is by <b>Plant (CNF code) + Material</b>, ignoring the leading zeros SAP pads material codes with (<code>000000000000100342</code> = <code>100342</code>), and Approved/Pending come only from this file. This never touches the Google Sheet or anyone's actual submission — it only fills the Approved/Pending Order columns into a fresh copy of the same export "Export Filtered Stock" already produces, entirely in your browser, for you to save wherever you like. Nothing is uploaded to the server; close the tab and it's gone, same as any other export.</p>
     <input type="file" id="ordersUploadFile" accept=".xlsx,.xls" style="display:none;">
@@ -6181,7 +6311,7 @@ function buildMergedOrdersExportRows(rows, lookup){
 // backend action) as that CNF-side flow so there is only ever one way this
 // report gets built, never a second, separately-computed version.
 async function broadcastReportsToAllCnfs(onProgress){
-  const activeCnfs = state.masters.cnfs.filter(c=>c.status==='Active');
+  const activeCnfs = state.masters.cnfs.filter(c=>c.status==='Active' && !isDemoCnf(c));
   const targets = activeCnfs.map(c=>({cnf:c, sub: latestSubmissionFor(c.code)})).filter(t=>t.sub);
   if(!targets.length) return {sent:0, failed:0, skipped:0, total:0};
   let sent=0, failed=0;
@@ -6217,13 +6347,13 @@ async function broadcastReportsToAllCnfs(onProgress){
 // function, so there's no risk of the two ever silently disagreeing on a
 // number. Only the presentation differs downstream.
 function buildMisExportRows(rows){
-  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Variance Reason','Approved Order','Pending Order','Submission ID'];
+  const headers = ['Stock Date','CNF Name','CNF Code','Product Code','Product Name','Category','Entered Qty','Entered UOM','KG','1 Bag = KG (fixed)','BAG Equiv','1 PC = KG (fixed)','PC Equiv','MFD','Stock Age (d)','Self-Life (d)','Remaining Shelf Life (d)','Ageing Status','Recommended Action','Safety Stock (kg)','Safety Status','Shortfall (kg)','SAP Qty (kg)','Variance Reason','Approved Order','Pending Order','Submission ID','Audit By'];
   const dataRows = rows.map(r=>{
     const bagEquiv = r.product.bagToKg ? bagEquivDisplay(r.item.kgQty, r.product) : '';
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
     const safetyNorm = safetyNormFor(r.item,r.product);
     const shortfall = r.safetyStatus==='low' ? (safetyNorm - r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', r.item.varianceReason||'', r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id];
+    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', r.item.varianceReason||'', r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id, auditByLabel(r.sub)];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
@@ -6236,7 +6366,7 @@ const CMP_SEVERITY_COLORS = {
 };
 function subsInRange(fromDate, toDate, cnfCode){
   return state.submissions
-    .filter(s=>s.date>=fromDate && s.date<=toDate && (cnfCode==='ALL' || String(s.cnfCode)===String(cnfCode)))
+    .filter(s=>s.date>=fromDate && s.date<=toDate && (cnfCode==='ALL' ? !isDemoCode_(s.cnfCode) : String(s.cnfCode)===String(cnfCode)))
     .sort((a,b)=> a.date===b.date ? new Date(a.timestamp)-new Date(b.timestamp) : (a.date<b.date?-1:1));
 }
 // Same row shape allCurrentStockRows() produces, so buildMisExportRows() /
@@ -6367,10 +6497,10 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     'Big qty swing': 'Stock moved by 50% or more between two submissions with no MFD change. Check for a unit (UOM) error, a typo, or a genuine large dispatch/receipt.',
     'Far from SAP qty': 'The entered physical stock differs from the SAP system quantity by more than 20%. Check the entry, the unit, or whether SAP is out of date.',
   };
-  const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed','Logic & Calculation','Reason','Previous Submission ID','Current Submission ID'];
+  const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed','Logic & Calculation','Reason','Previous Submission ID','Current Submission ID','Previous Audit By','Current Audit By'];
   const rows = out.map(x=>{
     const cnf = state.masters.cnfs.find(c=>String(c.code)===String(x.cur.sub.cnfCode));
-    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, x.prev.sub.date, x.cur.sub.date, cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id];
+    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, x.prev.sub.date, x.cur.sub.date, cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id, auditByLabel(x.prev.sub), auditByLabel(x.cur.sub)];
   });
   const byType = {}, byCnf = {};
   const sevCount = {High:0, Medium:0, Low:0};
@@ -6393,7 +6523,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     const n = subIdsByCnf[code].size, pr = pairsByCnf[code]||0, fl = flaggedByCode[code]||0;
     return [`${c?c.name:code} (${code})`, `${n} submission(s) in range · ` + (pr ? `${pr} product comparison(s) · ${fl ? fl+' flagged' : 'no differences'}` : 'nothing to compare (no earlier submission of the same product)')];
   });
-  const activeCnfs = state.masters.cnfs.filter(c=>c.status==='Active');
+  const activeCnfs = state.masters.cnfs.filter(c=>c.status==='Active' && !isDemoCnf(c));
   const noSubCount = activeCnfs.filter(c=>!subIdsByCnf[c.code]).length;
   const summaryRows = [
     ['COMPARISON PERIOD',''],
@@ -6540,7 +6670,7 @@ function buildCnfSummaryReport(inRange, fromDate, toDate, pool, cnfLabel, opts){
   inRange.forEach(sb=>{ (subsByCnf[sb.cnfCode] = subsByCnf[sb.cnfCode] || []).push(sb); });
   const cnfCodes = new Set(Object.keys(subsByCnf));
   const wanted = opts.cnf && opts.cnf!=='ALL' ? [opts.cnf] : null;
-  state.masters.cnfs.filter(c=> c.status==='Active' && (!wanted || String(c.code)===String(wanted[0]))).forEach(c=>cnfCodes.add(String(c.code)));
+  state.masters.cnfs.filter(c=> c.status==='Active' && (wanted ? String(c.code)===String(wanted[0]) : !isDemoCnf(c))).forEach(c=>cnfCodes.add(String(c.code)));
   const agedRows = [], agedStyles = [];
   const per = [];
   [...cnfCodes].forEach(code=>{
@@ -6681,6 +6811,120 @@ function buildCnfSummaryReport(inRange, fromDate, toDate, pool, cnfLabel, opts){
     ['4  Comparison Flags', 'Every product whose MFD or quantity differs unusually from the previous submission'],
   ];
   return {headers, rows, summaryRows, cellStyleFn, extraSheets:[agingSheet, flagSheet], counts:{high:cnt('High Risk'), medium:cnt('Medium Risk'), low:cnt('Low Risk'), none:cnt('No Submission')}, n: per.length, rep};
+}
+
+/* ---------------- Sales Coordinator audit report: who audited which CNF, how many times, when ---------------- */
+function scRange(){
+  if(!state.scRangeSel){ const d=new Date(); d.setDate(d.getDate()-30); state.scRangeSel = {from: localDateISO(d), to: todayISO(), cnf:'ALL', who:'ALL'}; }
+  return state.scRangeSel;
+}
+function buildScAuditReport(sel, allSubs){
+  const kg1 = n => Number((Number(n)||0).toFixed(1));
+  const today = todayISO();
+  const inRange = subsInRange(sel.from, sel.to, sel.cnf);
+  const audits = inRange.filter(sb=>{ const a = parseAuditBy(sb.submittedBy); return a.role==='SC' && (sel.who==='ALL' || a.id===sel.who); });
+  const nameOf = id => { const u = (state.masters.scUsers||[]).find(x=>x.userId===id); if(u) return u.name; const hit = audits.find(sb=>parseAuditBy(sb.submittedBy).id===id) || (allSubs||[]).find(sb=>parseAuditBy(sb.submittedBy).id===id); return hit ? parseAuditBy(hit.submittedBy).name : id; };
+  const scIds = new Set((state.masters.scUsers||[]).filter(u=>sel.who==='ALL' || u.userId===sel.who).map(u=>u.userId));
+  audits.forEach(sb=> scIds.add(parseAuditBy(sb.submittedBy).id));
+  const cnfName = code => { const c = state.masters.cnfs.find(x=>String(x.code)===String(code)); return c ? c.name : code; };
+  const timeOf = sb => { try{ return new Date(sb.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } };
+  const ageingOf = sb => {
+    let expired=0, risk=0, expLines=0, nearLines=0, total=0;
+    (sb.items||[]).forEach(it=>{
+      const pr = state.masters.products.find(p=>p.code===it.code); const kg = Number(it.kgQty)||0; total += kg;
+      if(!pr || !it.mfd) return; const a = ageingStatus(pr, it.mfd);
+      if(a.cls==='expired'){ expired += kg; risk += kg; expLines++; } else if(a.cls==='expiring' || a.cls==='critical'){ risk += kg; nearLines++; }
+    });
+    return {expired, risk, expLines, nearLines, total};
+  };
+  // a "visit" = one SC at one CNF on one date (a Final plus a Partial the same day is still one visit)
+  const visitKey = sb => parseAuditBy(sb.submittedBy).id+'|'+sb.cnfCode+'|'+sb.date;
+  const perSc = {};
+  [...scIds].forEach(id=>{ perSc[id] = {id, name:nameOf(id), status:((state.masters.scUsers||[]).find(u=>u.userId===id)||{}).status||'—', visits:new Set(), subs:0, cnfs:new Map(), dates:[], lines:0, kg:0}; });
+  audits.forEach(sb=>{
+    const a = parseAuditBy(sb.submittedBy); const o = perSc[a.id];
+    o.visits.add(visitKey(sb)); o.subs++; o.dates.push(sb.date);
+    const c = o.cnfs.get(sb.cnfCode) || {dates:new Set(), last:''}; c.dates.add(sb.date); if(sb.date>c.last) c.last = sb.date; o.cnfs.set(sb.cnfCode, c);
+    o.lines += (sb.items||[]).length; o.kg += (sb.items||[]).reduce((t,i)=>t+(Number(i.kgQty)||0),0);
+  });
+  const scList = Object.values(perSc).sort((a,b)=> b.visits.size-a.visits.size || a.name.localeCompare(b.name));
+  const headers = ['SC Name','SC ID','Status','Visits (CNF-days)','Submissions','CNFs Audited','Repeat Visits (same CNF again)','First Audit','Last Audit','Lines Audited','Stock Audited (kg)','CNFs Audited (names)'];
+  const rows = scList.map(o=>{
+    const ds = o.dates.slice().sort();
+    return [o.name, o.id, o.status, o.visits.size, o.subs, o.cnfs.size, o.visits.size - o.cnfs.size, ds[0]||'—', ds[ds.length-1]||'—', o.lines, kg1(o.kg), [...o.cnfs.keys()].map(c=>`${cnfName(c)} (${c})`).join(', ') || '—'];
+  });
+  const sum = i => rows.reduce((t,r)=>t+(Number(r[i])||0),0);
+  rows.push(['TOTAL','','', sum(3), sum(4), new Set(audits.map(sb=>sb.cnfCode)).size, '', '', '', sum(9), kg1(sum(10)), '']);
+  const lastIdx = rows.length-1;
+  const cellStyleFn = (ri, ci, val)=>{
+    if(ri===lastIdx) return {bg:'#e8e0cc', fg:'#1c1712', bold:true};
+    if(ci===3 && val===0) return {bg:'#f8d0cc', fg:'#8a1f11', bold:true};
+    if(ci===3 && val>0) return {bg:'#dff0e0', fg:'#1e5b2b', bold:true};
+    return null;
+  };
+  // ---- SC x CNF ----
+  const pairRows = [];
+  scList.forEach(o=> [...o.cnfs.entries()].sort((a,b)=> b[1].last.localeCompare(a[1].last)).forEach(([code,c])=>{
+    pairRows.push([o.name, o.id, cnfName(code), code, c.dates.size, [...c.dates].sort().join(', '), c.last]);
+  }));
+  const pairSheet = {name:'SC x CNF', title:'Which Sales Coordinator audited which CNF/CFA, and on which dates',
+    subtitle:`${sel.from} to ${sel.to} · one row per Sales Coordinator and CNF · Visits = distinct audit dates`,
+    headers:['SC Name','SC ID','CNF Name','CNF Code','Visits','Audit Dates','Last Audit'], rows:pairRows, widths:[22,10,26,10,9,60,13], wrapCols:[5]};
+  // ---- Audit Log ----
+  const logSubs = audits.slice().sort((a,b)=> a.date===b.date ? new Date(a.timestamp)-new Date(b.timestamp) : (a.date<b.date?-1:1));
+  const logRows = logSubs.map(sb=>{ const a = parseAuditBy(sb.submittedBy); const g = ageingOf(sb);
+    return [sb.date, timeOf(sb), a.name, a.id, cnfName(sb.cnfCode), sb.cnfCode, sb.status||'Final', new Set((sb.items||[]).map(i=>i.code)).size, (sb.items||[]).length, kg1(g.total), kg1(g.expired), kg1(g.risk), g.expLines, g.nearLines, sb.id]; });
+  const logStyles = logRows.map(r=> r.map((_,i)=> (i===10 && r[10]>0) ? {bg:'#f8d0cc', fg:'#8a1f11', bold:true} : (i===11 && r[11]>0) ? {bg:'#fde2c4', fg:'#8a4b0a'} : null));
+  const logSheet = {name:'Audit Log', title:'Audit Log — every stock audit made by a Sales Coordinator',
+    subtitle:`${sel.from} to ${sel.to} · ageing as of ${today} · At-risk = Expired + Near Expiry + Critical`,
+    headers:['Audit Date','Time','SC Name','SC ID','CNF Name','CNF Code','Status','Products','Lines','Stock (kg)','Expired (kg)','At-Risk (kg)','Expired Lines','Near-Expiry / Critical Lines','Submission ID'],
+    rows:logRows, styles:logStyles, widths:[12,8,22,10,26,10,9,10,8,12,12,12,10,14,24]};
+  // ---- CNF coverage ----
+  const activeCnfs = state.masters.cnfs.filter(c=>c.status==='Active' && (sel.cnf!=='ALL' ? String(c.code)===String(sel.cnf) : !isDemoCnf(c)));
+  const byCnf = {};
+  audits.forEach(sb=>{ (byCnf[sb.cnfCode] = byCnf[sb.cnfCode] || []).push(sb); });
+  const lastEver = {};
+  (allSubs||[]).forEach(sb=>{ if(parseAuditBy(sb.submittedBy).role==='SC' && (!lastEver[sb.cnfCode] || sb.date>lastEver[sb.cnfCode].date)) lastEver[sb.cnfCode] = sb; });
+  const covRows = activeCnfs.map(c=>{
+    const list = byCnf[c.code] || [];
+    const visits = new Set(list.map(visitKey)).size;
+    const le = lastEver[c.code];
+    const days = le ? Math.max(0, Math.round((new Date(today+'T00:00:00') - new Date(le.date+'T00:00:00'))/86400000)) : '';
+    return [visits ? 'Audited' : 'Not audited', c.name, c.code, visits, [...new Set(list.map(sb=>parseAuditBy(sb.submittedBy).name))].join(', ') || '—', visits ? list.map(sb=>sb.date).sort().slice(-1)[0] : '—', le ? le.date : 'Never (in loaded history)', days, le ? parseAuditBy(le.submittedBy).name : '—'];
+  }).sort((a,b)=> (a[0]===b[0]?0:(a[0]==='Not audited'?-1:1)) || String(a[2]).localeCompare(String(b[2]),undefined,{numeric:true}));
+  const covStyles = covRows.map(r=> r.map((_,i)=> i===0 ? (r[0]==='Audited' ? {bg:'#27ae60', fg:'#ffffff', bold:true} : {bg:'#c0392b', fg:'#ffffff', bold:true}) : null));
+  const covSheet = {name:'CNF Coverage', title:'CNF / CFA Coverage — which CNFs a Sales Coordinator audited in this period',
+    subtitle:`${sel.from} to ${sel.to} · active CNFs only${sel.cnf==='ALL'?' (training/demo CNF left out)':''} · Not audited first`,
+    headers:['Coverage','CNF Name','CNF Code','Visits in Period','Audited By','Last Audit in Period','Last SC Audit Ever','Days Since That','Last Audited By'],
+    rows:covRows, styles:covStyles, widths:[14,28,10,12,30,16,22,12,22]};
+  const audited = covRows.filter(r=>r[0]==='Audited').length;
+  const busiest = scList.length && scList[0].visits.size ? scList[0] : null;
+  const idle = scList.filter(o=>o.visits.size===0 && o.status==='Active');
+  const summaryRows = [
+    ['REPORT BASIS',''],
+    ['Audits dated', `${sel.from}  to  ${sel.to}`],
+    ['Sales Coordinator', sel.who==='ALL' ? 'All Sales Coordinators' : `${nameOf(sel.who)} (${sel.who})`],
+    ['CNF / CFA', sel.cnf==='ALL' ? 'All CNFs (training/demo CNF left out)' : `${cnfName(sel.cnf)} (${sel.cnf})`],
+    ['What counts as an audit', 'A stock submission made by a Sales Coordinator on a CNF/CFA\'s behalf (shown as "Audit by SC - name"). A visit is one Sales Coordinator at one CNF on one date.'],
+    ['',''],
+    ['AT A GLANCE',''],
+    ['Audit visits (CNF-days)', sum(3)],
+    ['Audit submissions (Final + Partial)', sum(4)],
+    ['Sales Coordinators who audited', scList.filter(o=>o.visits.size>0).length],
+    ['CNFs / CFAs audited', audited + ' of ' + covRows.length + ' active'],
+    ['CNFs / CFAs NOT audited', covRows.length - audited],
+    ['Stock audited (kg)', kg1(sum(10))],
+    ['Most visits', busiest ? `${busiest.name} — ${busiest.visits.size} visit(s) to ${busiest.cnfs.size} CNF(s)` : '—'],
+    ['Active coordinators with no audit', idle.length ? idle.map(o=>o.name).join(', ') : 'None'],
+    ['',''],
+    ['SHEETS IN THIS FILE',''],
+    ['1  Summary', 'This page'],
+    ['2  SC Summary', 'One row per Sales Coordinator: visits, CNFs audited, repeat visits, first/last audit, stock audited, CNF names'],
+    ['3  SC x CNF', 'Which coordinator audited which CNF, how many times, on which dates'],
+    ['4  Audit Log', 'Every audit with date, time, stock and expired / at-risk stock found'],
+    ['5  CNF Coverage', 'Every active CNF: audited in this period or not, by whom, and when it was last audited by anyone'],
+  ];
+  return {headers, rows, cellStyleFn, summaryRows, extraSheets:[pairSheet, logSheet, covSheet], audits:audits.length, visits:sum(3), cnfsAudited:audited, cnfsTotal:covRows.length};
 }
 function noSubsMessage(sel, histOk){
   const dates = state.submissions.filter(x=>sel.cnf==='ALL' || String(x.cnfCode)===String(sel.cnf)).map(x=>x.date).filter(Boolean).sort();
@@ -6950,6 +7194,23 @@ function bindGlobal(){
     else loadAll();
   };
 
+  // Sales Coordinator: search, pick a CNF to audit, change CNF
+  const scSearch = document.getElementById('scSearch');
+  if(scSearch) scSearch.oninput = ()=>{ state.scSearch = scSearch.value; render(); const n = document.getElementById('scSearch'); if(n){ n.focus(); try{ n.setSelectionRange(n.value.length, n.value.length); }catch(e){} } };
+  document.querySelectorAll('[data-scpick]').forEach(el=>el.onclick=()=>{
+    const cnf = state.masters.cnfs.find(c=>String(c.code)===el.dataset.scpick);
+    if(!cnf || !state.scUser) return;
+    state.auditor = state.scUser;
+    restoreCnfSessionFast_(cnf);
+    render();
+  });
+  const btnScChangeCnf = document.getElementById('btnScChangeCnf');
+  if(btnScChangeCnf) btnScChangeCnf.onclick = ()=>{
+    if(Object.keys(state.draftItems||{}).length && !confirm('You have entries in progress for this CNF. They are kept on this device and will be here when you pick this CNF again. Change CNF now?')) return;
+    state.role = 'sc'; state.cnfUser = null; state.auditor = null; state.draftItems = {}; state.sapUpload = null; state.varianceReasons = {}; state.cnfScreen = 'dashboard';
+    render(); loadMyAudits_().then(()=>render());
+  };
+
   // Logout — same for every role, always returns to the single login screen
   const btnLogout = document.getElementById('btnCnfLogout');
   if(btnLogout) btnLogout.onclick = ()=>{ doLogout(); render(); };
@@ -7164,7 +7425,7 @@ function bindGlobal(){
       cnfCode: state.cnfUser.code, cnfName: state.cnfUser.name,
       date: state.submitDate, timestamp: new Date().toISOString(),
       items, productsUpdated: distinctCodes.size, productsZero: zeroCodes.length,
-      submittedBy: state.cnfUser.userId, status:'Partial',
+      submittedBy: submitterTag_(), status:'Partial',
       sapFileName: state.sapUpload ? state.sapUpload.fileName : '',
       sapUploadedAt: state.sapUpload ? state.sapUpload.uploadedAt : ''
     };
@@ -7297,7 +7558,7 @@ function bindGlobal(){
         date: state.submitDate, timestamp: new Date().toISOString(),
         items, productsUpdated: distinctCodes.size,
         productsZero: zeroCodes.length,
-        submittedBy: state.cnfUser.userId, status:'Final',
+        submittedBy: submitterTag_(), status:'Final',
         sapFileName: state.sapUpload ? state.sapUpload.fileName : '',
         sapUploadedAt: state.sapUpload ? state.sapUpload.uploadedAt : ''
       };
@@ -7776,6 +8037,12 @@ function bindGlobal(){
     u.status = u.status==='Active' ? 'Inactive' : 'Active';
     await saveMasters(); render(); showToast(`${u.name} set to ${u.status}`);
   });
+  document.querySelectorAll('[data-toggle-scuser]').forEach(el=>el.onclick=async ()=>{
+    const u = (state.masters.scUsers||[]).find(u=>u.userId===el.dataset.toggleScuser);
+    if(!u) return;
+    u.status = u.status==='Active' ? 'Inactive' : 'Active';
+    await saveMasters(); render(); showToast(`${u.name} set to ${u.status}`);
+  });
   document.querySelectorAll('[data-toggle-adminuser]').forEach(el=>el.onclick=async ()=>{
     if(el.dataset.toggleAdminuser===state.adminUser.userId){ showToast('Cannot deactivate your own account'); return; }
     const u = state.masters.adminUsers.find(u=>u.userId===el.dataset.toggleAdminuser);
@@ -7803,7 +8070,7 @@ function bindGlobal(){
       if(pwProblem){ err.textContent = pwProblem; return; }
       if(pw1 !== pw2){ err.textContent = 'Passwords do not match.'; return; }
       const t = state.pwResetTarget;
-      const list = t.type==='cnf' ? state.masters.cnfs : t.type==='mis' ? state.masters.misUsers : state.masters.adminUsers;
+      const list = t.type==='cnf' ? state.masters.cnfs : t.type==='mis' ? state.masters.misUsers : t.type==='sc' ? state.masters.scUsers : state.masters.adminUsers;
       const keyField = t.type==='cnf' ? 'code' : 'userId';
       const rec = list.find(r=>r[keyField]===t.code);
       let saved = true;
@@ -7832,6 +8099,7 @@ function bindGlobal(){
         const cnfPwProblem = passwordProblem_(password);
         if(cnfPwProblem){ err.textContent = cnfPwProblem; return; }
         if(state.masters.cnfs.some(c=>c.code===code)){ err.textContent = 'A CNF with that code already exists.'; return; }
+        if(userIdTaken_(code) || (userId!==code && userIdTaken_(userId))){ err.textContent = 'That ID is already used by another login.'; return; }
         state.masters.cnfs.push({code, name, userId, password, status:'Active', location, email});
         await saveMasters(); state.addFormTarget=null; render(); showToast('CNF added');
       } else if(type==='product'){
@@ -7846,15 +8114,17 @@ function bindGlobal(){
         if(state.masters.products.some(p=>p.code===code)){ err.textContent = 'A product with that code already exists.'; return; }
         state.masters.products.push({code, name, category, packSize, defaultUOM:uom, bagToKg, pcToKg, safetyStockKg, selfLifeOverride, ageingDaysOverride});
         await saveMasters(); state.addFormTarget=null; render(); showToast('Product added');
-      } else if(type==='misuser' || type==='adminuser'){
+      } else if(type==='misuser' || type==='adminuser' || type==='scuser'){
         const userId = val('afUserId'), name = val('afName'), password = val('afPassword');
         if(!userId || !name || !password){ err.textContent = 'User ID, Name, and Password are all required.'; return; }
         const usrPwProblem = passwordProblem_(password);
         if(usrPwProblem){ err.textContent = usrPwProblem; return; }
-        const list = type==='misuser' ? state.masters.misUsers : state.masters.adminUsers;
-        if(list.some(u=>u.userId===userId)){ err.textContent = 'That User ID is already in use.'; return; }
+        const list = type==='misuser' ? state.masters.misUsers : type==='scuser' ? state.masters.scUsers : state.masters.adminUsers;
+        if(userIdTaken_(userId)){ err.textContent = 'That User ID is already in use (by a CNF, Admin, MIS or Sales Coordinator login).'; return; }
         list.push({userId, name, password, status:'Active'});
-        await saveMasters(); state.addFormTarget=null; render(); showToast((type==='misuser'?'MIS user':'Admin user')+' added');
+        const savedOk = await saveMasters();
+        if(savedOk===false){ err.textContent = 'Not saved — see the message above and try again.'; return; }
+        state.addFormTarget=null; render(); showToast((type==='misuser'?'MIS user':type==='scuser'?'Sales Coordinator':'Admin user')+' added');
       } else if(type==='category'){
         const raw = val('afCategoryName');
         const name = raw.toUpperCase();
@@ -8298,7 +8568,7 @@ function bindGlobal(){
     try{
       const histOk = await loadHistoryForReport();
       const inRange = subsInRange(sel.from, sel.to, sel.cnf);
-      const pool = state.submissions.filter(s=>sel.cnf==='ALL' || String(s.cnfCode)===String(sel.cnf));
+      const pool = state.submissions.filter(s=>sel.cnf==='ALL' ? !isDemoCode_(s.cnfCode) : String(s.cnfCode)===String(sel.cnf));
       if(!inRange.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
       prog.textContent = histOk ? 'Comparing…' : '⚠ Server history not loaded — comparing only what is on this device…';
       const cnfObj = state.masters.cnfs.find(c=>String(c.code)===String(sel.cnf));
@@ -8319,6 +8589,33 @@ function bindGlobal(){
     }
   };
 
+  bindRange(scRange, ['scFrom','scTo','scCnf']);
+  const scWhoSel = document.getElementById('scWho');
+  if(scWhoSel) scWhoSel.onchange = ()=>{ scRange().who = scWhoSel.value; };
+  const btnExportScAudit = document.getElementById('btnExportScAudit');
+  if(btnExportScAudit) btnExportScAudit.onclick = async ()=>{
+    const sel = scRange(), prog = document.getElementById('scProg');
+    if(!sel.from || !sel.to || sel.from>sel.to){ showToast('Pick a valid date range — From must be on or before To.'); return; }
+    prog.style.display='block'; prog.textContent='Loading submission history…';
+    try{
+      const histOk = await loadHistoryForReport();
+      prog.textContent = 'Building report…';
+      const out = buildScAuditReport(sel, state.submissions);
+      if(!out.audits){ prog.style.display='none'; showToast(`No Sales Coordinator audits between ${sel.from} and ${sel.to}${histOk?'':' (server history could not be loaded — press Sync and retry)'}.`); }
+      const wb = await buildXlsxWorkbook({
+        title: 'Sales Coordinator Audit Report',
+        subtitle: `Audits dated ${sel.from} to ${sel.to} · ${out.visits} visit(s) · ${out.cnfsAudited} of ${out.cnfsTotal} active CNFs audited`,
+        headers: out.headers, rows: out.rows, summaryRows: out.summaryRows, dataSheetName:'SC Summary', cellStyleFn: out.cellStyleFn,
+        colWidths:[22,10,10,12,12,11,14,12,12,10,13,70], wrapCols:[11], extraSheets: out.extraSheets,
+      });
+      await downloadRealXlsx(`sc-audit-${sel.from}-to-${sel.to}`, wb);
+      prog.style.display='none';
+      showToast(`✓ Sales Coordinator audit report downloaded — ${out.visits} visit(s), ${out.cnfsAudited} of ${out.cnfsTotal} CNFs audited`);
+    }catch(e){
+      prog.style.display='none';
+      showToast(`⚠ Report failed (${(e&&e.message)||e}) — contact IT if this repeats: 1800-121-0144`);
+    }
+  };
   const btnExportCnfRisk = document.getElementById('btnExportCnfRisk');
   if(btnExportCnfRisk) btnExportCnfRisk.onclick = async ()=>{
     const sel0 = compareRange(), eff = effectiveCompareRange(sel0), sel = {from:eff.from, to:eff.to, cnf:sel0.cnf}, prog = document.getElementById('cmpProg');
@@ -8327,7 +8624,7 @@ function bindGlobal(){
     try{
       const histOk = await loadHistoryForReport();
       const inRange = subsInRange(sel.from, sel.to, sel.cnf);
-      const pool = state.submissions.filter(s=>sel.cnf==='ALL' || String(s.cnfCode)===String(sel.cnf));
+      const pool = state.submissions.filter(s=>sel.cnf==='ALL' ? !isDemoCode_(s.cnfCode) : String(s.cnfCode)===String(sel.cnf));
       if(!inRange.length){ prog.style.display='none'; showToast(noSubsMessage(sel, histOk)); return; }
       prog.textContent = 'Building CNF-wise summary…';
       const cnfObj = state.masters.cnfs.find(c=>String(c.code)===String(sel.cnf));
@@ -8474,7 +8771,7 @@ function bindGlobal(){
   if(btnExportAudit) btnExportAudit.onclick = ()=>{
     const rows = [...state.submissions].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
     exportGenericCsv('audit-log.csv', ['Submission ID','CNF Code','CNF Name','Date','Timestamp','Products','Batch Lines','Submitted By','Status'],
-      rows.map(s=>[s.id,s.cnfCode,s.cnfName,s.date,new Date(s.timestamp).toLocaleString('en-IN'),new Set(s.items.map(i=>i.code)).size,s.items.length,s.submittedBy,s.status]));
+      rows.map(s=>[s.id,s.cnfCode,s.cnfName,s.date,new Date(s.timestamp).toLocaleString('en-IN'),new Set(s.items.map(i=>i.code)).size,s.items.length,submittedByText(s),s.status]));
   };
 
   // Movement & History (MIS)
@@ -8497,7 +8794,7 @@ function bindGlobal(){
     const f = state.movementFilters;
     const rows = state.submissions.filter(s=>s.date>=f.fromDate && s.date<=f.toDate && (f.cnf==='ALL' || s.cnfCode===f.cnf)).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
     exportGenericCsv(`movement-${f.fromDate}-to-${f.toDate}.csv`, ['Date','CNF Name','CNF Code','Products','Batch Lines','Total kg','Submission ID','Submitted By'],
-      rows.map(s=>[s.date, s.cnfName, s.cnfCode, new Set(s.items.map(i=>i.code)).size, s.items.length, s.items.reduce((a,i)=>a+i.kgQty,0).toFixed(1), s.id, s.submittedBy]));
+      rows.map(s=>[s.date, s.cnfName, s.cnfCode, new Set(s.items.map(i=>i.code)).size, s.items.length, s.items.reduce((a,i)=>a+i.kgQty,0).toFixed(1), s.id, submittedByText(s)]));
   };
   document.querySelectorAll('[data-movsub]').forEach(el=>el.onclick=()=>{ state.misSubDetail = el.dataset.movsub; render(); });
   const misSubDetailBg = document.getElementById('misSubDetailBg');
