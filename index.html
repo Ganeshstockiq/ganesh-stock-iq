@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.80';
+const APP_VERSION = '2026-08-24.81';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -2233,6 +2233,7 @@ function parseAuditBy(by){
   return {role:'CNF', id:t, name:''};
 }
 function auditByLabel(sub){ const a = parseAuditBy(sub && sub.submittedBy); return a.role==='SC' ? `Audit by SC - ${a.name}` : 'Audit by CNF'; }
+function stockSubmittedByText_(sub){ const a = parseAuditBy(sub && sub.submittedBy); return a.role==='SC' ? `Stock Submitted by SC - ${a.name}` : 'Stock Submitted by CNF'; }
 function submittedByText(sub){ const a = parseAuditBy(sub && sub.submittedBy); return a.role==='SC' ? `SC - ${a.name}` : String((sub&&sub.submittedBy)||''); }
 function submitterTag_(){ return state.auditor ? `SC|${state.auditor.userId}|${String(state.auditor.name||state.auditor.userId).replace(/\|/g,' ')}` : state.cnfUser.userId; }
 function draftKey_(code){ return 'draft:'+code+(state.auditor ? ':sc:'+state.auditor.userId : ''); }
@@ -6134,6 +6135,7 @@ function MisExport(){
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
+  ${SubmitterFixCard_()}
   ${EmailReportCard()}
 
   <div class="panel-card">
@@ -7132,6 +7134,51 @@ function emailRows_(){
   if(state.misFilters.status!=='ALL') rows = rows.filter(r=>r.ageStatus.cls===state.misFilters.status);
   return rows;
 }
+function SubmitterFixCard_(){
+  const cnfs = (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c));
+  const scs = (state.masters.scUsers||[]).filter(u=>String(u.status||'Active')==='Active');
+  return `<div class="panel-card">
+    <h4>Stock Submitted By — Correction</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">An SC who submits through their own login is recorded automatically. If an SC submitted through a CNF's login by mistake, correct it here after verbal or email confirmation. Every change is logged.</p>
+    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
+      <div class="fg"><label>CNF</label><select id="sfCnf"><option value="">Select CNF</option>${cnfs.map(c=>`<option value="${escapeHtml(String(c.code))}">${escapeHtml(c.name)} (${escapeHtml(String(c.code))})</option>`).join('')}</select></div>
+      <div class="fg"><label>Submission</label><select id="sfSub"><option value="">Select a CNF first</option></select></div>
+      <div class="fg"><label>Submitted by</label><select id="sfBy"><option value="CNF">CNF</option>${scs.map(u=>`<option value="${escapeHtml(u.userId)}">SC - ${escapeHtml(u.name)}</option>`).join('')}</select></div>
+      <div class="fg"><label>Confirmed by (verbal / email)</label><input id="sfNote" type="text" placeholder="e.g. Email from SC on 24-Aug"></div>
+    </div>
+    <button class="btn btn-primary" id="sfSave" style="margin-top:8px;">Save Correction</button>
+    <span id="sfMsg" style="margin-left:10px;font-size:13px;"></span>
+  </div>`;
+}
+function bindSubmitterFix_(){
+  const cnfEl=document.getElementById('sfCnf'), subEl=document.getElementById('sfSub'), byEl=document.getElementById('sfBy'), noteEl=document.getElementById('sfNote'), btn=document.getElementById('sfSave'), msg=document.getElementById('sfMsg');
+  if(!cnfEl||!btn) return;
+  const label = sub => { const a=parseAuditBy(sub.submittedBy); return `${sub.date||''} · ${String(sub.timestamp||'').replace('T',' ').slice(0,16)} · ${a.role==='SC'?'SC - '+a.name:'CNF'}`; };
+  const fill = ()=>{
+    const list = state.submissions.filter(x=>String(x.cnfCode)===String(cnfEl.value)).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).slice(0,30);
+    subEl.innerHTML = list.length ? list.map(x=>`<option value="${escapeHtml(String(x.id))}">${escapeHtml(label(x))}</option>`).join('') : '<option value="">No submissions</option>';
+  };
+  cnfEl.onchange = async ()=>{
+    if(!cnfEl.value){ subEl.innerHTML='<option value="">Select a CNF first</option>'; return; }
+    subEl.innerHTML='<option value="">Loading…</option>';
+    await ensureCnfHistory(cnfEl.value); fill();
+  };
+  btn.onclick = async ()=>{
+    if(!subEl.value){ msg.textContent='Select a submission.'; return; }
+    if(String(noteEl.value).trim().length<3){ msg.textContent='Enter who confirmed this change.'; return; }
+    const by = byEl.value==='CNF' ? 'CNF' : 'SC';
+    btn.disabled=true; msg.textContent='Saving…';
+    try{
+      const res = await apiPost('setSubmitter',{submissionId:subEl.value, by, scUserId: by==='SC'?byEl.value:'', note:noteEl.value.trim()});
+      if(!res || res.error || !res.submittedBy) throw new Error((res&&res.error)||'Could not save.');
+      state.submissions.forEach(x=>{ if(String(x.id)===String(subEl.value)) x.submittedBy=res.submittedBy; });
+      Object.values(state.currentSnapshots||{}).forEach(x=>{ if(x && String(x.id)===String(subEl.value)) x.submittedBy=res.submittedBy; });
+      fill(); subEl.value=subEl.value; noteEl.value=''; msg.textContent='Saved.';
+      showToast('Submitter updated');
+    }catch(e){ msg.textContent=String(e.message||e); }
+    btn.disabled=false;
+  };
+}
 function EmailReportCard(){
   if(!state.pendingOrdersOverride){
     return `<div class="panel-card" style="opacity:.85;">
@@ -7304,7 +7351,7 @@ function buildEmailStockHtmlRaw_(rows, mode){
     return t + `</tr></table>`;
   };
   shownGroups.forEach(g=>{
-    h += TBL + `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock date ${E(g.date)} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr></table>` + riskStrip_(g) + `<div style="height:4px;line-height:4px;font-size:2px;">&nbsp;</div>` + TBL + `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
+    h += TBL + `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock Submission Date ${E(g.date)} &nbsp;|&nbsp; ${E(stockSubmittedByText_(g.allRows&&g.allRows[0]&&g.allRows[0].sub))} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr></table>` + riskStrip_(g) + `<div style="height:4px;line-height:4px;font-size:2px;">&nbsp;</div>` + TBL + `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
     if(mode==='product'){
       const rank = {expired:6,expiring:5,critical:4,ageing:3,normal:2,fresh:1};
       const bp = {};
@@ -8917,6 +8964,7 @@ function bindGlobal(){
   if(misStatus) misStatus.onchange = ()=>{ state.misFilters.status = misStatus.value; render(); };
   const btnExport = document.getElementById('btnExportCsv');
   if(btnExport) btnExport.onclick = runExport;
+  bindSubmitterFix_();
   bindEmailReport_();
   const bindRange = (getter, ids)=>{
     const [f,t,c] = ids.map(i=>document.getElementById(i));
