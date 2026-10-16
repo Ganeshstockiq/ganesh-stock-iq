@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.81';
+const APP_VERSION = '2026-08-24.82';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -2033,6 +2033,30 @@ function inferCategoryFromName(name, wordMap){
   return best; // null if nothing in the existing Product Master resembles this name
 }
 
+// SAP exports often store quantities as TEXT ("1,234.500", "1234.500-", " 25 ", "(5)", "1.234,50").
+// Number() turns all of those into NaN -> 0, which made SAP stock look like zero until the sheet was
+// converted to numbers by hand. This reads them the way Excel's "Convert to Number" would.
+function sapNum_(v){
+  if(typeof v==='number') return isFinite(v) ? v : 0;
+  let t = String(v==null?'':v).replace(/[\s\u00a0\u202f\u2009']/g,'');
+  if(!t) return 0;
+  let neg = false;
+  if(/^\(.*\)$/.test(t)){ neg = true; t = t.slice(1,-1); }
+  if(/-$/.test(t)){ neg = true; t = t.slice(0,-1); }
+  if(/^[-\u2212]/.test(t)){ neg = true; t = t.slice(1); }
+  t = t.replace(/[^0-9.,]/g,'');
+  if(!t) return 0;
+  const lc = t.lastIndexOf(','), ld = t.lastIndexOf('.');
+  if(lc>-1 && ld>-1){
+    if(lc>ld) t = t.replace(/\./g,'').replace(',','.'); else t = t.replace(/,/g,'');
+  } else if(lc>-1){
+    t = (/^\d{1,3}(,\d{3})+$/.test(t) || (t.match(/,/g)||[]).length>1) ? t.replace(/,/g,'') : t.replace(',','.');
+  } else if(ld>-1 && (t.match(/\./g)||[]).length>1){
+    t = t.replace(/\./g,'');
+  }
+  const n = parseFloat(t);
+  return isFinite(n) ? (neg ? -n : n) : 0;
+}
 async function handleSapUpload(file){
   if(typeof XLSX === 'undefined') throw new Error('Excel reader failed to load — check your internet connection and try again.');
   const buf = await readFileAsArrayBuffer(file);
@@ -2069,10 +2093,10 @@ async function handleSapUpload(file){
       code: String(r[cMaterial]).trim(),
       name: String(r[cDesc]).trim() || ('Material '+r[cMaterial]),
       uom: cUom>-1 ? String(r[cUom]).trim() : '',
-      currentStockKg: Number(r[cStock])||0,
-      approvedOrder: cApproved>-1 ? (Number(r[cApproved])||0) : 0,
-      pendingOrder: cPending>-1 ? (Number(r[cPending])||0) : 0,
-      safetyStockKg: cSafety>-1 ? (Number(r[cSafety])||0) : null
+      currentStockKg: sapNum_(r[cStock]),
+      approvedOrder: cApproved>-1 ? sapNum_(r[cApproved]) : 0,
+      pendingOrder: cPending>-1 ? sapNum_(r[cPending]) : 0,
+      safetyStockKg: cSafety>-1 ? sapNum_(r[cSafety]) : null
     }));
   if(!rows.length) throw new Error('No product rows found in this file.');
 
@@ -6239,8 +6263,8 @@ async function parseOrdersBulkFile(file){
     .map(r=>({
       cnfCode: String(r[cPlant]).trim(),
       productCode: normalizeMaterialCode(r[cMaterial]),
-      approvedOrder: cApproved>-1 ? (Number(r[cApproved])||0) : null,
-      pendingOrder: cPending>-1 ? (Number(r[cPending])||0) : null,
+      approvedOrder: cApproved>-1 ? sapNum_(r[cApproved]) : null,
+      pendingOrder: cPending>-1 ? sapNum_(r[cPending]) : null,
     }));
   if(!rows.length) throw new Error('No rows found in this file.');
   return rows;
