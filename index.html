@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.79';
+const APP_VERSION = '2026-08-24.80';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7280,14 +7280,31 @@ function buildEmailStockHtmlRaw_(rows, mode){
     });
     return h + `</table></div>`;
   }
-  const shownGroups = groups.map(g=>Object.assign({}, g, {rows: g.rows.filter(emailShow_)})).map(g=>Object.assign(g,{kg: g.rows.reduce((t,r)=>t+r.item.kgQty,0)})).filter(g=>g.rows.length);
+  const shownGroups = groups.map(g=>Object.assign({}, g, {allRows: g.rows, rows: g.rows.filter(emailShow_)})).map(g=>Object.assign(g,{kg: g.rows.reduce((t,r)=>t+r.item.kgQty,0)})).filter(g=>g.rows.length);
   const cols = mode==='product' ? null : emailCols_();
   const heads = mode==='product' ? ['Code','Product','Category','Total kg','Batches','Worst Ageing','Approved Order - Kg','Pending Order - Kg','Order To Be Taken'] : cols.map(c=>c.label);
   const span = heads.length;
-  h += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;">`;
+  const TBL = `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;">`;
+  // Per CNF: for each risk status, the categories holding the most kg (top 3, biggest first)
+  const fmtKg = v=> v>=10 ? kg0(v) : (Math.round(v*10)/10).toLocaleString('en-IN');
+  const riskStrip_ = g=>{
+    const RISK = [['ageing','Ageing'],['expiring','Near Expiry'],['critical','Critical'],['expired','Expired']];
+    const per = {};
+    g.allRows.forEach(r=>{ const k=r.ageStatus.cls; if(!RISK.some(x=>x[0]===k)) return; const o = per[k] || (per[k]={tot:0,cats:{}}); const c = r.product.category||'Other'; o.tot += r.item.kgQty; o.cats[c] = (o.cats[c]||0) + r.item.kgQty; });
+    const bd = 'border:2px solid #ffffff;';
+    let t = `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;"><tr>`;
+    RISK.forEach(([k,lab])=>{ const col = EML_AGE_COL[k]; const o = per[k];
+      t += `<td width="25%" bgcolor="${col[0]}" style="background:${col[0]};color:${col[1]};${bd}padding:4px 8px;font-size:12px;font-weight:bold;${F}">${lab}${o?` &nbsp;<span style="font-weight:normal;font-size:11px;">${kg0(o.tot)} kg</span>`:''}</td>`; });
+    t += `</tr><tr>`;
+    RISK.forEach(([k])=>{ const o = per[k]; const tint = CARD_TINT[k]; let body;
+      if(!o) body = `<span style="color:#6b7785;">&ndash; none &ndash;</span>`;
+      else { const e = Object.entries(o.cats).sort((a,b)=>b[1]-a[1]); const top = e.slice(0,3);
+        body = top.map(([c,v],i)=>`<b>${i+1}.</b> ${E(c)} &mdash; <b>${fmtKg(v)}</b> kg`).join('<br>') + (e.length>3 ? `<br><span style="color:#6b7785;">+${e.length-3} more</span>` : ''); }
+      t += `<td width="25%" valign="top" bgcolor="${tint}" style="background:${tint};color:#14212e;${bd}padding:5px 8px;font-size:12px;${F}">${body}</td>`; });
+    return t + `</tr></table>`;
+  };
   shownGroups.forEach(g=>{
-    h += `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock date ${E(g.date)} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr>`;
-    h += `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
+    h += TBL + `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock date ${E(g.date)} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr></table>` + riskStrip_(g) + `<div style="height:4px;line-height:4px;font-size:2px;">&nbsp;</div>` + TBL + `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
     if(mode==='product'){
       const rank = {expired:6,expiring:5,critical:4,ageing:3,normal:2,fresh:1};
       const bp = {};
@@ -7313,10 +7330,10 @@ function buildEmailStockHtmlRaw_(rows, mode){
         }).join('') + '</tr>';
       });
     }
-    h += `<tr><td colspan="${span}" style="height:8px;font-size:4px;line-height:4px;">&nbsp;</td></tr>`;
+    h += `</table><div style="height:14px;line-height:14px;font-size:8px;">&nbsp;</div>`;
   });
-  if(!shownGroups.length) h += `<tr><td style="padding:8px;font-size:12px;color:#52606d;">No lines match the selected Ageing Statuses.</td></tr>`;
-  return h + `</table></div>`;
+  if(!shownGroups.length) h += `<div style="padding:8px;font-size:12px;color:#52606d;">No lines match the selected Ageing Statuses.</div>`;
+  return h + `</div>`;
 }
 async function copyEmailHtml_(html){
   try{
