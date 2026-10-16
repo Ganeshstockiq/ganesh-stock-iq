@@ -913,7 +913,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.90';
+const APP_VERSION = '2026-08-24.91';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7514,27 +7514,13 @@ function buildCmpEmailParts_(rep, o){
       + `Most suspicious: <b>${E(worst.name)}</b> &mdash; ${worst.wrong.size} of ${worst.compared} products (${Math.round(worst.pct)}%).`
       + (topType ? ` Most common problem: <b>${E(CMP_TYPES_[topType[0]].label)}</b> (${topType[1]} time${topType[1]>1?'s':''}).` : '');
   top += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin:8px 0;"><tr><td bgcolor="#fff7e0" style="background:#fff7e0;color:#4a3500;border-left:5px solid #e67e22;padding:9px 12px;font-size:13px;${F}">${headline}</td></tr></table>`;
-  const cards = [
-    ['CNFs checked',            String(stats.length),   '#1f3a5f', '#e8eef5', 'with a submission to compare'],
-    ['CNFs with wrong MFD',     String(bad.length),     '#c0392b', '#fadbd8', 'at least one product wrong'],
-    ['Products compared',       String(nCompared),      '#34495e', '#e8eef5', 'last vs recent submission'],
-    ['Products wrong',          String(nWrong),         '#c2410c', '#fde2d4', nCompared?Math.round(nWrong/nCompared*100)+'% of compared':'&nbsp;'],
-  ];
-  const bd = 'border:2px solid #ffffff;';
-  const cRow = fn => '<tr>'+cards.map(fn).join('')+'</tr>';
-  top += `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:4px 0 10px 0;">`
-    + cRow(c=>`<td width="150" bgcolor="${c[2]}" align="center" style="background:${c[2]};color:#ffffff;${bd}padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">${c[0]}</td>`)
-    + cRow(c=>`<td bgcolor="${c[3]}" align="center" style="background:${c[3]};color:#14212e;${bd}padding:8px 8px 2px 8px;text-align:center;font-size:22px;font-weight:bold;${F}">${c[1]}</td>`)
-    + cRow(c=>`<td bgcolor="${c[3]}" align="center" style="background:${c[3]};color:#3b4752;${bd}padding:0 8px 6px 8px;text-align:center;font-size:11px;${F}">${c[4]}</td>`)
-    + `</table>`;
-
   /* ---- top 3 CNFs to act on first ---- */
   if(bad.length){
-    const t3 = bad.slice(0,3);
-    const hd = ['#922b21','#b03a2e','#c0574a'];
-    top += `<div style="font-size:14px;font-weight:bold;color:#1f3a5f;margin:6px 0 4px 0;${F}">Top ${t3.length} CNF${t3.length>1?'s':''} to act on first</div>`
+    const t3 = bad.slice(0,5);
+    const hd = ['#7b241c','#922b21','#a93226','#b03a2e','#c0574a'];
+    top += `<div style="font-size:14px;font-weight:bold;color:#1f3a5f;margin:6px 0 4px 0;${F}">Top ${t3.length} CNF${t3.length>1?'s':''} to act on first (highest % of wrong MFD entries)</div>`
       + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>`
-      + t3.map((s,i)=>`<td width="230" bgcolor="${hd[i]}" align="center" style="background:${hd[i]};color:#ffffff;border:2px solid #ffffff;padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">#${i+1} &middot; ${E(s.name)} &middot; ${E(String(s.code))}</td>`).join('')
+      + t3.map((s,i)=>`<td width="172" bgcolor="${hd[i]}" align="center" style="background:${hd[i]};color:#ffffff;border:2px solid #ffffff;padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">#${i+1} &middot; ${E(s.name)} &middot; ${E(String(s.code))}</td>`).join('')
       + `</tr><tr>`
       + t3.map(s=>`<td bgcolor="#fadbd8" align="center" style="background:#fadbd8;color:#7b241c;border:2px solid #ffffff;padding:8px 8px 2px 8px;text-align:center;font-size:24px;font-weight:bold;${F}">${Math.round(s.pct)}%</td>`).join('')
       + `</tr><tr>`
