@@ -913,7 +913,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.86';
+const APP_VERSION = '2026-08-24.88';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -6180,6 +6180,7 @@ function MisExport(){
 
   ${SubmitterFixCard_()}
   ${EmailReportCard()}
+  ${CmpEmailCard_()}
 
   <div class="panel-card">
     <h4>Old Data — Date Range Export</h4>
@@ -6452,7 +6453,7 @@ function buildRangeStockRows(subs){
 }
 function cmpBatchText(batches){
   const keys = Object.keys(batches).sort();
-  return keys.length ? keys.map(m=>`${m} (${Number(batches[m].toFixed(1))} kg)`).join('; ') : '—';
+  return keys.length ? keys.map(m=>`${fmtD(m)} (${Number(batches[m].toFixed(1))} kg)`).join('; ') : '—';
 }
 // For every CNF + product, compares each submission inside the date range
 // with the one right before it for that same product (the baseline may be
@@ -6567,7 +6568,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed','Logic & Calculation','Reason','Previous Submission ID','Current Submission ID','Previous Audit By','Current Audit By'];
   const rows = out.map(x=>{
     const cnf = state.masters.cnfs.find(c=>String(c.code)===String(x.cur.sub.cnfCode));
-    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, fmtD(x.prev.sub.date), fmtD(x.cur.sub.date), cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id, auditByLabel(x.prev.sub), auditByLabel(x.cur.sub)];
+    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, fmtD(x.prev.sub.date), fmtD(x.cur.sub.date), cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), dmyText_(x.flags.map(f=>f.text).join(' | ')), dmyText_(x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n')), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id, auditByLabel(x.prev.sub), auditByLabel(x.cur.sub)];
   });
   const byType = {}, byCnf = {};
   const sevCount = {High:0, Medium:0, Low:0};
@@ -6594,12 +6595,12 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const noSubCount = activeCnfs.filter(c=>!subIdsByCnf[c.code]).length;
   const summaryRows = [
     ['COMPARISON PERIOD',''],
-    ['Compared submissions dated', fromDate===toDate ? fromDate : `${fromDate}  to  ${toDate}`],
+    ['Compared submissions dated', fromDate===toDate ? fmtD(fromDate) : `${fmtD(fromDate)}  to  ${fmtD(toDate)}`],
     ...(baselineMode==='before' ? [['Fallback used', `${fallbackPairs.n} product comparison(s) had no submission before the period (CNF started submitting inside it), so they were compared with the previous submission inside the period instead`]] : []),
     ['Compared against', baselineMode==='within' ? 'Inside the period only — each product\'s latest submission against the one before it, both dated inside the period' : baselineMode==='chain' ? 'Step by step — each submission against the one right before it' : 'Each CNF/CFA\'s last submission BEFORE this period (only CNFs that submitted in the period are included)'],
     ['CNF / CFA', cnfLabel||'All CNFs'],
     ['Data source', histOk ? 'Full submission history loaded from the server' : '⚠ SERVER HISTORY NOT LOADED — built only from submissions already on this device; many CNFs can be missing. Press Sync and download again.'],
-    ['Previous submission dates used', baselineDates.length ? (baselineDates[0]===baselineDates[baselineDates.length-1] ? baselineDates[0] : `${baselineDates[0]}  to  ${baselineDates[baselineDates.length-1]}`) : '—'],
+    ['Previous submission dates used', baselineDates.length ? (baselineDates[0]===baselineDates[baselineDates.length-1] ? fmtD(baselineDates[0]) : `${fmtD(baselineDates[0])}  to  ${fmtD(baselineDates[baselineDates.length-1])}`) : '—'],
     ['How it is compared', baselineMode==='within' ? 'Only submissions dated inside the period are used: the latest one for each product is compared with the one just before it. Nothing dated before the period start is used.' : baselineMode==='chain' ? 'Every submission dated inside the period is compared with the PREVIOUS submission of the same product by the same CNF/CFA (that one may be dated before the period).' : 'For each product, the latest submission inside the period is compared with the same CNF/CFA\'s most recent submission before the period. The exact previous submission date and time is shown in the "Compared With" columns.'],
     ['Sheets in this file', '1 Summary · 2 Data (every difference with logic and reason) · 3 CNF Email View (short product-wise MFD and stock timeline, ready to send to the CNF/CFA)'],
     ['',''],
@@ -6680,7 +6681,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
         const mk = marks[snap.sub.id+'|'+snap.code+'|'+m];
         const cnf = state.masters.cnfs.find(c=>String(c.code)===String(g.cnfCode));
         const ui = mk ? LEVEL_UI[mk.level] : null;
-        rowsForG.push([g.cnfCode, cnf?cnf.name:(snap.sub.cnfName||''), g.code, g.name, stamp(snap.sub) + (pv?'':' (previous submission)'), cmpWith, m, Number(snap.batches[m].toFixed(1)), ui?ui.label:'✔ OK', mk?mk.issues.join('; '):'']);
+        rowsForG.push([g.cnfCode, cnf?cnf.name:(snap.sub.cnfName||''), g.code, g.name, stamp(snap.sub) + (pv?'':' (previous submission)'), cmpWith, fmtD(m), Number(snap.batches[m].toFixed(1)), ui?ui.label:'✔ OK', mk?dmyText_(mk.issues.join('; ')):'']);
         const bad = ui ? {bg:ui.bg, fg:ui.fg, bold:true} : null;
         stylesForG.push(ui ? [null,null,null,null,null,null,bad,null,bad,bad] : [null,null,null,null,null,null,null,null,{bg:'#dff0e0', fg:'#1e5b2b'},null]);
       });
@@ -6693,7 +6694,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const emailSheet = evRows.length ? {
     name: 'CNF Email View',
     title: 'Please confirm the highlighted MFD / stock entries',
-    subtitle: `Submissions dated ${fromDate} to ${toDate} · ${cnfLabel||'All CNFs'} · each entry is checked against the previous submission of the same product by the same CNF/CFA (see 'Compared With') · only products with an incorrect or inconsistent entry are listed`,
+    subtitle: `Submissions dated ${fmtD(fromDate)} to ${fmtD(toDate)} · ${cnfLabel||'All CNFs'} · each entry is checked against the previous submission of the same product by the same CNF/CFA (see 'Compared With') · only products with an incorrect or inconsistent entry are listed`,
     headers: evHeaders, rows: evRows, styles: evStyles,
     widths: [10,24,13,34,24,26,14,12,30,60], wrapCols: [3,5,8,9],
   } : null;
@@ -6704,7 +6705,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     if(ci===headers.indexOf('Change kg') && val!==0) return val>0 ? {bg:'#fde2d4', fg:'#8a3b0a'} : {bg:'#dff0e0', fg:'#1e5b2b'};
     return null;
   };
-  return {headers, rows, summaryRows, cellStyleFn, emailSheet, flagged: out.length, compared: pairsCompared.n, sevCount, cnfStats, pairsByCnf};
+  return {headers, rows, summaryRows, cellStyleFn, emailSheet, flagged: out.length, compared: pairsCompared.n, sevCount, cnfStats, pairsByCnf, out, marks, fromDate, toDate};
 }
 
 /* ---------------- CNF-wise management summary: Comparison + Ageing in one file ---------------- */
@@ -7262,7 +7263,7 @@ function EmailReportCard(){
     </div>
     <div class="filters" style="margin-top:8px;">
       <div class="fg"><label>Detail level</label><select id="emlMode">
-        <option value="batch">Batch-wise (har MFD line)</option>
+        <option value="batch">Batch-wise (every MFD line)</option>
         <option value="product">Product-wise (batches combined)</option>
         <option value="summary">CNF Summary only</option></select></div>
     </div>
@@ -7429,6 +7430,349 @@ function buildEmailStockHtmlRaw_(rows, mode){
   });
   if(!shownGroups.length) h += `<div style="padding:8px;font-size:12px;color:#52606d;">No lines match the selected Ageing Statuses.</div>`;
   return h + `</div>`;
+}
+/* ---------------- Email Body Report — MFD Comparison (paste-ready) ---------------- */
+function dmyText_(t){ return String(t==null?'':t).replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g,'$3-$2-$1'); }
+// Plain-language names for each comparison finding. wrong:true = an MFD / stock entry that is probably incorrect.
+const CMP_TYPES_ = {
+  'Same qty, MFD changed': {label:'Same stock, MFD changed', score:3, wrong:true},
+  'Older MFD appeared':    {label:'Older batch appeared',    score:2, wrong:true},
+  'Batch qty increased':   {label:'Batch stock went up',     score:2, wrong:true},
+  'MFD missing':           {label:'MFD left blank',          score:2, wrong:true},
+  'MFD changed':           {label:'MFD changed',             score:1, wrong:true},
+  'Big qty swing':         {label:'Big stock swing',         score:0, wrong:false},
+  'Far from SAP qty':      {label:'Far from SAP stock',      score:0, wrong:false},
+};
+const CMP_ACTION_ = {
+  'Same qty, MFD changed': 'Stock is unchanged but the MFD is different. Check the MFD printed on the pack and re-submit the correct one.',
+  'Older MFD appeared':    'An older batch appeared behind newer stock. Check the MFD on the pack and re-submit.',
+  'Batch qty increased':   'Batch stock went up without a new batch. Check the quantity and the MFD.',
+  'MFD missing':           'MFD is blank this time. Enter the MFD for every batch.',
+  'MFD changed':           'MFD differs from last time. Confirm it is correct.',
+  'Big qty swing':         'Stock moved by 50% or more. Check for a unit (UOM) or typing error.',
+  'Far from SAP qty':      'Entered stock is far from the SAP quantity. Check the entry or the SAP stock.',
+};
+function cmlCnfCodes_(){
+  const valid = state.masters.cnfs.filter(c=>latestSubmissionFor(c.code) && !isDemoCnf(c)).map(c=>c.code);
+  if(!state.cmlCnfSel) return valid;
+  const s = new Set(state.cmlCnfSel); return valid.filter(c=>s.has(c));
+}
+// Works out, per CNF, how many products were compared and how many look wrongly entered.
+function cmpEmailStats_(rep, cnfCodes){
+  const stats = {};
+  const get = code => stats[code] || (stats[code] = {code, wrong:new Set(), review:new Set(), types:{}, score:0, compared:rep.pairsByCnf[code]||0, firstPrev:null, lastCur:null});
+  Object.keys(rep.pairsByCnf).forEach(get);
+  rep.out.forEach(x=>{
+    const st = get(x.cur.sub.cnfCode);
+    x.flags.forEach(f=>{
+      const info = CMP_TYPES_[f.type]; if(!info) return;
+      if(info.wrong){ st.wrong.add(x.cur.code); st.types[f.type] = (st.types[f.type]||0)+1; st.score += info.score; }
+      else st.review.add(x.cur.code);
+    });
+    if(!st.firstPrev || x.prev.sub.date < st.firstPrev.date) st.firstPrev = x.prev.sub;
+    if(!st.lastCur || new Date(x.cur.sub.timestamp) > new Date(st.lastCur.timestamp)) st.lastCur = x.cur.sub;
+  });
+  const list = Object.values(stats).filter(s=>s.compared>0 && (!cnfCodes || cnfCodes.has(String(s.code)))).map(s=>{
+    const pct = s.compared ? s.wrong.size/s.compared*100 : 0;
+    s.pct = pct; s.level = s.wrong.size===0 ? 'Clean' : pct>=30 ? 'High' : pct>=10 ? 'Medium' : 'Low';
+    const c = state.masters.cnfs.find(cc=>String(cc.code)===String(s.code)); s.name = c ? c.name : s.code;
+    return s;
+  });
+  list.sort((a,b)=> b.wrong.size-a.wrong.size || b.score-a.score || b.pct-a.pct || String(a.name).localeCompare(String(b.name)));
+  return list;
+}
+// Builds the e-mail as several parts (the first has the summary) so Outlook never has to swallow one huge paste.
+function buildCmpEmailParts_(rep, o){
+  const E = excelEsc_, F = 'font-family:Calibri,Arial,sans-serif;';
+  const TD = 'border:1px solid #d5d9de;padding:4px 7px;font-size:12px;color:#1f2933;'+F;
+  const TH = 'border:1px solid #1f3a5f;padding:5px 7px;font-size:12px;font-weight:bold;background:#1f3a5f;color:#ffffff;text-align:left;'+F;
+  const TBL = `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;">`;
+  const LEVEL_UI = {
+    wrong:    {label:'&#10006; Incorrect &mdash; please verify', bg:'#f8d0cc', fg:'#8a1f11'},
+    conflict: {label:'&#9888; Conflicts with a later entry',     bg:'#fde2c4', fg:'#8a4b0a'},
+    review:   {label:'&#9888; Please review',                    bg:'#fff2a8', fg:'#5c3b00'},
+  };
+  const SEV = Object.assign({Clean:{bg:'#1e8449', fg:'#ffffff'}}, CMP_SEVERITY_COLORS);
+  const stats = cmpEmailStats_(rep, o.cnfCodes);
+  const bad = stats.filter(s=>s.wrong.size>0);
+  const nCompared = stats.reduce((t,s)=>t+s.compared,0), nWrong = stats.reduce((t,s)=>t+s.wrong.size,0);
+  const typeTotals = {}; stats.forEach(s=>Object.entries(s.types).forEach(([k,v])=>{ typeTotals[k]=(typeTotals[k]||0)+v; }));
+  const topType = Object.entries(typeTotals).sort((a,b)=>b[1]-a[1])[0];
+  const subBy = sub => { const a = parseAuditBy(sub && sub.submittedBy); return a.role==='SC' ? 'SC - '+a.name : 'CNF'; };
+  const stamp = sub => `${fmtD(sub.date)}${fmtT(sub.timestamp)?' '+fmtT(sub.timestamp):''}`;
+  const period = rep.fromDate===rep.toDate ? fmtD(rep.fromDate) : `${fmtD(rep.fromDate)} to ${fmtD(rep.toDate)}`;
+  const baseTxt = o.baseline==='within' ? 'the previous submission inside the period' : o.baseline==='chain' ? 'the submission right before each one' : "each CNF's last submission before the period";
+
+  /* ---- 1. title + summary ---- */
+  let top = `<div style="${F}color:#1f2933;background:#ffffff;">`
+    + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;"><tr><td bgcolor="#1f3a5f" style="background:#1f3a5f;color:#ffffff;padding:10px 12px;font-size:16px;font-weight:bold;${F}">MFD Entry Check &mdash; Comparison Report</td></tr>`
+    + `<tr><td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;padding:5px 12px;font-size:11px;${F}">Submissions dated <b>${E(period)}</b> compared with ${E(baseTxt)} &middot; Prepared ${E(fmtDT(new Date()))} IST</td></tr></table>`;
+  const worst = bad[0];
+  const headline = !nCompared ? 'No product could be compared for the selected CNFs.'
+    : !bad.length ? `<b>All clear.</b> ${stats.length} CNF(s) checked, ${nCompared} product(s) compared &mdash; no wrong MFD entry found.`
+    : `<b>${bad.length} of ${stats.length} CNFs</b> have MFD entries that look wrong (<b>${nWrong}</b> of ${nCompared} products compared). `
+      + `Most suspicious: <b>${E(worst.name)}</b> &mdash; ${worst.wrong.size} of ${worst.compared} products (${Math.round(worst.pct)}%).`
+      + (topType ? ` Most common problem: <b>${E(CMP_TYPES_[topType[0]].label)}</b> (${topType[1]} time${topType[1]>1?'s':''}).` : '');
+  top += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin:8px 0;"><tr><td bgcolor="#fff7e0" style="background:#fff7e0;color:#4a3500;border-left:5px solid #e67e22;padding:9px 12px;font-size:13px;${F}">${headline}</td></tr></table>`;
+  const cards = [
+    ['CNFs checked',            String(stats.length),   '#1f3a5f', '#e8eef5', 'with a submission to compare'],
+    ['CNFs with wrong MFD',     String(bad.length),     '#c0392b', '#fadbd8', 'at least one product wrong'],
+    ['Products compared',       String(nCompared),      '#34495e', '#e8eef5', 'last vs recent submission'],
+    ['Products wrong',          String(nWrong),         '#c2410c', '#fde2d4', nCompared?Math.round(nWrong/nCompared*100)+'% of compared':'&nbsp;'],
+  ];
+  const bd = 'border:2px solid #ffffff;';
+  const cRow = fn => '<tr>'+cards.map(fn).join('')+'</tr>';
+  top += `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:4px 0 10px 0;">`
+    + cRow(c=>`<td width="150" bgcolor="${c[2]}" align="center" style="background:${c[2]};color:#ffffff;${bd}padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">${c[0]}</td>`)
+    + cRow(c=>`<td bgcolor="${c[3]}" align="center" style="background:${c[3]};color:#14212e;${bd}padding:8px 8px 2px 8px;text-align:center;font-size:22px;font-weight:bold;${F}">${c[1]}</td>`)
+    + cRow(c=>`<td bgcolor="${c[3]}" align="center" style="background:${c[3]};color:#3b4752;${bd}padding:0 8px 6px 8px;text-align:center;font-size:11px;${F}">${c[4]}</td>`)
+    + `</table>`;
+
+  /* ---- 2. ranking: who entered MFD most wrongly ---- */
+  if(bad.length){
+    const heads = ['#','CNF / CFA','Stock submitted by','Products compared','Products wrong','% wrong','Same stock, MFD changed','Batch stock went up','Older batch appeared','MFD blank / changed','Suspicion'];
+    top += `<div style="font-size:14px;font-weight:bold;color:#1f3a5f;margin:6px 0 4px 0;${F}">Which CNF entered MFD most wrongly</div>`
+      + TBL + `<tr>${heads.map(x=>`<th style="${TH}">${x}</th>`).join('')}</tr>`;
+    bad.forEach((s,i)=>{
+      const bg = i%2 ? '#f6f8fa' : '#ffffff', sv = SEV[s.level], t = s.types;
+      const num = v => `<td bgcolor="${bg}" align="center" style="${TD}background:${bg};text-align:center;${v?'font-weight:bold;color:#8a1f11;':'color:#8a95a1;'}">${v||'&ndash;'}</td>`;
+      top += `<tr><td bgcolor="${bg}" align="center" style="${TD}background:${bg};text-align:center;font-weight:bold;">${i+1}</td>`
+        + `<td bgcolor="${bg}" style="${TD}background:${bg};font-weight:bold;">${E(s.name)} &middot; ${E(String(s.code))}</td>`
+        + `<td bgcolor="${bg}" style="${TD}background:${bg};">${E(s.lastCur?subBy(s.lastCur):'')}</td>`
+        + `<td bgcolor="${bg}" align="center" style="${TD}background:${bg};text-align:center;">${s.compared}</td>`
+        + `<td bgcolor="${bg}" align="center" style="${TD}background:${bg};text-align:center;font-weight:bold;">${s.wrong.size}</td>`
+        + `<td bgcolor="${bg}" align="center" style="${TD}background:${bg};text-align:center;font-weight:bold;">${Math.round(s.pct)}%</td>`
+        + num(t['Same qty, MFD changed']) + num(t['Batch qty increased']) + num(t['Older MFD appeared']) + num((t['MFD missing']||0)+(t['MFD changed']||0))
+        + `<td bgcolor="${sv.bg}" align="center" style="${TD}background:${sv.bg};color:${sv.fg};font-weight:bold;text-align:center;">${s.level}</td></tr>`;
+    });
+    top += `</table><table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin:4px 0 8px 0;"><tr><td bgcolor="#eef3f8" style="background:#eef3f8;color:#1f3a5f;border-left:4px solid #1f3a5f;padding:5px 9px;font-size:11px;${F}"><b>Suspicion</b> = share of compared products with a wrong MFD entry: <b>High</b> 30% or more &middot; <b>Medium</b> 10% to 30% &middot; <b>Low</b> below 10%. <b>Same stock, MFD changed</b> is the strongest sign &mdash; the stock did not change, so one of the two MFD entries must be wrong.</td></tr></table>`;
+  }
+  const clean = stats.filter(s=>s.wrong.size===0);
+  if(clean.length) top += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin:2px 0 8px 0;"><tr><td bgcolor="#e6f4ea" style="background:#e6f4ea;color:#1e5b2b;border-left:4px solid #1e8449;padding:5px 9px;font-size:11px;${F}"><b>No wrong MFD found (${clean.length}):</b> ${clean.map(s=>E(s.name)).join(', ')}</td></tr></table>`;
+
+  /* ---- 3. product-wise details per CNF, with merged cells ---- */
+  const parts = [];
+  const details = [];
+  if(o.detail!=='summary'){
+    const groups = new Map();
+    rep.out.forEach(x=>{
+      const code = String(x.cur.sub.cnfCode); if(o.cnfCodes && !o.cnfCodes.has(code)) return;
+      const k = code+'|'+x.cur.code;
+      const g = groups.get(k) || {cnfCode:code, code:x.cur.code, name:x.cur.name, snaps:new Map(), curIds:new Set(), flags:[]};
+      g.snaps.set(x.prev.sub.id, x.prev); g.snaps.set(x.cur.sub.id, x.cur); g.curIds.add(x.cur.sub.id); g.flags.push(...x.flags);
+      groups.set(k, g);
+    });
+    const byCnf = new Map();
+    [...groups.values()].forEach(g=>{
+      const snapList = [...g.snaps.values()].sort((a,b)=>new Date(a.sub.timestamp)-new Date(b.sub.timestamp));
+      const rowsMeta = [];
+      let hasWrong = false, hasReview = false;
+      snapList.forEach(snap=>{
+        Object.keys(snap.batches).sort((a,b)=> a==='No MFD'?1 : b==='No MFD'?-1 : a.localeCompare(b)).forEach(m=>{
+          const mk = rep.marks[snap.sub.id+'|'+snap.code+'|'+m];
+          if(mk && (mk.level==='wrong'||mk.level==='conflict')) hasWrong = true;
+          if(mk && mk.level==='review') hasReview = true;
+          rowsMeta.push({snap, m, mk});
+        });
+      });
+      if(!(hasWrong || (o.includeReview && hasReview))) return;
+      const wrongFlags = g.flags.filter(f=>CMP_TYPES_[f.type] && CMP_TYPES_[f.type].wrong).sort((a,b)=>CMP_TYPES_[b.type].score-CMP_TYPES_[a.type].score);
+      const verdict = wrongFlags.length ? CMP_TYPES_[wrongFlags[0].type].label : 'Please review';
+      const list = byCnf.get(g.cnfCode) || []; list.push({g, snapList, rowsMeta, verdict, hasWrong}); byCnf.set(g.cnfCode, list);
+    });
+
+    const SEVR = {High:3, Medium:2, Low:1};
+    const sideTable_ = (s, items)=>{
+      const heads = ['#','Product','Last submission<br>MFD &middot; stock','Recent submission<br>MFD &middot; stock','Total stock (kg)<br>Last &rarr; Recent','Severity','Action required'];
+      const widths = [28,165,150,160,118,66,250];
+      let h = `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin-top:12px;"><tr><td bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(s.name)} &middot; ${E(String(s.code))} &nbsp;|&nbsp; Last submission ${E(fmtD(s.firstPrev.date))} &rarr; Recent submission ${E(fmtD(s.lastCur.date))} &nbsp;|&nbsp; Stock Submitted by ${E(subBy(s.lastCur))} &nbsp;|&nbsp; ${items.length} product(s) to check</td></tr></table>`
+        + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;"><tr>${heads.map((x,i)=>`<th width="${widths[i]}" style="${TH}">${x}</th>`).join('')}</tr>`;
+      items.forEach((it,i)=>{
+        const prev = it.snapList[0], cur = it.snapList[it.snapList.length-1];
+        const bg = i%2 ? '#f6f8fa' : '#ffffff';
+        const sev = it.g.flags.reduce((m,f)=> SEVR[f.sev]>SEVR[m] ? f.sev : m, 'Low');
+        const sc = CMP_SEVERITY_COLORS[sev];
+        const lvl = (snap,m)=>{ const mk = rep.marks[snap.sub.id+'|'+snap.code+'|'+m]; return mk ? mk.level : null; };
+        const lines = (snap, who)=> Object.keys(snap.batches).sort((a,b)=> a==='No MFD'?1 : b==='No MFD'?-1 : a.localeCompare(b)).map(m=>{
+          const lv = lvl(snap,m), show = lv && (lv!=='review' || o.includeReview);
+          const kg = (Math.round(snap.batches[m]*10)/10).toLocaleString('en-IN');
+          const txt = `${E(fmtD(m))} &middot; ${E(kg)} kg`;
+          if(!show) return txt;
+          const col = lv==='wrong' ? '#b3261e' : lv==='conflict' ? '#b45309' : '#8a6d00';
+          return `<font color="${col}"><b>${lv==='wrong'?'&#10006; ':'&#9888; '}${txt}</b></font>`;
+        }).join('<br>');
+        const anyBad = snap => Object.keys(snap.batches).some(m=>{ const lv = lvl(snap,m); return lv && (lv!=='review' || o.includeReview); });
+        const lastBg = anyBad(prev) ? '#fde2c4' : '#e8eef5', recBg = anyBad(cur) ? '#f8d0cc' : '#fdf2e2';
+        const delta = cur.kg - prev.kg, dTxt = (delta>0?'+':delta<0?'&minus;':'')+E((Math.round(Math.abs(delta)*10)/10).toLocaleString('en-IN'));
+        const dBg = Math.abs(delta)<0.05 ? '#e5e8eb' : delta>0 ? '#fadbd8' : '#d5f5e3', dFg = Math.abs(delta)<0.05 ? '#3b4752' : delta>0 ? '#8a1f11' : '#1e5b2b';
+        const types = []; it.g.flags.forEach(f=>{ if(CMP_TYPES_[f.type] && (CMP_TYPES_[f.type].wrong || o.includeReview) && !types.includes(f.type)) types.push(f.type); });
+        types.sort((a,b)=>CMP_TYPES_[b].score-CMP_TYPES_[a].score);
+        const action = types.slice(0,2).map(t=>CMP_ACTION_[t]).join(' ');
+        h += `<tr><td bgcolor="${bg}" align="center" valign="top" style="${TD}background:${bg};text-align:center;vertical-align:top;font-weight:bold;">${i+1}</td>`
+          + `<td bgcolor="${bg}" valign="top" style="${TD}background:${bg};vertical-align:top;"><b>${E(it.g.name)}</b><br><font color="#5a6772" size="1">Code ${E(String(it.g.code))}</font><br><font color="#8a1f11"><b>${E(it.verdict)}</b></font></td>`
+          + `<td bgcolor="${lastBg}" valign="top" style="${TD}background:${lastBg};vertical-align:top;">${lines(prev)}<br><font color="#5a6772" size="1">${E(fmtD(prev.sub.date))} &middot; by ${E(subBy(prev.sub))}</font></td>`
+          + `<td bgcolor="${recBg}" valign="top" style="${TD}background:${recBg};vertical-align:top;">${lines(cur)}<br><font color="#5a6772" size="1">${E(fmtD(cur.sub.date))} &middot; by ${E(subBy(cur.sub))}</font></td>`
+          + `<td bgcolor="${dBg}" align="center" valign="top" style="${TD}background:${dBg};color:${dFg};text-align:center;vertical-align:top;font-weight:bold;">${E((Math.round(prev.kg*10)/10).toLocaleString('en-IN'))} &rarr; ${E((Math.round(cur.kg*10)/10).toLocaleString('en-IN'))}<br>(${dTxt} kg)</td>`
+          + `<td bgcolor="${sc.bg}" align="center" valign="top" style="${TD}background:${sc.bg};color:${sc.fg};text-align:center;vertical-align:top;font-weight:bold;">${sev}</td>`
+          + `<td bgcolor="#fff7e0" valign="top" style="${TD}background:#fff7e0;color:#4a3500;vertical-align:top;">${E(action||'Please review this entry.')}</td></tr>`;
+      });
+      return h + `</table>`;
+    };
+    const orderedCnf = stats.filter(s=>byCnf.has(String(s.code)));
+    orderedCnf.forEach(s=>{
+      const items = byCnf.get(String(s.code)).sort((a,b)=> (b.hasWrong-a.hasWrong) || ((SEVR[b.g.flags.reduce((m,f)=>SEVR[f.sev]>SEVR[m]?f.sev:m,'Low')]||0)-(SEVR[a.g.flags.reduce((m,f)=>SEVR[f.sev]>SEVR[m]?f.sev:m,'Low')]||0)) || String(a.g.code).localeCompare(String(b.g.code),undefined,{numeric:true}));
+      const nRows = items.reduce((t,it)=>t+(o.layout==='merged'?it.rowsMeta.length:2),0);
+      if(o.layout!=='merged'){ details.push({html:sideTable_(s, items), rows:nRows, name:s.name}); return; }
+      const heads = ['Product','Submission','MFD','Stock (kg)','Check','What is wrong'];
+      const widths = [170,112,82,64,142,300];
+      let h = `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin-top:12px;"><tr><td bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(s.name)} &middot; ${E(String(s.code))} &nbsp;|&nbsp; Last submission ${E(fmtD(s.firstPrev.date))} &rarr; Recent submission ${E(fmtD(s.lastCur.date))} &nbsp;|&nbsp; Stock Submitted by ${E(subBy(s.lastCur))} &nbsp;|&nbsp; ${items.length} product(s) to check</td></tr></table>`
+        + `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;"><tr>${heads.map((x,i)=>`<th width="${widths[i]}" style="${TH}">${x}</th>`).join('')}</tr>`;
+      items.forEach((it,pi)=>{
+        const bg = pi%2 ? '#f6f8fa' : '#ffffff';
+        const bySnap = [];
+        it.snapList.forEach(snap=>{ bySnap.push({snap, rows: it.rowsMeta.filter(r=>r.snap===snap)}); });
+        let first = true;
+        bySnap.forEach((bs,si)=>{
+          const isFirstSnap = si===0;
+          const sBg = isFirstSnap ? '#e8eef5' : '#fdf2e2';
+          bs.rows.forEach((r,ri)=>{
+            h += '<tr>';
+            if(first){
+              h += `<td rowspan="${it.rowsMeta.length}" valign="top" bgcolor="${bg}" style="${TD}background:${bg};vertical-align:top;"><b>${E(it.g.name)}</b><br><font color="#5a6772" size="1">Code ${E(String(it.g.code))}</font><br><font color="#8a1f11"><b>${E(it.verdict)}</b></font></td>`;
+              first = false;
+            }
+            if(ri===0){
+              h += `<td rowspan="${bs.rows.length}" valign="top" bgcolor="${sBg}" style="${TD}background:${sBg};vertical-align:top;"><b>${isFirstSnap?'Last submission':'Recent submission'}</b><br>${E(stamp(bs.snap.sub))}<br><font color="#5a6772" size="1">by ${E(subBy(bs.snap.sub))}</font></td>`;
+            }
+            const ui = r.mk ? LEVEL_UI[r.mk.level] : null;
+            const showUi = ui && (r.mk.level!=='review' || o.includeReview);
+            const ck = showUi ? ui : {label:'&#10004; OK', bg:'#dff0e0', fg:'#1e5b2b'};
+            const mfdBg = showUi ? ck.bg : bg;
+            h += `<td bgcolor="${mfdBg}" style="${TD}background:${mfdBg};${showUi?`color:${ck.fg};font-weight:bold;`:''}white-space:nowrap;">${E(fmtD(r.m))}</td>`
+              + `<td bgcolor="${bg}" align="right" style="${TD}background:${bg};text-align:right;">${E((Math.round(bs.snap.batches[r.m]*10)/10).toLocaleString('en-IN'))}</td>`
+              + `<td bgcolor="${ck.bg}" style="${TD}background:${ck.bg};color:${ck.fg};font-weight:bold;">${ck.label}</td>`
+              + `<td bgcolor="${bg}" style="${TD}background:${bg};">${showUi ? E(dmyText_(r.mk.issues.join('; '))) : ''}</td></tr>`;
+          });
+        });
+      });
+      h += `</table>`;
+      details.push({html:h, rows:nRows, name:s.name});
+    });
+  }
+  /* ---- split into parts ---- */
+  const MAXROWS = o.maxRows || 90;
+  let cur = top, curRows = 0, curNames = [];
+  const flush = last => { parts.push({html: cur + (last?'':'') + `</div>`, names:curNames.slice()}); cur = `<div style="${F}color:#1f2933;background:#ffffff;">`; curRows = 0; curNames = []; };
+  details.forEach(d=>{
+    if(curRows && curRows + d.rows > MAXROWS) flush();
+    cur += d.html; curRows += d.rows; curNames.push(d.name);
+  });
+  flush(true);
+  return {parts: parts.map(p=>hardenEmailHtml_(p.html)), partNames: parts.map(p=>p.names), stats, nWrong, nCompared, nBad: bad.length};
+}
+function CmpEmailCard_(){
+  const cnfs = state.masters.cnfs.filter(c=>latestSubmissionFor(c.code) && !isDemoCnf(c)).slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  const selCnf = new Set(cmlCnfCodes_());
+  const box = 'display:inline-flex;align-items:center;gap:5px;margin:3px 12px 3px 0;font-size:12.5px;white-space:nowrap;';
+  return `<div class="panel-card">
+    <h4>📧 Email Body Report — MFD Comparison (paste-ready)</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;line-height:1.5;">A clear, colour-coded e-mail for the comparison: <b>summary on top</b>, then <b>which CNF entered MFD most wrongly</b>, then <b>product-wise details</b> (last submission vs recent submission, merged cells) for each CNF. It uses the <b>Period</b> and <b>Compare against</b> choices of the Comparison Report card above. Copy / image options are the same as the stock e-mail.</p>
+    <div style="font-weight:600;font-size:12.5px;margin-top:6px;">Select CNFs <span style="font-weight:400;color:var(--ink-soft);">(tick = include, untick = exclude)</span></div>
+    <div style="margin:4px 0;display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn" id="cmlCnfAll" type="button">Select all</button>
+      <button class="btn" id="cmlCnfNone" type="button">Clear all</button>
+      <input id="cmlCnfSearch" placeholder="CNF search…" style="max-width:180px;">
+      <span id="cmlCnfCount" style="align-self:center;font-size:12px;color:var(--ink-soft);"></span>
+    </div>
+    <div id="cmlCnfList" style="max-height:170px;overflow:auto;border:1px solid var(--line,#ddd);border-radius:6px;padding:6px 8px;">
+      ${cnfs.map(c=>`<label style="${box}" data-n="${escapeHtml((c.name+' '+c.code).toLowerCase())}"><input type="checkbox" data-cmlcnf="${escapeHtml(c.code)}" ${selCnf.has(c.code)?'checked':''}> ${escapeHtml(c.name)} · ${escapeHtml(c.code)}</label>`).join('')}
+    </div>
+    <div class="formgrid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-top:10px;align-items:end;">
+      <div class="fg"><label>Layout</label><select id="cmlLayout"><option value="side">Side-by-side (recommended)</option><option value="merged">Merged blocks (every MFD line)</option></select></div>
+      <div class="fg"><label>Detail level</label><select id="cmlDetail"><option value="full">Summary + product-wise details</option><option value="summary">Summary only</option></select></div>
+      <div class="fg"><label style="text-transform:none;font-size:12px;"><input type="checkbox" id="cmlReview"> Also list “Please review” items (big stock swings, far from SAP)</label></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      <button class="btn btn-primary" id="btnCmlBuild">📧 Build Comparison E-mail</button>
+      <button class="btn" id="btnCmlCopy" style="display:none;">📋 Copy for Email</button>
+      <button class="btn btn-primary" id="btnCmlImage" style="display:none;">🖼 Copy as Image (never hangs)</button>
+      <button class="btn" id="btnCmlDownload" style="display:none;">⬇ Save as .html</button>
+    </div>
+    <div id="cmlMsg" style="margin-top:8px;font-size:12px;color:var(--ink-soft);"></div>
+    <div id="cmlParts"></div>
+    <div id="cmlPreview" style="margin-top:12px;overflow:auto;max-height:560px;background:#ffffff;color:#1f2933;border-radius:6px;display:none;"></div>
+  </div>`;
+}
+function bindCmpEmail_(){
+  const b = document.getElementById('btnCmlBuild'); if(!b) return;
+  const cp = document.getElementById('btnCmlCopy'), dl = document.getElementById('btnCmlDownload'), im = document.getElementById('btnCmlImage');
+  const pv = document.getElementById('cmlPreview'), msg = document.getElementById('cmlMsg'), cntEl = document.getElementById('cmlCnfCount');
+  const refresh = ()=>{ if(cntEl) cntEl.textContent = cmlCnfCodes_().length+' CNF selected'; };
+  refresh();
+  const boxes = ()=>Array.from(document.querySelectorAll('[data-cmlcnf]'));
+  const sync = ()=>{ state.cmlCnfSel = boxes().filter(x=>x.checked).map(x=>x.getAttribute('data-cmlcnf')); refresh(); };
+  boxes().forEach(x=>x.onchange = sync);
+  const all = document.getElementById('cmlCnfAll'), none = document.getElementById('cmlCnfNone'), srch = document.getElementById('cmlCnfSearch');
+  if(all) all.onclick = ()=>{ boxes().forEach(x=>x.checked = true); sync(); };
+  if(none) none.onclick = ()=>{ boxes().forEach(x=>x.checked = false); sync(); };
+  if(srch) srch.oninput = ()=>{ const q = srch.value.trim().toLowerCase(); document.querySelectorAll('#cmlCnfList label').forEach(l=>{ l.style.display = !q || l.getAttribute('data-n').includes(q) ? '' : 'none'; }); };
+  b.onclick = async ()=>{
+    const sel0 = compareRange(), eff = effectiveCompareRange(sel0);
+    if(!eff.from || !eff.to || eff.from>eff.to){ msg.textContent = 'Pick a valid period in the Comparison Report card above.'; return; }
+    if(!cmlCnfCodes_().length){ msg.textContent = 'Select at least one CNF.'; return; }
+    msg.textContent = 'Fetching latest data and submission history…';
+    try{
+      const fresh = await refreshBeforeExport(); warnIfStale(fresh);
+      const histOk = await loadHistoryForReport();
+      const inRange = subsInRange(eff.from, eff.to, 'ALL');
+      const pool = state.submissions.filter(s=>!isDemoCode_(s.cnfCode));
+      if(!inRange.length){ msg.textContent = noSubsMessage({from:eff.from, to:eff.to, cnf:'ALL'}, histOk); return; }
+      const rep = buildComparisonReport(inRange, eff.from, eff.to, pool, 'All CNFs', {baseline: sel0.baseline, histOk});
+      const o = {cnfCodes:new Set(cmlCnfCodes_().map(String)), detail:document.getElementById('cmlDetail').value, layout:document.getElementById('cmlLayout').value, includeReview:document.getElementById('cmlReview').checked, baseline:sel0.baseline};
+      const res = buildCmpEmailParts_(rep, o);
+      if(!res.stats.length){ msg.textContent = 'Nothing to compare for the selected CNFs in this period (no earlier submission of the same product).'; return; }
+      pv._parts = res.parts; pv._html = res.parts.join('<div style="height:10px;line-height:10px;">&nbsp;</div>');
+      setHtml_(pv, pv._html); pv.style.display = 'block';
+      const box = document.getElementById('cmlParts'); box.textContent = '';
+      if(res.parts.length>1){
+        const lab = document.createElement('div'); lab.style.cssText='font-size:12px;margin:8px 0 4px;color:var(--ink-soft);';
+        lab.textContent = 'Large report — paste one part at a time (Part 1 has the summary):'; box.appendChild(lab);
+        res.parts.forEach((p,i)=>{
+          const n = res.partNames[i]; const btn = document.createElement('button'); btn.type='button'; btn.className='btn'; btn.style.cssText='margin:2px 6px 2px 0;';
+          btn.textContent = `📋 Copy part ${i+1}/${res.parts.length}` + (i===0?' (summary':' (') + (n.length ? (i===0?' + ':'')+n.length+' CNF' : '') + ')';
+          btn.onclick = async ()=>{ const ok = await copyEmailHtml_(p); showToast(ok ? `✓ Part ${i+1}/${res.parts.length} copied — paste it into the email` : '⚠ Copy failed'); };
+          box.appendChild(btn);
+        });
+      }
+      cp.style.display = dl.style.display = im.style.display = '';
+      msg.textContent = `${res.stats.length} CNF checked · ${res.nBad} with wrong MFD · ${res.nWrong} of ${res.nCompared} products wrong · ${Math.round(pv._html.length/1024)} KB${histOk?'':' · ⚠ server history not loaded, some CNFs may be missing'}.`;
+    }catch(e){ msg.textContent = 'Could not build the report: '+((e&&e.message)||e); }
+  };
+  cp.onclick = async ()=>{ const ok = await copyEmailHtml_(pv._html||''); showToast(ok ? '✓ Copied — press Ctrl+V in the email body' : '⚠ Copy failed — select the preview and press Ctrl+C'); };
+  im.onclick = async ()=>{
+    if(!pv.firstElementChild) return;
+    im.disabled = true; msg.textContent = 'Building image…';
+    try{
+      if(!window.html2canvas){
+        await new Promise((ok,bad)=>{ const sc=document.createElement('script'); sc.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'; sc.onload=ok; sc.onerror=()=>bad(new Error('Could not load the image tool (check internet)')); document.head.appendChild(sc); });
+      }
+      const prevMax = pv.style.maxHeight; pv.style.maxHeight='none';
+      const scale = Math.max(0.5, Math.min(2, 14000/Math.max(pv.scrollHeight,1), 14000/Math.max(pv.scrollWidth,1)));
+      const canvas = await window.html2canvas(pv,{backgroundColor:'#ffffff',scale,useCORS:true,logging:false});
+      pv.style.maxHeight = prevMax;
+      const blob = await new Promise(r=>canvas.toBlob(r,'image/png'));
+      if(!blob) throw new Error('This report is too tall for a single image — select fewer CNFs or use "Summary only".');
+      let copied = false;
+      try{ if(navigator.clipboard && window.ClipboardItem){ await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]); copied = true; } }catch(e){}
+      if(copied){ showToast('✓ Image copied — press Ctrl+V in the email body'); msg.textContent='Image copied — press Ctrl+V in Outlook.'; }
+      else{ const u = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=u; a.download='mfd-comparison-email-'+todayISO()+'.png'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u); msg.textContent='The browser blocked copying — a PNG was downloaded instead. In the email use Insert → Pictures.'; }
+    }catch(e){ msg.textContent = 'Could not build the image: '+((e&&e.message)||e); }
+    im.disabled = false;
+  };
+  dl.onclick = ()=>{
+    const doc = '<!doctype html><html><head><meta charset="utf-8"><title>MFD Comparison Report</title></head><body>'+(pv._html||'')+'</body></html>';
+    const u = URL.createObjectURL(new Blob([doc],{type:'text/html'})); const a = document.createElement('a'); a.href=u; a.download='mfd-comparison-email-'+todayISO()+'.html'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
+  };
 }
 async function copyEmailHtml_(html){
   try{
@@ -9014,6 +9358,7 @@ function bindGlobal(){
   if(btnExport) btnExport.onclick = runExport;
   bindSubmitterFix_();
   bindEmailReport_();
+  bindCmpEmail_();
   const bindRange = (getter, ids)=>{
     const [f,t,c] = ids.map(i=>document.getElementById(i));
     if(f) f.onchange = ()=>{ getter().from = f.value; };
