@@ -449,6 +449,7 @@ table.dtable td.mono,table.dtable th.mono{font-family:var(--mono);}
 .chip{font-family:var(--mono);font-size:10.5px;padding:5px 10px;border-radius:20px;border:1px solid var(--line);background:var(--input-bg);color:var(--muted-text);}
 .chip.on{background:var(--wheat);border-color:var(--wheat);color:var(--on-accent);font-weight:700;}
 
+.dt{white-space:nowrap;}
 .formgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:12px;}
 .formgrid .fg label{display:block;font-family:var(--mono);font-size:9px;text-transform:uppercase;color:var(--wheat-dim);margin-bottom:4px;letter-spacing:.4px;}
 .formgrid .fg input,.formgrid .fg select{width:100%;padding:8px 9px;border-radius:7px;border:1px solid var(--line);background:var(--input-bg);color:var(--surface-text);font-size:12.5px;}
@@ -561,11 +562,33 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 // 18th, so .toISOString() reports the 18th. That mismatch is exactly what
 // caused "today's" stock date, submit-date range, and auto-downloaded
 // filenames to show yesterday's date for early-morning submissions.
+// Everything in this app is shown in Indian Standard Time (IST) and as DD-MM-YYYY,
+// whatever time zone or locale the device itself is set to.
+const IST_TZ = 'Asia/Kolkata';
+function istParts_(v){
+  if(typeof v==='string' && !/^\d{4}-\d{2}-\d{2}/.test(v.trim())) return null; // only ISO timestamps are converted
+  const d = v instanceof Date ? v : new Date(v);
+  if(isNaN(d.getTime())) return null;
+  const o = {};
+  new Intl.DateTimeFormat('en-GB',{timeZone:IST_TZ,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(d).forEach(x=>{ o[x.type]=x.value; });
+  if(o.hour==='24') o.hour='00';
+  return o;
+}
+// Date only -> DD-MM-YYYY. A plain YYYY-MM-DD is just re-ordered (no time-zone shift); a full timestamp is converted to IST first.
+function fmtD(v){
+  if(v==null || v==='') return '';
+  const t = String(v).trim();
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m) return `${m[3]}-${m[2]}-${m[1]}`;
+  if(/^\d{2}-\d{2}-\d{4}$/.test(t)) return t;
+  if(v instanceof Date || /^\d{4}-\d{2}-\d{2}[T ]/.test(t)){ const q = istParts_(v instanceof Date ? v : t); return q ? `${q.day}-${q.month}-${q.year}` : t; }
+  return t;
+}
+function fmtT(v, withSec){ const q = v ? istParts_(v) : null; return q ? `${q.hour}:${q.minute}${withSec?':'+q.second:''}` : ''; }
+function fmtDT(v){ const q = v ? istParts_(v) : null; return q ? `${q.day}-${q.month}-${q.year} ${q.hour}:${q.minute}` : ''; }
 function localDateISO(d){
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth()+1).padStart(2,'0');
-  const dd = String(d.getDate()).padStart(2,'0');
-  return `${yyyy}-${mm}-${dd}`;
+  const q = istParts_(d);
+  return q ? `${q.year}-${q.month}-${q.day}` : '';
 }
 const todayISO = () => localDateISO(new Date());
 // Stock submission date is deliberately restricted to "current stock" only —
@@ -890,7 +913,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.85';
+const APP_VERSION = '2026-08-24.86';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -1476,8 +1499,8 @@ async function syncSubmission(sub){
 // what they submitted even if the network/backend is the problem, not them.
 function downloadSubmissionBackup(sub){
   const headers = ['Submission ID','CNF Code','CNF Name','Stock Date','Timestamp','Product Code','Product Name','Category','Entered Qty','UOM','KG','MFD','SAP Qty (kg)','Variance Reason','Submitted By'];
-  const rows = sub.items.map(it=>[sub.id, sub.cnfCode, sub.cnfName, sub.date, sub.timestamp, it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), it.mfd||'', it.sapQtyKg??'', it.varianceReason||'', sub.submittedBy]);
-  exportGenericCsv(`UNSYNCED-${sub.id}-${sub.date}.csv`, headers, rows);
+  const rows = sub.items.map(it=>[sub.id, sub.cnfCode, sub.cnfName, fmtD(sub.date), sub.timestamp, it.code, it.name, it.category, it.qty, it.uom, it.kgQty.toFixed(2), fmtD(it.mfd), it.sapQtyKg??'', it.varianceReason||'', sub.submittedBy]);
+  exportGenericCsv(`UNSYNCED-${sub.id}-${fmtD(sub.date)}.csv`, headers, rows);
 }
 
 // One column, one concrete task — this looks at BOTH signals a line can
@@ -1574,7 +1597,7 @@ function buildDetailedReportRows(sub){
     const safetyStat = safetyStatusFor(it, p);
     const safetyNorm = safetyNormFor(it, p);
     const shortfall = safetyStat==='low' ? (safetyNorm - it.kgQty).toFixed(1) : safetyStat==='ok' ? 'No Shortfall' : '';
-    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, it.mfd||'', st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||'', auditByLabel(sub)];
+    return [it.code, it.name, it.category, it.qty, safeUomLabel(it.uom), it.kgQty.toFixed(2), p&&p.bagToKg?p.bagToKg:'', bagEquiv, p&&p.pcToKg?p.pcToKg:'', pcEquiv, fmtD(it.mfd), st.age??'', st.life??'', st.remaining??'', (st.label ? ageingStatusCell(st) : ''), recommendedAction(st.cls, safetyStat==='low'), safetyNorm, safetyStatusLabel(safetyStat), shortfall, it.sapQtyKg??'', it.approvedOrder??'', it.pendingOrder??'', it.varianceReason||'', auditByLabel(sub)];
   });
   // CNF/CFA-code-wise Summary — becomes sheet ONE of the workbook. Built from
   // the submission itself, so every download (fresh, re-download, History,
@@ -1627,10 +1650,10 @@ function buildDetailedReportRows(sub){
   const summaryTable = {
     title: 'PRODUCT-WISE SUMMARY',
     headers: ['Product Code','Product Name','Category','Total Stock (kg)','Batches / Lines','Oldest MFD','Worst Status'],
-    rows: Object.values(byProd).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).map(o=>[o.code,o.name,o.cat,kf(o.kg),o.lines,o.mfd,o.label]),
+    rows: Object.values(byProd).sort((a,b)=>String(a.code).localeCompare(String(b.code),undefined,{numeric:true})).map(o=>[o.code,o.name,o.cat,kf(o.kg),o.lines,fmtD(o.mfd),o.label]),
     statusColIndex: 6,
   };
-  return {headers, rows, summaryRows, summaryTable, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${sub.date}.csv`};
+  return {headers, rows, summaryRows, summaryTable, statusColIndex: headers.indexOf('Status'), filename: `${sub.cnfCode}-detailed-report-${fmtD(sub.date)}.csv`};
 }
 
 // Builds an HTML table of just the ageing-flagged lines (Ageing/Critical/
@@ -1659,7 +1682,7 @@ function buildAgeingHighlightTableHtml(sub){
   const rowsHtml = flagged.map(({it,st})=>
     `<tr><td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.code}</td>` +
     `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.name}</td>` +
-    `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.mfd||''}</td>` +
+    `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${fmtD(it.mfd)||''}</td>` +
     `<td style="padding:5px 8px;border:1px solid #e0d5bd;">${it.kgQty.toFixed(1)} kg</td>` +
     `<td style="padding:5px 8px;border:1px solid #e0d5bd;background:${colorFor(st.cls)};color:${st.cls==='ageing'?'#3a2c00':st.cls==='critical'?'#2b1400':'#ffffff'};font-weight:bold;">${st.label} (${st.remaining}d left)</td></tr>`
   ).join('');
@@ -1965,7 +1988,7 @@ function AttentionPanel(attention, totalFlagged, opts){
   return `<div class="attn-panel ${opts.dark?'dark':''}">
     <div class="attn-head">⚠ Needs Attention <span class="num">${totalFlagged}</span> <span class="attn-sub">near expiry, ageing &amp; slow-moving, worst first</span></div>
     ${attention.map(a=>`<div class="attn-row attn-${a.status.cls}" ${opts.clickable?`data-attn="${a.code}|${a.mfd||''}"`:''}>
-      <div class="an"><b>${a.name}</b><div class="am">${a.code} · ${a.kgQty.toFixed(1)}kg · MFD ${a.mfd||'—'} · ${a.status.age}d old${opts.showCnf&&a.cnfName?` · ${a.cnfName}`:''}${a.slowMoving?' · <span style="color:var(--orange);">Slow Moving</span>':''}</div></div>
+      <div class="an"><b>${a.name}</b><div class="am">${a.code} · ${a.kgQty.toFixed(1)}kg · MFD ${fmtD(a.mfd)||'—'} · ${a.status.age}d old${opts.showCnf&&a.cnfName?` · ${a.cnfName}`:''}${a.slowMoving?' · <span style="color:var(--orange);">Slow Moving</span>':''}</div></div>
       <span class="badge ${a.status.cls}">${a.status.label}</span>
     </div>`).join('')}
   </div>`;
@@ -2199,6 +2222,8 @@ async function handleSapUpload(file){
 function cleanDateField(raw){
   const s = String(raw||'');
   if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10); // already clean (or ISO-with-time) — just trim
+  const dm = s.trim().match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/); // DD-MM-YYYY, as shown in the app and in exports
+  if(dm) return `${dm[3]}-${dm[2].padStart(2,'0')}-${dm[1].padStart(2,'0')}`;
   const parsed = new Date(s);
   return isNaN(parsed.getTime()) ? s : localDateISO(parsed); // recovers from a verbose Date.toString() dump
 }
@@ -2538,7 +2563,7 @@ function NotificationBell(){
         <div class="notif-grp">New Submissions <span class="num">${newSubmissions.length}</span></div>
         ${newSubmissions.slice(0,15).map(s=>`<div class="notif-item" data-notifcnf="${s.cnfCode}">
           <div><b>${s.cnfName}</b> <span class="mono">${s.cnfCode}</span></div>
-          <div class="notif-sub">${new Set(s.items.map(i=>i.code)).size} products · ${s.date} · ${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div>
+          <div class="notif-sub">${new Set(s.items.map(i=>i.code)).size} products · ${fmtD(s.date)} · ${fmtT(s.timestamp)}</div>
         </div>`).join('')}
       ` : `<div class="notif-empty">No new submissions since you last checked.</div>`}
       ${overdueCnfs.length ? `
@@ -3002,7 +3027,7 @@ function ScPanel(){
       <div class="section-title" style="margin-top:22px;">My recent audits <span class="num">${my.length}</span></div>
       <div class="tablewrap"><table class="dtable">
         <thead><tr><th>Date</th><th>CNF</th><th>Status</th><th>Lines</th><th>Stock (kg)</th></tr></thead>
-        <tbody>${my.slice(0,40).map(a=>`<tr><td class="mono">${escapeHtml(a.date)}</td><td>${escapeHtml(a.cnfName)} <span class="mono">· ${escapeHtml(a.cnfCode)}</span></td><td>${escapeHtml(a.status)}</td><td>${a.lines}</td><td>${a.kg}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No audits yet.</td></tr>'}</tbody>
+        <tbody>${my.slice(0,40).map(a=>`<tr><td class="mono">${escapeHtml(fmtD(a.date))}</td><td>${escapeHtml(a.cnfName)} <span class="mono">· ${escapeHtml(a.cnfCode)}</span></td><td>${escapeHtml(a.status)}</td><td>${a.lines}</td><td>${a.kg}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">No audits yet.</td></tr>'}</tbody>
       </table></div>
     </div>
   </div>`;
@@ -3073,7 +3098,7 @@ function CnfMessages(){
   return `<div class="section-title">Messages <span class="num">${msgs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">rates, schemes, and updates from Admin/Back Office</span></div>
   ${msgs.map(m=>`
     <div class="msg-card">
-      <div class="msg-card-top"><b>${escapeHtml(m.subject||'(no subject)')}</b><span class="msg-card-time">${new Date(m.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</span></div>
+      <div class="msg-card-top"><b>${escapeHtml(m.subject||'(no subject)')}</b><span class="msg-card-time">${fmtDT(m.timestamp)}</span></div>
       <div class="msg-card-body">${escapeHtml(m.body||'').replace(/\n/g,'<br>')}</div>
       <div class="msg-card-from">— ${escapeHtml(m.fromName||m.fromRole)} (${m.fromRole==='admin'?'Admin':'Back Office'})${m.targetType==='SPECIFIC'?' · sent just to you':' · sent to all CNFs'}</div>
     </div>`).join('') || '<div class="empty">No messages yet.</div>'}
@@ -3135,7 +3160,7 @@ function CnfDashboard(){
         : `Last submitted <b>${cadence.days} day${cadence.days!==1?'s':''} ago</b> · next due within ${Math.max(0,cadence.freq-cadence.days)} day${(cadence.freq-cadence.days)!==1?'s':''}.`}
   </div>
   <div class="kpi-row">
-    <div class="kpi"><div class="lbl">Last Submission</div><div class="val" style="font-size:15px;">${sub ? new Date(sub.timestamp).toLocaleDateString('en-IN',{day:'2-digit',month:'short'}) : '—'}</div></div>
+    <div class="kpi"><div class="lbl">Last Submission</div><div class="val" style="font-size:15px;">${sub ? fmtD(sub.timestamp) : '—'}</div></div>
     <div class="kpi"><div class="lbl">Status</div><div class="val" style="font-size:15px;">${sub ? '<span style=\"color:var(--green)\">Submitted</span>' : '<span style=\"color:var(--red)\">Pending</span>'}</div></div>
   </div>
   <div class="kpi-row four">
@@ -3148,7 +3173,7 @@ function CnfDashboard(){
     <div><div class="t1">Submit Current Physical Stock</div><div class="t2">${state.sapUpload ? `SAP file loaded · ${state.sapUpload.rows.length} items → Validate with MFD → Submit` : 'Upload SAP Current Stock → Validate with MFD → Submit'}</div></div>
     <div class="arrow">→</div>
   </button>
-  ${sub && sub.sapFileName ? `<div class="hist-item" style="margin-bottom:14px;"><div><div class="d" style="font-size:12px;">Last submission's SAP source</div><div class="m">${sub.sapFileName}${sub.sapUploadedAt?' · uploaded '+new Date(sub.sapUploadedAt).toLocaleString('en-IN'):''}</div></div></div>` : ''}
+  ${sub && sub.sapFileName ? `<div class="hist-item" style="margin-bottom:14px;"><div><div class="d" style="font-size:12px;">Last submission's SAP source</div><div class="m">${sub.sapFileName}${sub.sapUploadedAt?' · uploaded '+fmtDT(sub.sapUploadedAt):''}</div></div></div>` : ''}
 
   ${AttentionPanel(attention, totalFlagged)}
 
@@ -3158,13 +3183,13 @@ function CnfDashboard(){
       const p = state.masters.products.find(pp=>pp.code===it.code);
       if(!p) return ''; // orphaned reference — product no longer in the master (e.g. after a full replace); skip rather than crash
       const st = ageingStatus(p, it.mfd);
-      return `<div class="attn-row attn-${st.cls}"><div class="an"><b>#${i+1} ${it.name}</b><div class="am">${it.code} · MFD ${it.mfd} · ${it.kgQty.toFixed(1)}kg · ${st.age}d old</div></div><span class="badge ${st.cls}">${st.label}</span></div>`;
+      return `<div class="attn-row attn-${st.cls}"><div class="an"><b>#${i+1} ${it.name}</b><div class="am">${it.code} · MFD ${fmtD(it.mfd)} · ${it.kgQty.toFixed(1)}kg · ${st.age}d old</div></div><span class="badge ${st.cls}">${st.label}</span></div>`;
     }).join('')}
   </div>` : ''}
 
   <div class="section-title">Recent Submissions <span class="num">${state.submissions.filter(s=>s.cnfCode===state.cnfUser.code).length}</span></div>
   ${state.submissions.filter(s=>s.cnfCode===state.cnfUser.code).slice(0,3).map(s=>`
-    <div class="hist-item"><div><div class="d">${s.date}</div><div class="m">${new Set(s.items.map(i=>i.code)).size} products · ${s.items.length} MFD batch lines · ID ${s.id}</div></div><div class="badge ok">Final</div></div>
+    <div class="hist-item"><div><div class="d">${fmtD(s.date)}</div><div class="m">${new Set(s.items.map(i=>i.code)).size} products · ${s.items.length} MFD batch lines · ID ${s.id}</div></div><div class="badge ok">Final</div></div>
   `).join('') || '<div class="empty">No submissions yet.</div>'}
   `;
 }
@@ -3207,7 +3232,7 @@ function CnfSubmit(){
   </div>
 
   <div class="sap-banner">
-    <div><b>SAP Current Stock loaded</b><div class="sm">${state.sapUpload.fileName} · ${state.sapUpload.rows.length} items · uploaded ${new Date(state.sapUpload.uploadedAt).toLocaleString('en-IN')}</div></div>
+    <div><b>SAP Current Stock loaded</b><div class="sm">${state.sapUpload.fileName} · ${state.sapUpload.rows.length} items · uploaded ${fmtDT(state.sapUpload.uploadedAt)}</div></div>
     <button class="btn btn-ghost btn-sm" id="btnReplaceSap">Replace File</button>
   </div>
 
@@ -3595,11 +3620,7 @@ function SapProductRow(sapRow){
   </div>`;
 }
 
-function ddmmyyyy(iso){
-  if(!iso) return '';
-  const [y,m,d] = iso.split('-');
-  return `${d}-${m}-${y}`;
-}
+function ddmmyyyy(iso){ return fmtD(iso); }
 
 function BatchRow(p,b,i,total){
   // A product still pending Admin review (auto-created from an unmapped SAP
@@ -3651,7 +3672,7 @@ function CnfHistory(){
   return `<div class="section-title">Submission History <span class="num">${subs.length}</span> <span style="font-family:var(--mono);font-size:10px;color:var(--ink-soft);font-weight:400;">${monthLabel} · click Export on any date to download that day's full stock report</span></div>
   ${subs.map(s=>`
     <div class="hist-item">
-      <div><div class="d">${s.date}</div><div class="m">${new Set(s.items.map(i=>i.code)).size} products · ${s.items.length} MFD batch lines · Submitted ${new Date(s.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})} · ID ${s.id}</div></div>
+      <div><div class="d">${fmtD(s.date)}</div><div class="m">${new Set(s.items.map(i=>i.code)).size} products · ${s.items.length} MFD batch lines · Submitted ${fmtT(s.timestamp)} · ID ${s.id}</div></div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span class="badge ok">${s.status}</span>
         <button class="btn btn-ghost btn-sm" data-exportsub="${s.id}">⬇ Export</button>
@@ -3676,7 +3697,7 @@ function CnfReports(){
   const totalKg = sub.items.reduce((s,it)=>s+it.kgQty,0);
 
   return `
-  <div class="section-title">Reports &amp; Analytics <span class="num">as of ${sub.date}</span> <button class="btn btn-ghost btn-sm" id="btnExportCnfReport" style="margin-left:auto;">⬇ Export Full Report</button></div>
+  <div class="section-title">Reports &amp; Analytics <span class="num">as of ${fmtD(sub.date)}</span> <button class="btn btn-ghost btn-sm" id="btnExportCnfReport" style="margin-left:auto;">⬇ Export Full Report</button></div>
 
   <div class="hist-item" style="align-items:flex-start;">
     <div>
@@ -3722,7 +3743,7 @@ function CnfReports(){
         <td class="mono">${it.qty}</td><td class="mono">${it.uom}</td><td class="mono">${it.kgQty.toFixed(1)}</td>
         <td class="mono">${hasSap?it.sapQtyKg.toFixed(1):'—'}</td>
         <td>${!hasSap ? '—' : withinTolerance(diff) ? '<span class="badge ok">Matches</span>' : `<span style="color:var(--red);font-size:11.5px;">${it.varianceReason||'(no reason given)'}</span>`}</td>
-        <td class="mono">${it.mfd||'—'}</td><td class="mono">${st.age??'—'}</td>
+        <td class="mono dt">${fmtD(it.mfd)||'—'}</td><td class="mono">${st.age??'—'}</td>
         <td><span class="badge ${st.cls}">${st.label}</span></td>
       </tr>`;
     }).join('')}
@@ -3749,7 +3770,7 @@ function CnfLineDetailModal(){
     <div class="dgrp">Stock</div>
     <div class="drow"><span>Entered Quantity</span><b>${item.qty} ${item.uom}</b></div>
     <div class="drow"><span>Converted</span><b>${item.kgQty.toFixed(2)} kg</b></div>
-    <div class="drow"><span>Manufacturing Date (MFD)</span><b>${item.mfd||'—'}</b></div>
+    <div class="drow"><span>Manufacturing Date (MFD)</span><b>${fmtD(item.mfd)||'—'}</b></div>
     <div class="dgrp">Ageing</div>
     <div class="drow"><span>Stock Age</span><b>${st.age??'—'} days</b></div>
     <div class="drow"><span>Self-Life</span><b>${st.life??selfLifeFor(p)} days</b></div>
@@ -4023,7 +4044,7 @@ function buildEmailPreview_(type){
         {code:'SOO001', name:'Sooji Rava 1kg', mfd:'10-04-2026', qty:'45.0 kg', label:'EXPIRED (-8d left)', color:'#c0392b'},
         {code:'SPC001', name:'Garam Masala 100g', mfd:'15-07-2026', qty:'22.5 kg', label:'AGEING (60d left)', color:'#f0c419'},
       ];
-      const rowsHtml = sample.map(f=>`<tr><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.code}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.name}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.mfd}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.qty}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;background:${f.color};color:#fff;font-weight:bold;">${f.label}</td></tr>`).join('');
+      const rowsHtml = sample.map(f=>`<tr><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.code}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.name}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;">${fmtD(f.mfd)}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;">${f.qty}</td><td style="padding:5px 8px;border:1px solid #e0d5bd;background:${f.color};color:#fff;font-weight:bold;">${f.label}</td></tr>`).join('');
       bodyHtml += '<table style="border-collapse:collapse;font-family:Calibri,Arial,sans-serif;font-size:12px;">'+emailPreviewTableHeaders_(['Code','Product','MFD','Qty','Status'])+rowsHtml+'</table>';
     }
     bodyHtml += '<p style="margin-top:14px;">Open Ganesh Stock IQ for the full ageing breakdown and to plan next steps.</p>'+EMAIL_PREVIEW_FOOTER;
@@ -4072,7 +4093,7 @@ function EmailFollowUpScreen(){
       <thead><tr><th>Date/Time</th><th>Type</th><th>CNF</th><th>To</th><th>CC</th><th>Subject</th><th>Status</th></tr></thead>
       <tbody>
         ${log.map(e=>`<tr>
-          <td class="mono">${new Date(e.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+          <td class="mono">${fmtDT(e.timestamp)}</td>
           <td>${e.type}</td>
           <td class="mono">${e.cnfCode}</td>
           <td>${e.toEmails||'—'}</td>
@@ -4108,7 +4129,7 @@ function MessagingScreen(){
       <thead><tr><th>Date</th><th>From</th><th>Target</th><th>Subject</th><th>Message</th></tr></thead>
       <tbody>
         ${state.messages.map(m=>`<tr>
-          <td class="mono">${new Date(m.timestamp).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+          <td class="mono">${fmtDT(m.timestamp)}</td>
           <td>${m.fromName||m.fromRole}</td>
           <td>${m.targetType==='ALL'?'All CNFs':`${m.targetCnfs.length} CNF${m.targetCnfs.length!==1?'s':''}`}</td>
           <td><b>${m.subject||'—'}</b></td>
@@ -4452,9 +4473,7 @@ function applyBackupImport(p, opts, fileName){
 
 function fmtWhen(ts){
   if(!ts) return '—';
-  const d = new Date(ts);
-  const sameDay = d.toDateString()===new Date().toDateString();
-  return sameDay ? d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) : d.toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+  return fmtDT(ts) || '—';
 }
 function BackupPreviewCard(pv){
   const st = pv.stats, p = pv.parsed, o = state.backupOptions;
@@ -4927,7 +4946,7 @@ function buildReportRows(){
   if(f.categories!=='ALL') rows = rows.filter(r=>f.categories.includes(r.product.category));
   return rows.map(r=>({
     cnfName:r.cnf.name, cnfCode:r.cnf.code, productCode:r.product.code, productName:r.product.name, category:r.product.category,
-    enteredQty:r.item.qty, enteredUom:r.item.uom, kg:r.item.kgQty.toFixed(2), mfd:r.item.mfd||'', age:r.ageStatus.age??'',
+    enteredQty:r.item.qty, enteredUom:r.item.uom, kg:r.item.kgQty.toFixed(2), mfd:fmtD(r.item.mfd), age:r.ageStatus.age??'',
     selfLife:r.ageStatus.life??'', remaining:r.ageStatus.remaining??'', ageStatus:r.ageStatus.label,
     safetyNorm:safetyNormFor(r.item, r.product), safetyStatus:safetyStatusLabel(r.safetyStatus),
     safetyShortfall: r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '',
@@ -5043,7 +5062,7 @@ function generatedByLabel(){
 async function buildXlsxWorkbook({title, subtitle, headers, rows, summaryRows, summaryTable, statusColIndex, statusColors, cellStyleFn, wrapCols, extraSheets, dataSheetName, colWidths}){
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Ganesh Stock IQ';
-  const genStamp = new Date().toLocaleString('en-IN', {day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const genStamp = fmtDT(new Date());
   const BRAND = 'FF5A3D1A', HEADBG = 'FFCC8F3F', HEADFG = 'FFFFFFFF', METAFG = 'FF666666';
 
   function writeMeta(ws, colCount, tOv, stOv){
@@ -5596,8 +5615,8 @@ function AdminAudit(){
       <thead><tr><th>Submission ID</th><th class="mono">CNF Code</th><th>CNF Name</th><th>Date</th><th>Timestamp</th><th>Products</th><th>Batch Lines</th><th>Submitted By</th><th>Status</th></tr></thead>
       <tbody>
         ${rows.map(s=>`<tr>
-          <td class="mono">${s.id}</td><td class="mono"><b>${s.cnfCode}</b></td><td>${s.cnfName}</td><td class="mono">${s.date}</td>
-          <td class="mono">${new Date(s.timestamp).toLocaleString('en-IN')}</td><td class="mono">${new Set(s.items.map(i=>i.code)).size}</td>
+          <td class="mono">${s.id}</td><td class="mono"><b>${s.cnfCode}</b></td><td>${s.cnfName}</td><td class="mono dt">${fmtD(s.date)}</td>
+          <td class="mono">${fmtDT(s.timestamp)}</td><td class="mono">${new Set(s.items.map(i=>i.code)).size}</td>
           <td class="mono">${s.items.length}</td>
           <td class="mono">${escapeHtml(submittedByText(s))}</td><td><span class="badge ok">${s.status}</span></td>
         </tr>`).join('')}
@@ -5884,7 +5903,7 @@ function MisStockTable(){
         <td class="mono">${r.item.qty}</td><td class="mono">${r.item.uom}</td><td class="mono">${r.item.kgQty.toFixed(1)}</td>
         <td class="mono">${hasSap?r.item.sapQtyKg.toFixed(1):'—'}</td>
         <td>${!hasSap ? '—' : withinTolerance(diff) ? '<span class="badge ok">Matches</span>' : `<span style="color:var(--red);font-size:11.5px;">${r.item.varianceReason||'(no reason given)'}</span>`}</td>
-        <td class="mono">${r.item.mfd||'—'}</td><td class="mono">${r.ageStatus.age??'—'}</td>
+        <td class="mono dt">${fmtD(r.item.mfd)||'—'}</td><td class="mono">${r.ageStatus.age??'—'}</td>
         <td><span class="badge ${r.ageStatus.cls}">${r.ageStatus.label}</span></td>
         <td><span class="badge ${safetyBadgeClass(r.safetyStatus)}">${safetyStatusLabel(r.safetyStatus)}</span></td>
       </tr>`;
@@ -5902,7 +5921,7 @@ function MisFifo(){
       <thead><tr><th>#</th><th class="mono">CNF Code</th><th>CNF</th><th class="mono">Product Code</th><th>Product</th><th class="mono">Batch / MFD</th><th class="mono">Age (d)</th><th class="mono">Self-Life</th><th class="mono">Remaining</th><th class="mono">Qty (kg)</th><th>Status</th></tr></thead>
       <tbody>
       ${rows.map((r,i)=>`<tr ${rowDetailAttr(r)}>
-        <td class="mono">${i+1}</td><td class="mono"><b>${r.cnf.code}</b></td><td>${r.cnf.name}</td><td class="mono"><b>${r.product.code}</b></td><td>${r.product.name}</td><td class="mono">${r.item.mfd}</td>
+        <td class="mono">${i+1}</td><td class="mono"><b>${r.cnf.code}</b></td><td>${r.cnf.name}</td><td class="mono"><b>${r.product.code}</b></td><td>${r.product.name}</td><td class="mono dt">${fmtD(r.item.mfd)}</td>
         <td class="mono">${r.ageStatus.age}</td><td class="mono">${r.ageStatus.life}d</td>
         <td class="mono" style="color:${r.ageStatus.remaining<0?'var(--red)':'inherit'}">${r.ageStatus.remaining}d</td>
         <td class="mono">${r.item.kgQty.toFixed(1)}</td><td><span class="badge ${r.ageStatus.cls}">${r.ageStatus.label}</span></td>
@@ -6008,8 +6027,8 @@ function StockLineDetailModal(subId, itemIdx){
 
     <div class="dgrp">Submission</div>
     <div class="drow"><span>Submission ID</span><b>${sub.id}</b></div>
-    <div class="drow"><span>Stock Date</span><b>${sub.date}</b></div>
-    <div class="drow"><span>Submitted At</span><b>${new Date(sub.timestamp).toLocaleString('en-IN')}</b></div>
+    <div class="drow"><span>Stock Date</span><b>${fmtD(sub.date)}</b></div>
+    <div class="drow"><span>Submitted At</span><b>${fmtDT(sub.timestamp)}</b></div>
     <div class="drow"><span>Submitted By</span><b>${escapeHtml(submittedByText(sub))}</b></div>
 
     <button class="btn btn-dark modal-close" id="btnCloseMisDetail">Close</button>
@@ -6023,7 +6042,7 @@ function CnfsStatusModal(){
     ${state.masters.cnfs.map(c=>{
       const sub = latestSubmissionFor(c.code);
       const kg = sub ? sub.items.reduce((s,i)=>s+i.kgQty,0) : 0;
-      return `<div class="drow"><span>${c.name} (${c.code}) · <span class="badge ${c.status==='Active'?'ok':'low'}" style="padding:2px 6px;">${c.status}</span></span><b>${sub ? sub.date+' · '+kg.toFixed(0)+'kg' : 'No submission yet'}</b></div>`;
+      return `<div class="drow"><span>${c.name} (${c.code}) · <span class="badge ${c.status==='Active'?'ok':'low'}" style="padding:2px 6px;">${c.status}</span></span><b>${sub ? fmtD(sub.date)+' · '+kg.toFixed(0)+'kg' : 'No submission yet'}</b></div>`;
     }).join('')}
     <button class="btn btn-dark modal-close" id="btnCloseMisDetail">Close</button>
   </div></div>`;
@@ -6106,7 +6125,7 @@ function MisMovement(){
           const st = ageingStatus(p, it.mfd);
           return ['critical','expiring','expired'].includes(st.cls);
         }).length;
-        return `<tr data-movsub="${s.id}"><td class="mono">${s.date}</td><td>${s.cnfName}</td><td class="mono">${s.cnfCode}</td>
+        return `<tr data-movsub="${s.id}"><td class="mono dt">${fmtD(s.date)}</td><td>${s.cnfName}</td><td class="mono">${s.cnfCode}</td>
           <td class="mono">${new Set(s.items.map(i=>i.code)).size}</td><td class="mono">${s.items.length}</td>
           <td class="mono">${kg.toFixed(0)}</td><td class="mono" style="color:${ag?'var(--orange)':'inherit'}">${ag}</td>
           <td class="mono">${s.id}</td></tr>`;
@@ -6123,10 +6142,10 @@ function MisSubmissionDetailModal(){
   if(!sub) return '';
   return `<div class="modal-bg dark" id="misSubDetailBg"><div class="modal-dark" style="max-width:560px;">
     <h3>${sub.cnfName} · ${sub.cnfCode}</h3>
-    <div class="msub">${sub.date} · Submission ${sub.id} · ${sub.items.length} batch lines</div>
+    <div class="msub">${fmtD(sub.date)} · Submission ${sub.id} · ${sub.items.length} batch lines</div>
     <div class="tablewrap" style="margin-top:12px;max-height:360px;overflow-y:auto;"><table class="dtable">
       <thead><tr><th>Code</th><th>Product</th><th class="mono">kg</th><th>MFD</th></tr></thead>
-      <tbody>${sub.items.map(it=>`<tr><td class="mono">${it.code}</td><td>${it.name}</td><td class="mono">${it.kgQty.toFixed(1)}</td><td class="mono">${it.mfd||'—'}</td></tr>`).join('')}</tbody>
+      <tbody>${sub.items.map(it=>`<tr><td class="mono">${it.code}</td><td>${it.name}</td><td class="mono">${it.kgQty.toFixed(1)}</td><td class="mono dt">${fmtD(it.mfd)||'—'}</td></tr>`).join('')}</tbody>
     </table></div>
     <button class="btn btn-dark modal-close" id="btnCloseMisSubDetail" style="margin-top:12px;">Close</button>
   </div></div>`;
@@ -6363,7 +6382,7 @@ async function broadcastReportsToAllCnfs(onProgress){
       const detailedReport = buildDetailedReportRows(sub);
       const wb = await buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
-        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        subtitle: `Stock date: ${fmtD(sub.date)} · Submission ID: ${sub.id}`,
         headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, statusColIndex: detailedReport.statusColIndex,
       });
       const buffer = await wb.xlsx.writeBuffer();
@@ -6371,7 +6390,7 @@ async function broadcastReportsToAllCnfs(onProgress){
       const ageingTable = buildAgeingHighlightTableHtml(sub);
       const result = await apiPost('sendSubmissionReport', {
         report: {
-          cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: sub.date,
+          cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: fmtD(sub.date),
           itemCount: sub.items.length, fileName: detailedReport.filename, xlsxBase64,
           ageingTableHtml: ageingTable.html, ageingCount: ageingTable.count,
         },
@@ -6401,7 +6420,7 @@ function buildMisExportRowsBase_(rows){
     const pcEquiv = r.product.pcToKg ? pcEquivDisplay(r.item.kgQty, r.product) : '';
     const safetyNorm = safetyNormFor(r.item,r.product);
     const shortfall = r.safetyStatus==='low' ? (safetyNorm - r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '';
-    return [r.sub.date, r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, r.item.mfd||'', r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', r.item.varianceReason||'', r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id, auditByLabel(r.sub)];
+    return [fmtD(r.sub.date), r.cnf.name, r.cnf.code, r.product.code, r.product.name, r.product.category, r.item.qty, safeUomLabel(r.item.uom), r.item.kgQty.toFixed(2), r.product.bagToKg||'', bagEquiv, r.product.pcToKg||'', pcEquiv, fmtD(r.item.mfd), r.ageStatus.age??'', r.ageStatus.life??'', r.ageStatus.remaining??'', ageingStatusCell(r.ageStatus), recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'), safetyNorm, safetyStatusLabel(r.safetyStatus), shortfall, r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(2):'', r.item.varianceReason||'', r.item.approvedOrder??'', r.item.pendingOrder??'', r.sub.id, auditByLabel(r.sub)];
   });
   return {headers, dataRows, statusColIndex: headers.indexOf('Ageing Status')};
 }
@@ -6548,7 +6567,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
   const headers = ['Severity','CNF Name','CNF Code','Product Code','Product Name','Category','Previous Date','Current Date','Previous MFD (kg)','Current MFD (kg)','Previous kg','Current kg','Change kg','Change %','What Changed','Logic & Calculation','Reason','Previous Submission ID','Current Submission ID','Previous Audit By','Current Audit By'];
   const rows = out.map(x=>{
     const cnf = state.masters.cnfs.find(c=>String(c.code)===String(x.cur.sub.cnfCode));
-    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, x.prev.sub.date, x.cur.sub.date, cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id, auditByLabel(x.prev.sub), auditByLabel(x.cur.sub)];
+    return [x.sev, cnf?cnf.name:(x.cur.sub.cnfName||''), x.cur.sub.cnfCode, x.cur.code, x.cur.name, x.cur.cat, fmtD(x.prev.sub.date), fmtD(x.cur.sub.date), cmpBatchText(x.prev.batches), cmpBatchText(x.cur.batches), Number(x.prev.kg.toFixed(1)), Number(x.cur.kg.toFixed(1)), Number(x.delta.toFixed(1)), Number(x.pct.toFixed(1)), x.flags.map(f=>f.text).join(' | '), x.flags.map((f,i)=>`${i+1}. ${f.calc}`).join('\n'), x.flags.map((f,i)=>`${i+1}. [${f.sev}] ${f.type}: ${WHY[f.type]||''}`).join('\n'), x.prev.sub.id, x.cur.sub.id, auditByLabel(x.prev.sub), auditByLabel(x.cur.sub)];
   });
   const byType = {}, byCnf = {};
   const sevCount = {High:0, Medium:0, Low:0};
@@ -6615,8 +6634,8 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     const newestPrev = pM.filter(m=>m!=='No MFD').sort().slice(-1)[0];
     x.flags.forEach(f=>{
       if(f.type==='Same qty, MFD changed'){
-        added.forEach(m=>addMark(x.cur, m, 'wrong', `MFD changed to ${m} on ${x.cur.sub.date} but stock is the same as ${x.prev.sub.date}`));
-        removed.forEach(m=>addMark(x.prev, m, 'conflict', `Entered as ${m} on ${x.prev.sub.date}; later entry shows a different MFD for the same stock`));
+        added.forEach(m=>addMark(x.cur, m, 'wrong', `MFD changed to ${m} on ${fmtD(x.cur.sub.date)} but stock is the same as ${fmtD(x.prev.sub.date)}`));
+        removed.forEach(m=>addMark(x.prev, m, 'conflict', `Entered as ${m} on ${fmtD(x.prev.sub.date)}; later entry shows a different MFD for the same stock`));
       } else if(f.type==='MFD changed'){
         added.forEach(m=>addMark(x.cur, m, 'wrong', `MFD differs from the earlier entry (${removed.join(', ')})`));
       } else if(f.type==='MFD missing'){
@@ -6642,7 +6661,7 @@ function buildComparisonReport(subs, fromDate, toDate, allSubsForBaseline, cnfLa
     groupMap.set(k, g);
   });
   const evHeaders = ['CNF Code','CNF Name','Product Code','Product Name','Submission Date','Compared With (previous submission)','MFD Entered','Stock (kg)','Check','What is wrong'];
-  const stamp = sub=>{ let t=''; try{ t = new Date(sub.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}); }catch(e){} return `${sub.date}${t?' · '+t:''}`; };
+  const stamp = sub=>{ let t=''; try{ t = fmtT(sub.timestamp); }catch(e){} return `${fmtD(sub.date)}${t?' · '+t:''}`; };
   const evRows = [], evStyles = [];
   const LEVEL_UI = {
     wrong:    {label:'✖ Incorrect — please verify', bg:'#f8d0cc', fg:'#8a1f11'},
@@ -6875,7 +6894,7 @@ function buildScAuditReport(sel, allSubs){
   const scIds = new Set((state.masters.scUsers||[]).filter(u=>sel.who==='ALL' || u.userId===sel.who).map(u=>u.userId));
   audits.forEach(sb=> scIds.add(parseAuditBy(sb.submittedBy).id));
   const cnfName = code => { const c = state.masters.cnfs.find(x=>String(x.code)===String(code)); return c ? c.name : code; };
-  const timeOf = sb => { try{ return new Date(sb.timestamp).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } };
+  const timeOf = sb => { try{ return fmtT(sb.timestamp); }catch(e){ return ''; } };
   const ageingOf = sb => {
     let expired=0, risk=0, expLines=0, nearLines=0, total=0;
     rptItems_(sb).forEach(it=>{
@@ -6899,7 +6918,7 @@ function buildScAuditReport(sel, allSubs){
   const headers = ['SC Name','SC ID','Status','Visits (CNF-days)','Submissions','CNFs Audited','Repeat Visits (same CNF again)','First Audit','Last Audit','Lines Audited','Stock Audited (kg)','CNFs Audited (names)'];
   const rows = scList.map(o=>{
     const ds = o.dates.slice().sort();
-    return [o.name, o.id, o.status, o.visits.size, o.subs, o.cnfs.size, o.visits.size - o.cnfs.size, ds[0]||'—', ds[ds.length-1]||'—', o.lines, kg1(o.kg), [...o.cnfs.keys()].map(c=>`${cnfName(c)} (${c})`).join(', ') || '—'];
+    return [o.name, o.id, o.status, o.visits.size, o.subs, o.cnfs.size, o.visits.size - o.cnfs.size, fmtD(ds[0])||'—', fmtD(ds[ds.length-1])||'—', o.lines, kg1(o.kg), [...o.cnfs.keys()].map(c=>`${cnfName(c)} (${c})`).join(', ') || '—'];
   });
   const sum = i => rows.reduce((t,r)=>t+(Number(r[i])||0),0);
   rows.push(['TOTAL','','', sum(3), sum(4), new Set(audits.map(sb=>sb.cnfCode)).size, '', '', '', sum(9), kg1(sum(10)), '']);
@@ -6913,18 +6932,18 @@ function buildScAuditReport(sel, allSubs){
   // ---- SC x CNF ----
   const pairRows = [];
   scList.forEach(o=> [...o.cnfs.entries()].sort((a,b)=> b[1].last.localeCompare(a[1].last)).forEach(([code,c])=>{
-    pairRows.push([o.name, o.id, cnfName(code), code, c.dates.size, [...c.dates].sort().join(', '), c.last]);
+    pairRows.push([o.name, o.id, cnfName(code), code, c.dates.size, [...c.dates].sort().map(fmtD).join(', '), fmtD(c.last)]);
   }));
   const pairSheet = {name:'SC x CNF', title:'Which Sales Coordinator audited which CNF/CFA, and on which dates',
-    subtitle:`${sel.from} to ${sel.to} · one row per Sales Coordinator and CNF · Visits = distinct audit dates`,
+    subtitle:`${fmtD(sel.from)} to ${fmtD(sel.to)} · one row per Sales Coordinator and CNF · Visits = distinct audit dates`,
     headers:['SC Name','SC ID','CNF Name','CNF Code','Visits','Audit Dates','Last Audit'], rows:pairRows, widths:[22,10,26,10,9,60,13], wrapCols:[5]};
   // ---- Audit Log ----
   const logSubs = audits.slice().sort((a,b)=> a.date===b.date ? new Date(a.timestamp)-new Date(b.timestamp) : (a.date<b.date?-1:1));
   const logRows = logSubs.map(sb=>{ const a = parseAuditBy(sb.submittedBy); const g = ageingOf(sb);
-    return [sb.date, timeOf(sb), a.name, a.id, cnfName(sb.cnfCode), sb.cnfCode, sb.status||'Final', new Set((sb.items||[]).map(i=>i.code)).size, (sb.items||[]).length, kg1(g.total), kg1(g.expired), kg1(g.risk), g.expLines, g.nearLines, sb.id]; });
+    return [fmtD(sb.date), timeOf(sb), a.name, a.id, cnfName(sb.cnfCode), sb.cnfCode, sb.status||'Final', new Set((sb.items||[]).map(i=>i.code)).size, (sb.items||[]).length, kg1(g.total), kg1(g.expired), kg1(g.risk), g.expLines, g.nearLines, sb.id]; });
   const logStyles = logRows.map(r=> r.map((_,i)=> (i===10 && r[10]>0) ? {bg:'#f8d0cc', fg:'#8a1f11', bold:true} : (i===11 && r[11]>0) ? {bg:'#fde2c4', fg:'#8a4b0a'} : null));
   const logSheet = {name:'Audit Log', title:'Audit Log — every stock audit made by a Sales Coordinator',
-    subtitle:`${sel.from} to ${sel.to} · ageing as of ${today} · At-risk = Expired + Near Expiry + Critical`,
+    subtitle:`${fmtD(sel.from)} to ${fmtD(sel.to)} · ageing as of ${fmtD(today)} · At-risk = Expired + Near Expiry + Critical`,
     headers:['Audit Date','Time','SC Name','SC ID','CNF Name','CNF Code','Status','Products','Lines','Stock (kg)','Expired (kg)','At-Risk (kg)','Expired Lines','Near-Expiry / Critical Lines','Submission ID'],
     rows:logRows, styles:logStyles, widths:[12,8,22,10,26,10,9,10,8,12,12,12,10,14,24]};
   // ---- CNF coverage ----
@@ -6938,11 +6957,11 @@ function buildScAuditReport(sel, allSubs){
     const visits = new Set(list.map(visitKey)).size;
     const le = lastEver[c.code];
     const days = le ? Math.max(0, Math.round((new Date(today+'T00:00:00') - new Date(le.date+'T00:00:00'))/86400000)) : '';
-    return [visits ? 'Audited' : 'Not audited', c.name, c.code, visits, [...new Set(list.map(sb=>parseAuditBy(sb.submittedBy).name))].join(', ') || '—', visits ? list.map(sb=>sb.date).sort().slice(-1)[0] : '—', le ? le.date : 'Never (in loaded history)', days, le ? parseAuditBy(le.submittedBy).name : '—'];
+    return [visits ? 'Audited' : 'Not audited', c.name, c.code, visits, [...new Set(list.map(sb=>parseAuditBy(sb.submittedBy).name))].join(', ') || '—', visits ? fmtD(list.map(sb=>sb.date).sort().slice(-1)[0]) : '—', le ? fmtD(le.date) : 'Never (in loaded history)', days, le ? parseAuditBy(le.submittedBy).name : '—'];
   }).sort((a,b)=> (a[0]===b[0]?0:(a[0]==='Not audited'?-1:1)) || String(a[2]).localeCompare(String(b[2]),undefined,{numeric:true}));
   const covStyles = covRows.map(r=> r.map((_,i)=> i===0 ? (r[0]==='Audited' ? {bg:'#27ae60', fg:'#ffffff', bold:true} : {bg:'#c0392b', fg:'#ffffff', bold:true}) : null));
   const covSheet = {name:'CNF Coverage', title:'CNF / CFA Coverage — which CNFs a Sales Coordinator audited in this period',
-    subtitle:`${sel.from} to ${sel.to} · active CNFs only${sel.cnf==='ALL'?' (training/demo CNF left out)':''} · Not audited first`,
+    subtitle:`${fmtD(sel.from)} to ${fmtD(sel.to)} · active CNFs only${sel.cnf==='ALL'?' (training/demo CNF left out)':''} · Not audited first`,
     headers:['Coverage','CNF Name','CNF Code','Visits in Period','Audited By','Last Audit in Period','Last SC Audit Ever','Days Since That','Last Audited By'],
     rows:covRows, styles:covStyles, widths:[14,28,10,12,30,16,22,12,22]};
   const audited = covRows.filter(r=>r[0]==='Audited').length;
@@ -6950,7 +6969,7 @@ function buildScAuditReport(sel, allSubs){
   const idle = scList.filter(o=>o.visits.size===0 && o.status==='Active');
   const summaryRows = [
     ['REPORT BASIS',''],
-    ['Audits dated', `${sel.from}  to  ${sel.to}`],
+    ['Audits dated', `${fmtD(sel.from)}  to  ${fmtD(sel.to)}`],
     ['Sales Coordinator', sel.who==='ALL' ? 'All Sales Coordinators' : `${nameOf(sel.who)} (${sel.who})`],
     ['CNF / CFA', sel.cnf==='ALL' ? 'All CNFs (training/demo CNF left out)' : `${cnfName(sel.cnf)} (${sel.cnf})`],
     ['What counts as an audit', 'A stock submission made by a Sales Coordinator on a CNF/CFA\'s behalf (shown as "Audit by SC - name"). A visit is one Sales Coordinator at one CNF on one date.'],
@@ -7035,7 +7054,7 @@ function buildMisPivotSummaryRows(rows){
 // fetch fails (offline, backend down) the export still goes ahead from
 // what's loaded — better than nothing — but it says so, with the time that
 // data is actually from, instead of quietly passing it off as current.
-function fmtClock(ts){ return ts ? new Date(ts).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—'; }
+function fmtClock(ts){ return ts ? fmtT(ts,true) : '—'; }
 // Says plainly where the data on screen actually came from when it is NOT
 // freshly pulled from the server — the imported backup if that is the newest
 // thing this device has, otherwise the last real sync. null = nothing known.
@@ -7055,9 +7074,9 @@ function overviewDataAsOfHtml(){
   const st = 'font-family:var(--mono);font-size:13px;color:var(--surface-text);';
   if(imp && (imp.importedAt||0) >= synced){
     return `<b style="${st}">Imported backup — newest stock dated ${imp.newestStockDate||'unknown'}</b>
-      <div style="font-family:var(--mono);font-size:10.5px;color:var(--wheat-dim);margin-top:2px;">${imp.fileName} · imported ${new Date(imp.importedAt).toLocaleString('en-IN')}${synced?` · last live sync ${new Date(synced).toLocaleString('en-IN')}`:''}</div>`;
+      <div style="font-family:var(--mono);font-size:10.5px;color:var(--wheat-dim);margin-top:2px;">${imp.fileName} · imported ${fmtDT(imp.importedAt)}${synced?` · last live sync ${fmtDT(synced)}`:''}</div>`;
   }
-  return `<b style="${st}">${synced ? new Date(synced).toLocaleString('en-IN') : 'never synced'}</b>`;
+  return `<b style="${st}">${synced ? fmtDT(synced) : 'never synced'}</b>`;
 }
 function dataAsOfText(){
   if(state.lastDataSyncAt) return `Data as of ${fmtClock(state.lastDataSyncAt)} — pulled from the server`;
@@ -7177,7 +7196,7 @@ function SubmitterFixCard_(){
 function bindSubmitterFix_(){
   const cnfEl=document.getElementById('sfCnf'), subEl=document.getElementById('sfSub'), byEl=document.getElementById('sfBy'), btn=document.getElementById('sfSave'), msg=document.getElementById('sfMsg');
   if(!cnfEl||!btn) return;
-  const label = sub => { const a=parseAuditBy(sub.submittedBy); return `${sub.date||''} · ${String(sub.timestamp||'').replace('T',' ').slice(0,16)} · ${a.role==='SC'?'SC - '+a.name:'CNF'}`; };
+  const label = sub => { const a=parseAuditBy(sub.submittedBy); return `${fmtD(sub.date)||''} · ${fmtDT(sub.timestamp)} · ${a.role==='SC'?'SC - '+a.name:'CNF'}`; };
   const fill = ()=>{
     const list = state.submissions.filter(x=>String(x.cnfCode)===String(cnfEl.value)).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).slice(0,30);
     subEl.innerHTML = list.length ? list.map(x=>`<option value="${escapeHtml(String(x.id))}">${escapeHtml(label(x))}</option>`).join('') : '<option value="">No submissions</option>';
@@ -7351,7 +7370,7 @@ function buildEmailStockHtmlRaw_(rows, mode){
     groups.forEach((g,i)=>{
       const bg = i%2 ? '#f4f6f8' : '#ffffff';
       const cell = (n,c)=> n>0 ? `<td bgcolor="${c[0]}" style="${TD}background:${c[0]};color:${c[1]};font-weight:bold;text-align:center;">${n}</td>` : `<td bgcolor="${bg}" style="${TD}text-align:center;color:#999;">0</td>`;
-      h += `<tr bgcolor="${bg}"><td bgcolor="${bg}" style="${TD}font-weight:bold;">${E(g.cnf.name)}</td><td bgcolor="${bg}" style="${TD}">${E(g.cnf.code)}</td><td bgcolor="${bg}" style="${TD}">${E(g.date)}</td><td bgcolor="${bg}" style="${TD}text-align:right;">${kgf(g.kg)}</td>`
+      h += `<tr bgcolor="${bg}"><td bgcolor="${bg}" style="${TD}font-weight:bold;">${E(g.cnf.name)}</td><td bgcolor="${bg}" style="${TD}">${E(g.cnf.code)}</td><td bgcolor="${bg}" style="${TD}">${E(fmtD(g.date))}</td><td bgcolor="${bg}" style="${TD}text-align:right;">${kgf(g.kg)}</td>`
         + cell(g.c.expired,EML_AGE_COL.expired)+cell(g.c.expiring,EML_AGE_COL.expiring)+cell(g.c.critical,EML_AGE_COL.critical)+cell(g.c.ageing,EML_AGE_COL.ageing)+`</tr>`;
     });
     return h + `</table></div>`;
@@ -7380,7 +7399,7 @@ function buildEmailStockHtmlRaw_(rows, mode){
     return t + `</tr></table>`;
   };
   shownGroups.forEach(g=>{
-    h += TBL + `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock Submission Date ${E(g.date)} &nbsp;|&nbsp; ${E(stockSubmittedByText_(g.allRows&&g.allRows[0]&&g.allRows[0].sub))} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr></table>` + riskStrip_(g) + `<div style="height:4px;line-height:4px;font-size:2px;">&nbsp;</div>` + TBL + `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
+    h += TBL + `<tr><td colspan="${span}" bgcolor="#2c3e50" style="background:#2c3e50;color:#ffffff;padding:6px 8px;font-size:13px;font-weight:bold;${F}">${E(g.cnf.name)} &middot; ${E(g.cnf.code)} &nbsp;|&nbsp; Stock Submission Date ${E(fmtD(g.date))} &nbsp;|&nbsp; ${E(stockSubmittedByText_(g.allRows&&g.allRows[0]&&g.allRows[0].sub))} &nbsp;|&nbsp; ${kgf(g.kg)} kg</td></tr></table>` + riskStrip_(g) + `<div style="height:4px;line-height:4px;font-size:2px;">&nbsp;</div>` + TBL + `<tr>${heads.map(x=>`<th style="${TH}">${E(x)}</th>`).join('')}</tr>`;
     if(mode==='product'){
       const rank = {expired:6,expiring:5,critical:4,ageing:3,normal:2,fresh:1};
       const bp = {};
@@ -7755,7 +7774,7 @@ function bindGlobal(){
       const report = buildDetailedReportRows(sub);
       const wb = await buildXlsxWorkbook({
         title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
-        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        subtitle: `Stock date: ${fmtD(sub.date)} · Submission ID: ${sub.id}`,
         headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, statusColIndex: report.statusColIndex,
       });
       await saveOrDownloadRealXlsx(report.filename, wb);
@@ -7776,10 +7795,10 @@ function bindGlobal(){
       const report = buildDetailedReportRows(sub);
       const wb = await buildXlsxWorkbook({
         title: `${state.cnfUser.name} (${state.cnfUser.code}) — Current Stock Report`,
-        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        subtitle: `Stock date: ${fmtD(sub.date)} · Submission ID: ${sub.id}`,
         headers: report.headers, rows: report.rows, summaryRows: report.summaryRows, statusColIndex: report.statusColIndex,
       });
-      await downloadRealXlsx(`${state.cnfUser.code}-stock-${sub.date}`, wb);
+      await downloadRealXlsx(`${state.cnfUser.code}-stock-${fmtD(sub.date)}`, wb);
     }catch(e){
       // Same silent-failure class as the auto-download after Final Submit —
       // this used to throw with nothing shown to the CNF at all.
@@ -8050,7 +8069,7 @@ function bindGlobal(){
       const detailedReport = buildDetailedReportRows(sub);
       const detailedWbPromise = buildXlsxWorkbook({
         title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
-        subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+        subtitle: `Stock date: ${fmtD(sub.date)} · Submission ID: ${sub.id}`,
         headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, statusColIndex: detailedReport.statusColIndex,
       });
       // No .catch() here before was a real bug: if building this workbook
@@ -8068,7 +8087,7 @@ function bindGlobal(){
           showToast(`⚠ Your local report couldn't be generated (${(e&&e.message)||e}) — the submission itself is safely saved. Tap to retry the download.`, ()=>{
             buildXlsxWorkbook({
               title: `${sub.cnfName} (${sub.cnfCode}) — Current Stock Report`,
-              subtitle: `Stock date: ${sub.date} · Submission ID: ${sub.id}`,
+              subtitle: `Stock date: ${fmtD(sub.date)} · Submission ID: ${sub.id}`,
               headers: detailedReport.headers, rows: detailedReport.rows, summaryRows: detailedReport.summaryRows, statusColIndex: detailedReport.statusColIndex,
             }).then(wb=>saveOrDownloadRealXlsx(detailedReport.filename, wb))
               .catch(e2=>showToast(`⚠ Still failing (${(e2&&e2.message)||e2}) — contact IT: 1800-121-0144`));
@@ -8100,7 +8119,7 @@ function bindGlobal(){
           const ageingTable = buildAgeingHighlightTableHtml(sub);
           return apiPost('sendSubmissionReport', {
             report: {
-              cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: sub.date,
+              cnfCode: sub.cnfCode, cnfName: sub.cnfName, date: fmtD(sub.date),
               itemCount: sub.items.length, fileName: detailedReport.filename,
               xlsxBase64,
               ageingTableHtml: ageingTable.html, ageingCount: ageingTable.count
@@ -9205,7 +9224,7 @@ function bindGlobal(){
     exportGenericCsv('current-stock.csv', ['CNF Code','CNF Name','Product Code','Product Name','Category','Entered Qty','UOM','KG','BAG Equiv','PC Equiv','SAP Qty (kg)','Difference Reason','MFD','Age (d)','Status','Recommended Action','Safety','Shortfall (kg)','Approved Order','Pending Order'],
       rows.map(r=>{
         const shortfall = r.safetyStatus==='low' ? (safetyNormFor(r.item,r.product)-r.item.kgQty).toFixed(1) : r.safetyStatus==='ok' ? 'No Shortfall' : '';
-        return [r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',r.item.mfd||'',r.ageStatus.age??'',ageingStatusCell(r.ageStatus),recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'),safetyStatusLabel(r.safetyStatus),shortfall,r.item.approvedOrder??'',r.item.pendingOrder??''];
+        return [r.cnf.code,r.cnf.name,r.product.code,r.product.name,r.product.category,r.item.qty,r.item.uom,r.item.kgQty.toFixed(1),r.product.bagToKg?bagEquivDisplay(r.item.kgQty,r.product):'',r.product.pcToKg?pcEquivDisplay(r.item.kgQty,r.product):'',r.item.sapQtyKg!=null?r.item.sapQtyKg.toFixed(1):'',r.item.varianceReason||'',fmtD(r.item.mfd),r.ageStatus.age??'',ageingStatusCell(r.ageStatus),recommendedAction(r.ageStatus.cls, r.safetyStatus==='low'),safetyStatusLabel(r.safetyStatus),shortfall,r.item.approvedOrder??'',r.item.pendingOrder??''];
       }));
   };
   const btnExportFifo = document.getElementById('btnExportFifo');
@@ -9240,14 +9259,14 @@ function bindGlobal(){
         const ag = crows.filter(r=>['critical','expiring','expired'].includes(r.ageStatus.cls)).length;
         const bs = crows.filter(r=>r.safetyStatus==='low').length;
         const distinctProducts = new Set(crows.map(r=>r.product.code)).size;
-        return [c.code,c.name,distinctProducts,crows.length,kg.toFixed(0),ag,bs,sub?sub.date:'',cadence.neverSubmitted?'Never':cadence.overdue?cadence.days+'d overdue':'On time'];
+        return [c.code,c.name,distinctProducts,crows.length,kg.toFixed(0),ag,bs,sub?fmtD(sub.date):'',cadence.neverSubmitted?'Never':cadence.overdue?cadence.days+'d overdue':'On time'];
       }));
   };
   const btnExportAudit = document.getElementById('btnExportAudit');
   if(btnExportAudit) btnExportAudit.onclick = ()=>{
     const rows = [...state.submissions].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
     exportGenericCsv('audit-log.csv', ['Submission ID','CNF Code','CNF Name','Date','Timestamp','Products','Batch Lines','Submitted By','Status'],
-      rows.map(s=>[s.id,s.cnfCode,s.cnfName,s.date,new Date(s.timestamp).toLocaleString('en-IN'),new Set(s.items.map(i=>i.code)).size,s.items.length,submittedByText(s),s.status]));
+      rows.map(s=>[s.id,s.cnfCode,s.cnfName,fmtD(s.date),fmtDT(s.timestamp),new Set(s.items.map(i=>i.code)).size,s.items.length,submittedByText(s),s.status]));
   };
 
   // Movement & History (MIS)
@@ -9270,7 +9289,7 @@ function bindGlobal(){
     const f = state.movementFilters;
     const rows = state.submissions.filter(s=>s.date>=f.fromDate && s.date<=f.toDate && (f.cnf==='ALL' || s.cnfCode===f.cnf)).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp));
     exportGenericCsv(`movement-${f.fromDate}-to-${f.toDate}.csv`, ['Date','CNF Name','CNF Code','Products','Batch Lines','Total kg','Submission ID','Submitted By'],
-      rows.map(s=>[s.date, s.cnfName, s.cnfCode, new Set(s.items.map(i=>i.code)).size, s.items.length, s.items.reduce((a,i)=>a+i.kgQty,0).toFixed(1), s.id, submittedByText(s)]));
+      rows.map(s=>[fmtD(s.date), s.cnfName, s.cnfCode, new Set(s.items.map(i=>i.code)).size, s.items.length, s.items.reduce((a,i)=>a+i.kgQty,0).toFixed(1), s.id, submittedByText(s)]));
   };
   document.querySelectorAll('[data-movsub]').forEach(el=>el.onclick=()=>{ state.misSubDetail = el.dataset.movsub; render(); });
   const misSubDetailBg = document.getElementById('misSubDetailBg');
