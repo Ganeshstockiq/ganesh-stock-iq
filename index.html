@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.84';
+const APP_VERSION = '2026-08-24.85';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7160,17 +7160,18 @@ function emailRows_(){
 }
 function SubmitterFixCard_(){
   const cnfs = (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c));
+  const scs = (state.masters.scUsers||[]).filter(u=>String(u.status||'Active')==='Active');
   return `<div class="panel-card">
     <h4>Stock Submitted By — Correction</h4>
-    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">An SC who submits through their own login is recorded automatically. If an SC submitted through a CNF's login by mistake, pick the SC here, or choose \"not in list\" and type the name. Every change is logged.</p>
-    <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
-      <div class="fg"><label>CNF</label><select id="sfCnf"><option value="">Select CNF</option>${cnfs.map(c=>`<option value="${escapeHtml(String(c.code))}">${escapeHtml(c.name)} (${escapeHtml(String(c.code))})</option>`).join('')}</select></div>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;line-height:1.5;">Stock submitted through a CNF's login by a Sales Coordinator by mistake? Pick the CNF and submission, choose who actually submitted it, and save. Submissions made from an SC's own login are recorded automatically. Every change is logged.</p>
+    <div class="formgrid" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:end;">
+      <div class="fg"><label>CNF / CFA</label><select id="sfCnf"><option value="">Select CNF</option>${cnfs.map(c=>`<option value="${escapeHtml(String(c.code))}">${escapeHtml(c.name)} (${escapeHtml(String(c.code))})</option>`).join('')}</select></div>
       <div class="fg"><label>Submission</label><select id="sfSub"><option value="">Select a CNF first</option></select></div>
-      <div class="fg"><label>Submitted by</label><select id="sfBy"><option value="CNF">CNF</option>${(state.masters.scUsers||[]).filter(u=>String(u.status||'Active')==='Active').map(u=>`<option value="u:${escapeHtml(u.userId)}">SC - ${escapeHtml(u.name)}</option>`).join('')}<option value="__other">SC - not in list (type name)</option></select></div>
+      <div class="fg"><label>Submitted by</label><select id="sfBy"><option value="CNF">CNF</option>${scs.map(u=>`<option value="u:${escapeHtml(u.userId)}">SC - ${escapeHtml(u.name)}</option>`).join('')}<option value="__other">SC - not in list (type name)</option></select></div>
       <div class="fg" id="sfNameWrap" style="display:none;"><label>Sales Coordinator name</label><input id="sfName" type="text" maxlength="60" placeholder="First name Last name" autocomplete="off"></div>
+      <div class="fg"><button class="btn btn-primary" id="sfSave" style="width:100%;">Save Correction</button></div>
     </div>
-    <button class="btn btn-primary" id="sfSave" style="margin-top:8px;">Save Correction</button>
-    <span id="sfMsg" style="margin-left:10px;font-size:13px;"></span>
+    <div id="sfMsg" style="min-height:18px;font-size:12.5px;color:var(--ink-soft);margin-top:2px;"></div>
   </div>`;
 }
 function bindSubmitterFix_(){
