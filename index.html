@@ -913,7 +913,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.88';
+const APP_VERSION = '2026-08-24.90';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7478,7 +7478,7 @@ function cmpEmailStats_(rep, cnfCodes){
     const c = state.masters.cnfs.find(cc=>String(cc.code)===String(s.code)); s.name = c ? c.name : s.code;
     return s;
   });
-  list.sort((a,b)=> b.wrong.size-a.wrong.size || b.score-a.score || b.pct-a.pct || String(a.name).localeCompare(String(b.name)));
+  list.sort((a,b)=> (b.pct-a.pct) || (b.wrong.size-a.wrong.size) || (b.score-a.score) || String(a.name).localeCompare(String(b.name))); // worst = highest % of compared products wrong
   return list;
 }
 // Builds the e-mail as several parts (the first has the summary) so Outlook never has to swallow one huge paste.
@@ -7528,6 +7528,21 @@ function buildCmpEmailParts_(rep, o){
     + cRow(c=>`<td bgcolor="${c[3]}" align="center" style="background:${c[3]};color:#3b4752;${bd}padding:0 8px 6px 8px;text-align:center;font-size:11px;${F}">${c[4]}</td>`)
     + `</table>`;
 
+  /* ---- top 3 CNFs to act on first ---- */
+  if(bad.length){
+    const t3 = bad.slice(0,3);
+    const hd = ['#922b21','#b03a2e','#c0574a'];
+    top += `<div style="font-size:14px;font-weight:bold;color:#1f3a5f;margin:6px 0 4px 0;${F}">Top ${t3.length} CNF${t3.length>1?'s':''} to act on first</div>`
+      + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>`
+      + t3.map((s,i)=>`<td width="230" bgcolor="${hd[i]}" align="center" style="background:${hd[i]};color:#ffffff;border:2px solid #ffffff;padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">#${i+1} &middot; ${E(s.name)} &middot; ${E(String(s.code))}</td>`).join('')
+      + `</tr><tr>`
+      + t3.map(s=>`<td bgcolor="#fadbd8" align="center" style="background:#fadbd8;color:#7b241c;border:2px solid #ffffff;padding:8px 8px 2px 8px;text-align:center;font-size:24px;font-weight:bold;${F}">${Math.round(s.pct)}%</td>`).join('')
+      + `</tr><tr>`
+      + t3.map(s=>`<td bgcolor="#fadbd8" align="center" style="background:#fadbd8;color:#3b4752;border:2px solid #ffffff;padding:0 8px 2px 8px;text-align:center;font-size:11px;${F}">${s.wrong.size} of ${s.compared} products wrong</td>`).join('')
+      + `</tr><tr>`
+      + t3.map(s=>`<td bgcolor="#fadbd8" align="center" style="background:#fadbd8;color:#3b4752;border:2px solid #ffffff;padding:0 8px 6px 8px;text-align:center;font-size:11px;${F}">Stock submitted by ${E(s.lastCur?subBy(s.lastCur):'')}</td>`).join('')
+      + `</tr></table>`;
+  }
   /* ---- 2. ranking: who entered MFD most wrongly ---- */
   if(bad.length){
     const heads = ['#','CNF / CFA','Stock submitted by','Products compared','Products wrong','% wrong','Same stock, MFD changed','Batch stock went up','Older batch appeared','MFD blank / changed','Suspicion'];
