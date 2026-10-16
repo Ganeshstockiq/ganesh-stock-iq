@@ -913,7 +913,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.91';
+const APP_VERSION = '2026-08-24.92';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7516,8 +7516,8 @@ function buildCmpEmailParts_(rep, o){
   top += `<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;width:100%;margin:8px 0;"><tr><td bgcolor="#fff7e0" style="background:#fff7e0;color:#4a3500;border-left:5px solid #e67e22;padding:9px 12px;font-size:13px;${F}">${headline}</td></tr></table>`;
   /* ---- top 3 CNFs to act on first ---- */
   if(bad.length){
-    const t3 = bad.slice(0,5);
-    const hd = ['#7b241c','#922b21','#a93226','#b03a2e','#c0574a'];
+    const t3 = bad.slice(0,6);
+    const hd = ['#7b241c','#922b21','#a93226','#b03a2e','#c0392b','#c0574a'];
     top += `<div style="font-size:14px;font-weight:bold;color:#1f3a5f;margin:6px 0 4px 0;${F}">Top ${t3.length} CNF${t3.length>1?'s':''} to act on first (highest % of wrong MFD entries)</div>`
       + `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:0 0 10px 0;"><tr>`
       + t3.map((s,i)=>`<td width="172" bgcolor="${hd[i]}" align="center" style="background:${hd[i]};color:#ffffff;border:2px solid #ffffff;padding:6px 8px;text-align:center;font-size:12px;font-weight:bold;${F}">#${i+1} &middot; ${E(s.name)} &middot; ${E(String(s.code))}</td>`).join('')
