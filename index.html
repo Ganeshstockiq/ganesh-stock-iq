@@ -890,7 +890,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.82';
+const APP_VERSION = '2026-08-24.84';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -7160,28 +7160,31 @@ function emailRows_(){
 }
 function SubmitterFixCard_(){
   const cnfs = (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c));
-  const scs = (state.masters.scUsers||[]).filter(u=>String(u.status||'Active')==='Active');
   return `<div class="panel-card">
     <h4>Stock Submitted By — Correction</h4>
-    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">An SC who submits through their own login is recorded automatically. If an SC submitted through a CNF's login by mistake, correct it here after verbal or email confirmation. Every change is logged.</p>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;">An SC who submits through their own login is recorded automatically. If an SC submitted through a CNF's login by mistake, pick the SC here, or choose \"not in list\" and type the name. Every change is logged.</p>
     <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;">
       <div class="fg"><label>CNF</label><select id="sfCnf"><option value="">Select CNF</option>${cnfs.map(c=>`<option value="${escapeHtml(String(c.code))}">${escapeHtml(c.name)} (${escapeHtml(String(c.code))})</option>`).join('')}</select></div>
       <div class="fg"><label>Submission</label><select id="sfSub"><option value="">Select a CNF first</option></select></div>
-      <div class="fg"><label>Submitted by</label><select id="sfBy"><option value="CNF">CNF</option>${scs.map(u=>`<option value="${escapeHtml(u.userId)}">SC - ${escapeHtml(u.name)}</option>`).join('')}</select></div>
-      <div class="fg"><label>Confirmed by (verbal / email)</label><input id="sfNote" type="text" placeholder="e.g. Email from SC on 24-Aug"></div>
+      <div class="fg"><label>Submitted by</label><select id="sfBy"><option value="CNF">CNF</option>${(state.masters.scUsers||[]).filter(u=>String(u.status||'Active')==='Active').map(u=>`<option value="u:${escapeHtml(u.userId)}">SC - ${escapeHtml(u.name)}</option>`).join('')}<option value="__other">SC - not in list (type name)</option></select></div>
+      <div class="fg" id="sfNameWrap" style="display:none;"><label>Sales Coordinator name</label><input id="sfName" type="text" maxlength="60" placeholder="First name Last name" autocomplete="off"></div>
     </div>
     <button class="btn btn-primary" id="sfSave" style="margin-top:8px;">Save Correction</button>
     <span id="sfMsg" style="margin-left:10px;font-size:13px;"></span>
   </div>`;
 }
 function bindSubmitterFix_(){
-  const cnfEl=document.getElementById('sfCnf'), subEl=document.getElementById('sfSub'), byEl=document.getElementById('sfBy'), noteEl=document.getElementById('sfNote'), btn=document.getElementById('sfSave'), msg=document.getElementById('sfMsg');
+  const cnfEl=document.getElementById('sfCnf'), subEl=document.getElementById('sfSub'), byEl=document.getElementById('sfBy'), btn=document.getElementById('sfSave'), msg=document.getElementById('sfMsg');
   if(!cnfEl||!btn) return;
   const label = sub => { const a=parseAuditBy(sub.submittedBy); return `${sub.date||''} · ${String(sub.timestamp||'').replace('T',' ').slice(0,16)} · ${a.role==='SC'?'SC - '+a.name:'CNF'}`; };
   const fill = ()=>{
     const list = state.submissions.filter(x=>String(x.cnfCode)===String(cnfEl.value)).sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).slice(0,30);
     subEl.innerHTML = list.length ? list.map(x=>`<option value="${escapeHtml(String(x.id))}">${escapeHtml(label(x))}</option>`).join('') : '<option value="">No submissions</option>';
   };
+  const nameEl=document.getElementById('sfName'), wrap=document.getElementById('sfNameWrap');
+  const titleCase = t => String(t||'').replace(/\s+/g,' ').trim().toLowerCase().replace(/(^|[\s.'-])([a-z])/g,(m,a,b)=>a+b.toUpperCase());
+  byEl.onchange = ()=>{ wrap.style.display = byEl.value==='__other' ? '' : 'none'; };
+  if(nameEl) nameEl.onblur = ()=>{ nameEl.value = titleCase(nameEl.value); };
   cnfEl.onchange = async ()=>{
     if(!cnfEl.value){ subEl.innerHTML='<option value="">Select a CNF first</option>'; return; }
     subEl.innerHTML='<option value="">Loading…</option>';
@@ -7189,15 +7192,16 @@ function bindSubmitterFix_(){
   };
   btn.onclick = async ()=>{
     if(!subEl.value){ msg.textContent='Select a submission.'; return; }
-    if(String(noteEl.value).trim().length<3){ msg.textContent='Enter who confirmed this change.'; return; }
-    const by = byEl.value==='CNF' ? 'CNF' : 'SC';
+    let by='CNF', nm='', uid='';
+    if(byEl.value==='__other'){ nm = titleCase(nameEl.value); if(nm.length<2){ msg.textContent='Type the Sales Coordinator name.'; return; } nameEl.value = nm; by='SC'; }
+    else if(byEl.value.startsWith('u:')){ by='SC'; uid=byEl.value.slice(2); }
     btn.disabled=true; msg.textContent='Saving…';
     try{
-      const res = await apiPost('setSubmitter',{submissionId:subEl.value, by, scUserId: by==='SC'?byEl.value:'', note:noteEl.value.trim()});
+      const res = await apiPost('setSubmitter',{submissionId:subEl.value, by, scName:nm, scUserId:uid, note:'Set by MIS'});
       if(!res || res.error || !res.submittedBy) throw new Error((res&&res.error)||'Could not save.');
       state.submissions.forEach(x=>{ if(String(x.id)===String(subEl.value)) x.submittedBy=res.submittedBy; });
       Object.values(state.currentSnapshots||{}).forEach(x=>{ if(x && String(x.id)===String(subEl.value)) x.submittedBy=res.submittedBy; });
-      fill(); subEl.value=subEl.value; noteEl.value=''; msg.textContent='Saved.';
+      const keep=subEl.value; fill(); subEl.value=keep; msg.textContent='Saved.';
       showToast('Submitter updated');
     }catch(e){ msg.textContent=String(e.message||e); }
     btn.disabled=false;
