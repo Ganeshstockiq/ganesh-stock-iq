@@ -942,7 +942,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.102';
+const APP_VERSION = '2026-08-24.103';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -2302,7 +2302,15 @@ function isDemoCnf(c){ return !!c && /^\s*demo\b/i.test(String(c.name||'')); }
 // Promo / non-stock items CNFs submit by mistake. They are never part of any
 // report, export or email body (the stored submission itself is left untouched).
 const EXCLUDED_REPORT_PRODUCTS_ = new Set(['608852','608914','610320','610463','610536','609743','609744','608857','609557','609248','609251','609563','602199','609252','600114','609250','609253','608853','609060']);
-function rptItems_(sub){ return ((sub&&sub.items)||[]).filter(it=>!EXCLUDED_REPORT_PRODUCTS_.has(String(it.code).trim())); }
+// MIS-chosen exclusions (Export Centre → "Exclude Products from Reports"): a product can be left out for ALL CNFs or for one CNF.
+// Everything that reads a submission's lines goes through rptItems_(), so stock views, e-mail reports, comparison and exports all honour it.
+const USER_EXCL_KEY_ = 'gsi_user_excl_v1';
+let USER_EXCL_ = (()=>{ try{ const a = JSON.parse(localStorage.getItem(USER_EXCL_KEY_)||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } })();
+let USER_EXCL_SET_ = null;
+function userExclSet_(){ if(!USER_EXCL_SET_) USER_EXCL_SET_ = new Set(USER_EXCL_.map(x=>String(x.cnf)+'|'+String(x.code).trim())); return USER_EXCL_SET_; }
+function isUserExcluded_(cnfCode, code){ const m = userExclSet_(); if(!m.size) return false; const c = String(code).trim(); return m.has('ALL|'+c) || m.has(String(cnfCode)+'|'+c); }
+function saveUserExcl_(){ USER_EXCL_SET_ = null; try{ localStorage.setItem(USER_EXCL_KEY_, JSON.stringify(USER_EXCL_)); }catch(e){} }
+function rptItems_(sub){ return ((sub&&sub.items)||[]).filter(it=>!EXCLUDED_REPORT_PRODUCTS_.has(String(it.code).trim()) && !isUserExcluded_(sub.cnfCode, it.code)); }
 function isDemoCode_(code){ return isDemoCnf((state.masters&&state.masters.cnfs||[]).find(c=>String(c.code)===String(code))); }
 // Who made a submission. The server stamps a Sales Coordinator's audit as  SC|<id>|<name>;  anything else is the CNF's own entry.
 function parseAuditBy(by){
@@ -6212,6 +6220,7 @@ function MisExport(){
     <div id="exportProg" style="margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--wheat-dim);display:none;"></div>
   </div>
 
+  ${ExclusionCard_()}
   ${SubmitterFixCard_()}
   ${EmailReportCard()}
   ${CmpEmailCard_()}
@@ -7212,6 +7221,66 @@ function emailRows_(){
   if(state.misFilters.status!=='ALL') rows = rows.filter(r=>r.ageStatus.cls===state.misFilters.status);
   return rows;
 }
+
+function ExclusionCard_(){
+  const cnfs = (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c));
+  const nm = c => (cnfs.find(x=>String(x.code)===String(c))||{}).name || c;
+  const list = USER_EXCL_.slice().sort((a,b)=> String(a.cnf).localeCompare(String(b.cnf)) || String(a.code).localeCompare(String(b.code)));
+  return `<div class="panel-card">
+    <h4>Exclude Products from Reports</h4>
+    <p style="color:var(--ink-soft);font-size:13px;margin-top:0;line-height:1.5;">Product already audited or not relevant? Exclude it here and it is <b>left out of every report and export</b> — stock views, e-mail body reports, Comparison and Excel downloads. Choose <b>All CNFs</b> or one CNF, search by product code or name, and click <b>Exclude</b>. Reports refresh automatically. Remove an exclusion any time to bring the product back.</p>
+    <div class="formgrid" style="grid-template-columns:minmax(220px,300px) 1fr;align-items:end;">
+      <div class="fg"><label>Exclude for</label><select id="exScope"><option value="ALL">All CNFs</option>${cnfs.map(c=>`<option value="${escapeHtml(String(c.code))}">${escapeHtml(c.name)} (${escapeHtml(String(c.code))})</option>`).join('')}</select></div>
+      <div class="fg"><label>Search product (code or name)</label><input type="text" id="exSearch" placeholder="e.g. 100748 or SPICES - COMBO" autocomplete="off"></div>
+    </div>
+    <div id="exResults" style="margin-top:8px;"></div>
+    <div style="margin-top:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <div style="font-weight:700;font-size:13px;">Active exclusions <span style="font-family:var(--mono);font-weight:400;color:var(--wheat-dim);">(${list.length})</span></div>
+      ${list.length?`<button class="btn btn-ghost btn-sm" id="exClear">Remove all</button>`:''}
+    </div>
+    ${list.length ? `<div style="overflow:auto;margin-top:8px;"><table class="tbl" style="width:100%;font-size:12.5px;border-collapse:collapse;">
+      <thead><tr><th style="text-align:left;padding:6px 8px;">Product code</th><th style="text-align:left;padding:6px 8px;">Product name</th><th style="text-align:left;padding:6px 8px;">Excluded for</th><th style="text-align:left;padding:6px 8px;">Added on</th><th></th></tr></thead>
+      <tbody>${list.map((x,i)=>`<tr style="border-top:1px solid var(--line);">
+        <td style="padding:6px 8px;font-family:var(--mono);">${escapeHtml(String(x.code))}</td><td style="padding:6px 8px;">${escapeHtml(x.name||'')}</td>
+        <td style="padding:6px 8px;">${x.cnf==='ALL'?'<b>All CNFs</b>':escapeHtml(nm(x.cnf))+' ('+escapeHtml(String(x.cnf))+')'}</td>
+        <td style="padding:6px 8px;font-family:var(--mono);font-size:11.5px;">${escapeHtml(x.at||'')}</td>
+        <td style="padding:6px 8px;text-align:right;"><button class="btn btn-ghost btn-sm" data-exdel="${escapeHtml(String(x.cnf))}|${escapeHtml(String(x.code))}">Remove</button></td></tr>`).join('')}</tbody></table></div>`
+      : `<div style="margin-top:8px;font-size:12.5px;color:var(--ink-soft);">No products excluded — every submitted product appears in the reports.</div>`}
+  </div>`;
+}
+function exclChanged_(){
+  saveUserExcl_();
+  // a report that was already built is rebuilt automatically after the screen redraws
+  const e = document.getElementById('emlPreview'), c = document.getElementById('cmlPreview');
+  if(e && e._html) state.emailAuto = true;
+  if(c && c._html) state.cmlAuto = true;
+  render();
+  showToast('✓ Exclusions updated' + ((state.emailAuto||state.cmlAuto)?' — report refreshed':' — build / export the report again to see it'));
+}
+function bindExclusion_(){
+  const q = document.getElementById('exSearch'); if(!q) return;
+  const scope = document.getElementById('exScope'), box = document.getElementById('exResults');
+  const show = ()=>{
+    const t = q.value.trim().toLowerCase(); box.textContent = '';
+    if(t.length<2){ return; }
+    let prods = (state.masters.products||[]);
+    if(scope.value!=='ALL'){ const sub = latestSubmissionFor(scope.value); const have = new Set(((sub&&sub.items)||[]).map(i=>String(i.code).trim())); prods = prods.filter(p=>have.has(String(p.code).trim())); }
+    const hit = prods.filter(p=>String(p.code).toLowerCase().includes(t) || String(p.name||'').toLowerCase().includes(t)).slice(0,12);
+    if(!hit.length){ box.innerHTML = '<div style="font-size:12.5px;color:var(--ink-soft);">No matching product'+(scope.value!=='ALL'?' in this CNF\'s latest submission':'')+'.</div>'; return; }
+    hit.forEach(p=>{
+      const done = USER_EXCL_.some(x=>String(x.code)===String(p.code) && (x.cnf==='ALL' || x.cnf===scope.value));
+      const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:10px;align-items:center;justify-content:space-between;padding:7px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;background:rgba(127,127,127,.08);color:inherit;';
+      const lab = document.createElement('div'); lab.style.cssText='font-size:13px;min-width:0;';
+      lab.innerHTML = '<b style="font-family:var(--mono);">'+escapeHtml(String(p.code))+'</b> &nbsp;'+escapeHtml(p.name||'')+' <span style="color:var(--ink-soft);font-size:11.5px;">· '+escapeHtml(p.category||'')+'</span>';
+      const b = document.createElement('button'); b.type='button'; b.className = 'btn btn-sm ' + (done?'btn-ghost':'btn-primary'); b.textContent = done ? 'Already excluded' : 'Exclude'; b.disabled = done;
+      b.onclick = ()=>{ USER_EXCL_.push({code:String(p.code).trim(), name:p.name||'', cnf:scope.value, at:ddmmyyyy(localDateISO())}); exclChanged_(); };
+      row.appendChild(lab); row.appendChild(b); box.appendChild(row);
+    });
+  };
+  q.oninput = show; scope.onchange = show;
+  document.querySelectorAll('[data-exdel]').forEach(b=>b.onclick = ()=>{ const k = b.getAttribute('data-exdel'); USER_EXCL_ = USER_EXCL_.filter(x=>String(x.cnf)+'|'+String(x.code)!==k); exclChanged_(); });
+  const clr = document.getElementById('exClear'); if(clr) clr.onclick = ()=>{ if(!confirm('Remove all exclusions? Every product will appear in the reports again.')) return; USER_EXCL_ = []; exclChanged_(); };
+}
 function SubmitterFixCard_(){
   const cnfs = (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c));
   const scs = (state.masters.scUsers||[]).filter(u=>String(u.status||'Active')==='Active');
@@ -7824,6 +7893,7 @@ function bindCmpEmail_(){
     const doc = '<!doctype html><html><head><meta charset="utf-8"><title>MFD Comparison Report</title></head><body>'+(pv._html||'')+'</body></html>';
     const u = URL.createObjectURL(new Blob([doc],{type:'text/html'})); const a = document.createElement('a'); a.href=u; a.download='mfd-comparison-email-'+todayISO()+'.html'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(u);
   };
+  if(state.cmlAuto){ state.cmlAuto = false; b.onclick(); }
 }
 async function copyEmailHtml_(html){
   try{
@@ -9407,6 +9477,7 @@ function bindGlobal(){
   if(misStatus) misStatus.onchange = ()=>{ state.misFilters.status = misStatus.value; render(); };
   const btnExport = document.getElementById('btnExportCsv');
   if(btnExport) btnExport.onclick = runExport;
+  bindExclusion_();
   bindSubmitterFix_();
   bindEmailReport_();
   bindCmpEmail_();
