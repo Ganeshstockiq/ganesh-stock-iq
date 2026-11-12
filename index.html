@@ -89,7 +89,10 @@ button{font-family:var(--sans);cursor:pointer;}
 input,select{font-family:var(--sans);}
 
 /* ---------- Shell ---------- */
-#app{min-height:100vh;display:flex;flex-direction:column;}
+#app{min-height:100vh;display:flex;flex-direction:column;position:relative;z-index:1;}
+#bgfx{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none;display:block;}
+.cnf-shell{background:transparent !important;}
+.login-bg{background:radial-gradient(900px 380px at 50% -80px,rgba(204,143,63,.22),transparent 70%) !important;}
 .topbar{display:flex;align-items:center;gap:0;background:var(--silo-dark-2);border-bottom:1px solid var(--line);padding:0 16px;position:sticky;top:0;z-index:50;}
 .brand{display:flex;align-items:center;gap:10px;padding:14px 18px 14px 0;margin-right:8px;border-right:1px solid var(--line);}
 .brand .mark{width:26px;height:26px;position:relative;flex:none;}
@@ -571,7 +574,71 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js" defer></script>
 </head>
 <body>
+<canvas id="bgfx" aria-hidden="true"></canvas>
 <div id="app"></div>
+<script>
+/* Animated background — a slow "supply network": soft drifting colour glows, nodes (CNF depots) joined by faint lines,
+   with small pulses travelling along the links. Uses the current theme colour, pauses when the tab is hidden,
+   and stays still for people who prefer reduced motion. */
+(function(){
+  var cv = document.getElementById('bgfx'); if(!cv || !cv.getContext) return;
+  var cx = cv.getContext('2d'), W=0, H=0, dpr=1, nodes=[], pulses=[], orbs=[], raf=0, last=0;
+  var still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var col = {r:204,g:143,b:63}, base = '#1c1712', light = false, lastTheme = 0;
+  function hex(h){ h=(h||'').trim(); var m=/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(h); if(!m) return null; var v=m[1]; if(v.length===3) v=v.split('').map(function(c){return c+c;}).join(''); return {r:parseInt(v.slice(0,2),16),g:parseInt(v.slice(2,4),16),b:parseInt(v.slice(4,6),16)}; }
+  function theme(){
+    var cs = getComputedStyle(document.documentElement);
+    col = hex(cs.getPropertyValue('--wheat')) || col;
+    light = !!document.querySelector('.cnf-shell');
+    base = (light ? cs.getPropertyValue('--cream') : cs.getPropertyValue('--silo-dark')).trim() || base;
+  }
+  function size(){
+    dpr = Math.min(window.devicePixelRatio||1, 1.5); W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr); cx.setTransform(dpr,0,0,dpr,0,0);
+    var n = Math.max(18, Math.min(64, Math.round(W*H/24000)));
+    nodes = []; for(var i=0;i<n;i++) nodes.push({x:Math.random()*W,y:Math.random()*H,vx:(Math.random()-.5)*.18,vy:(Math.random()-.5)*.18,r:1.2+Math.random()*1.8});
+    orbs = [0,1,2].map(function(i){ return {x:Math.random()*W,y:Math.random()*H,vx:(Math.random()-.5)*.12,vy:(Math.random()-.5)*.12,r:Math.max(W,H)*(.28+.1*i)}; });
+    pulses = [];
+  }
+  function rgba(a){ return 'rgba('+col.r+','+col.g+','+col.b+','+a+')'; }
+  function frame(t){
+    raf = requestAnimationFrame(frame);
+    if(t-lastTheme>1500){ lastTheme=t; theme(); }
+    var dt = Math.min(40, t-last||16); last = t; var k = dt/16;
+    cx.fillStyle = base; cx.fillRect(0,0,W,H);
+    var oa = light ? .10 : .12;
+    orbs.forEach(function(o){
+      if(!still){ o.x+=o.vx*k; o.y+=o.vy*k; if(o.x<-o.r*.3||o.x>W+o.r*.3) o.vx*=-1; if(o.y<-o.r*.3||o.y>H+o.r*.3) o.vy*=-1; }
+      var g = cx.createRadialGradient(o.x,o.y,0,o.x,o.y,o.r); g.addColorStop(0,rgba(oa)); g.addColorStop(1,rgba(0));
+      cx.fillStyle = g; cx.fillRect(0,0,W,H);
+    });
+    var maxD = Math.min(190, Math.max(120, W/7)), la = light ? .20 : .26, na = light ? .38 : .5;
+    for(var i=0;i<nodes.length;i++){
+      var a = nodes[i];
+      if(!still){ a.x+=a.vx*k; a.y+=a.vy*k; if(a.x<0||a.x>W) a.vx*=-1; if(a.y<0||a.y>H) a.vy*=-1; }
+      for(var j=i+1;j<nodes.length;j++){
+        var b = nodes[j], dx=a.x-b.x, dy=a.y-b.y, d=Math.sqrt(dx*dx+dy*dy);
+        if(d<maxD){
+          cx.strokeStyle = rgba(la*(1-d/maxD)); cx.lineWidth = 1; cx.beginPath(); cx.moveTo(a.x,a.y); cx.lineTo(b.x,b.y); cx.stroke();
+          if(!still && pulses.length<14 && Math.random()<.0009) pulses.push({a:a,b:b,p:0,s:.006+Math.random()*.008});
+        }
+      }
+      cx.fillStyle = rgba(na); cx.beginPath(); cx.arc(a.x,a.y,a.r,0,6.2832); cx.fill();
+    }
+    for(var q=pulses.length-1;q>=0;q--){
+      var u = pulses[q]; u.p += u.s*k; if(u.p>=1){ pulses.splice(q,1); continue; }
+      var px = u.a.x+(u.b.x-u.a.x)*u.p, py = u.a.y+(u.b.y-u.a.y)*u.p;
+      var gg = cx.createRadialGradient(px,py,0,px,py,9); gg.addColorStop(0,rgba(.85)); gg.addColorStop(1,rgba(0));
+      cx.fillStyle = gg; cx.beginPath(); cx.arc(px,py,9,0,6.2832); cx.fill();
+    }
+    if(still){ cancelAnimationFrame(raf); raf=0; }
+  }
+  function start(){ if(!raf){ last=performance.now(); raf=requestAnimationFrame(frame); } }
+  theme(); size(); start();
+  var rt; addEventListener('resize', function(){ clearTimeout(rt); rt=setTimeout(function(){ size(); if(still){ raf=0; start(); } },200); });
+  document.addEventListener('visibilitychange', function(){ if(document.hidden){ cancelAnimationFrame(raf); raf=0; } else start(); });
+})();
+</script>
 
 <script>
 /* ============================================================
@@ -942,7 +1009,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.103';
+const APP_VERSION = '2026-08-24.105';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
@@ -5723,12 +5790,28 @@ function ActiveFilterBanner(){
   </div>`;
 }
 
+// CNFs that have submitted within the last N days (default 7) — these are the ones MIS normally wants in a report.
+function recentCnfCodes_(){
+  const n = Number(state.recentDays)||7;
+  return (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c)).filter(c=>{ const d = daysSinceLastSubmission(c.code); return d!==null && d<=n; }).map(c=>c.code);
+}
 function MisFilters(){
   const selectedCnfs = state.misFilters.cnfs;
+  const recent = new Set(recentCnfCodes_());
+  const nDays = Number(state.recentDays)||7;
+  const sameSel = Array.isArray(selectedCnfs) && selectedCnfs.length===recent.size && selectedCnfs.every(c=>recent.has(c));
   return `<div class="panel-card">
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px;">
+      <button class="btn btn-primary btn-sm" id="btnSelRecent" ${recent.size?'':'disabled'}>⚡ Select recently submitted CNFs (${recent.size})</button>
+      <label style="font-size:12.5px;display:flex;align-items:center;gap:6px;">Submitted in the last
+        <select id="recentDays" style="width:auto;padding:5px 8px;">${[3,7,10,15,30,60].map(d=>`<option value="${d}" ${d===nDays?'selected':''}>${d} days</option>`).join('')}</select></label>
+      <label style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="autoRecent" ${state.autoRecent!==false?'checked':''}> Auto-select them when I open Export Centre</label>
+      ${sameSel?'<span style="font-size:12px;color:var(--green);">✓ Recently submitted CNFs are selected</span>':''}
+    </div>
+    <div style="font-size:11.5px;color:var(--ink-soft);margin:-4px 0 8px;"><span style="color:var(--green);font-weight:700;">●</span> green dot = submitted in the last ${nDays} days · faded = no recent submission</div>
     <div class="chip-row">
       <span class="chip ${selectedCnfs==='ALL'?'on':''}" data-cnfchip="ALL">All CNFs</span>
-      ${state.masters.cnfs.map(c=>`<span class="chip ${Array.isArray(selectedCnfs)&&selectedCnfs.includes(c.code)?'on':''}" data-cnfchip="${c.code}">${c.name} · ${c.code}</span>`).join('')}
+      ${state.masters.cnfs.map(c=>{ const rc = recent.has(c.code); return `<span class="chip ${Array.isArray(selectedCnfs)&&selectedCnfs.includes(c.code)?'on':''}" data-cnfchip="${c.code}" style="${rc?'':'opacity:.5;'}" title="${rc?'Submitted in the last '+nDays+' days':'No submission in the last '+nDays+' days'}">${rc?'<span style="color:#2ecc71;font-weight:700;">●</span> ':''}${c.name} · ${c.code}</span>`; }).join('')}
     </div>
     <div class="filters">
       <div class="fg"><label>Category</label><select id="misCat"><option value="ALL">All</option>${state.masters.categories.map(c=>`<option ${state.misFilters.category===c?'selected':''}>${c}</option>`).join('')}</select></div>
@@ -7213,6 +7296,7 @@ function emailCols_(){
 }
 function emailCnfCodes_(){
   if(state.emailCnfSel) return state.emailCnfSel;
+  if(state.autoRecent!==false){ const r = recentCnfCodes_(); if(r.length) return r; }   // default = CNFs that submitted recently
   return state.masters.cnfs.filter(c=>!isDemoCnf(c) && latestSubmissionFor(c.code)).map(c=>c.code);
 }
 function emailRows_(){
@@ -9454,7 +9538,9 @@ function bindGlobal(){
 
   // MIS nav & filters
   document.querySelectorAll('[data-misnav]').forEach(el=>el.onclick=async ()=>{
-    state.misScreen=el.dataset.misnav; state.sideOpen=false; render();
+    state.misScreen=el.dataset.misnav; state.sideOpen=false;
+    if(state.misScreen==='export' && state.autoRecent!==false && state.misFilters.cnfs==='ALL'){ const r = recentCnfCodes_(); if(r.length && r.length < (state.masters.cnfs||[]).filter(c=>!isDemoCnf(c)).length) state.misFilters.cnfs = r; }
+    render();
     if(state.misScreen==='emaillog'){ await loadEmailLog(); render(); }
   });
   const btnNavToggle = document.getElementById('btnNavToggle');
@@ -9471,6 +9557,12 @@ function bindGlobal(){
     }
     render();
   });
+  const btnSelRecent = document.getElementById('btnSelRecent');
+  if(btnSelRecent) btnSelRecent.onclick = ()=>{ const r = recentCnfCodes_(); if(r.length){ state.misFilters.cnfs = r; render(); } };
+  const recentDays = document.getElementById('recentDays');
+  if(recentDays) recentDays.onchange = ()=>{ state.recentDays = Number(recentDays.value)||7; if(Array.isArray(state.misFilters.cnfs) && state.autoRecent!==false){ const r = recentCnfCodes_(); if(r.length) state.misFilters.cnfs = r; } render(); };
+  const autoRecent = document.getElementById('autoRecent');
+  if(autoRecent) autoRecent.onchange = ()=>{ state.autoRecent = autoRecent.checked; };
   const misCat = document.getElementById('misCat');
   if(misCat) misCat.onchange = ()=>{ state.misFilters.category = misCat.value; render(); };
   const misStatus = document.getElementById('misStatus');
