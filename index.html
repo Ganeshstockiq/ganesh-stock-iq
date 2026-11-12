@@ -590,6 +590,9 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
   var still = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
   function hex(h){ h=(h||'').trim(); var m=/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(h); if(!m) return null; var v=m[1]; if(v.length===3) v=v.split('').map(function(c){return c+c;}).join(''); return {r:parseInt(v.slice(0,2),16),g:parseInt(v.slice(2,4),16),b:parseInt(v.slice(4,6),16)}; }
   var DIRS = [[1,0],[0,1],[-1,0],[0,-1]];
+  var M = {x:-9999,y:-9999,t:0};
+  addEventListener('mousemove',function(e){ M.x=e.clientX; M.y=e.clientY; M.t=performance.now(); },{passive:true});
+  document.addEventListener('mouseleave',function(){ M.x=-9999; M.y=-9999; });
   function Circuit(cv, o){
     var cx = cv.getContext('2d'), W=0,H=0,dpr=1,G=o.step||44, pulses=[], raf=0, last=0, sweep=Math.random()*1000, colr=o.color||{r:204,g:143,b:63}, base=o.base||null;
     function size(){ var r = cv.getBoundingClientRect(); dpr=Math.min(devicePixelRatio||1,1.5); W=Math.max(10,r.width); H=Math.max(10,r.height); cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr); cx.setTransform(dpr,0,0,dpr,0,0); pulses=[]; }
@@ -598,6 +601,11 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
       var cols=Math.floor(W/G), rows=Math.floor(H/G); if(cols<2||rows<1) return;
       var gx=Math.floor(Math.random()*(cols+1)), gy=Math.floor(Math.random()*(rows+1)), d=Math.floor(Math.random()*4);
       pulses.push({x:gx*G,y:gy*G,d:d,left:(2+Math.floor(Math.random()*5))*G,turns:2+Math.floor(Math.random()*4),sp:(o.speed||1.4)*(.8+Math.random()*.7),trail:[],life:0});
+    }
+    function spawnAt(px,py){
+      if(pulses.length>(o.count||8)+10) return;
+      var gx=Math.round(px/G)*G, gy=Math.round(py/G)*G, d=Math.floor(Math.random()*4);
+      pulses.push({x:gx,y:gy,d:d,left:(1+Math.floor(Math.random()*3))*G,turns:3+Math.floor(Math.random()*3),sp:(o.speed||1.4)*1.6,trail:[],life:0});
     }
     function step(p,k){
       var mv=p.sp*k*(o.fast||1); p.x+=DIRS[p.d][0]*mv; p.y+=DIRS[p.d][1]*mv; p.left-=mv;
@@ -623,6 +631,18 @@ hr.hr{border:none;border-top:1px solid var(--line);margin:14px 0;}
       // sweeping scan band
       if(o.scan){ sweep+=dt*.045; var sx=((sweep%(W+300))-150); var g=cx.createLinearGradient(sx-120,0,sx+120,0); g.addColorStop(0,rgba(0)); g.addColorStop(.5,rgba(o.scan)); g.addColorStop(1,rgba(0)); cx.fillStyle=g; cx.fillRect(0,0,W,H); }
       if(!still && pulses.length<(o.count||8) && Math.random()<(o.rate||.05)) spawn();
+      // cursor interaction: glow + brighter grid + circuit pulses that start next to the pointer
+      var rc = cv.getBoundingClientRect(), mx = M.x-rc.left, my = M.y-rc.top, R = o.cursorR||(o.scan?170:150);
+      if(mx>-R && my>-R && mx<W+R && my<H+R && !still){
+        var gl = cx.createRadialGradient(mx,my,0,mx,my,R); gl.addColorStop(0,rgba(o.scan?.30:.16, o.pulse||colr)); gl.addColorStop(1,rgba(0,o.pulse||colr)); cx.fillStyle=gl; cx.fillRect(mx-R,my-R,R*2,R*2);
+        cx.save(); cx.beginPath(); cx.arc(mx,my,R,0,6.2832); cx.clip();
+        cx.strokeStyle=rgba(o.scan?.34:.2, o.pulse||colr); cx.lineWidth=1; cx.beginPath();
+        for(var gx2=Math.floor((mx-R)/G)*G; gx2<=mx+R; gx2+=G){ cx.moveTo(gx2+.5,my-R); cx.lineTo(gx2+.5,my+R); }
+        for(var gy2=Math.floor((my-R)/G)*G; gy2<=my+R; gy2+=G){ cx.moveTo(mx-R,gy2+.5); cx.lineTo(mx+R,gy2+.5); }
+        cx.stroke(); cx.restore();
+        var moving = performance.now()-M.t < 140;
+        if(moving && Math.random()<.32 && mx>=0 && my>=0 && mx<=W && my<=H) spawnAt(mx+(Math.random()-.5)*G, my+(Math.random()-.5)*G);
+      }
       for(var q=pulses.length-1;q>=0;q--){
         var p=pulses[q]; if(!still) step(p,k); if(p.dead){ pulses.splice(q,1); continue; }
         var tr=p.trail, n=tr.length; if(n<2) continue;
@@ -1028,7 +1048,7 @@ function lsSet(key, value){ try{ localStorage.setItem(LS_PREFIX+key, JSON.string
 // staying on stale code until they happen to hard-refresh. This works no
 // matter where the file is hosted (GitHub Pages, S3, etc.) since it reads
 // its own URL rather than a hardcoded host.
-const APP_VERSION = '2026-08-24.107';
+const APP_VERSION = '2026-08-24.108';
 
 // Called right after login for every role — "sync" for DATA (masters/
 // submissions) already happens automatically on login via forceSyncMasters();
